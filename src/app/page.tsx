@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { TryNow } from "./try-now";
 
 const features = [
   {
@@ -42,20 +43,21 @@ export default function LandingPage() {
           profile and generates a precise, one-page CV — plus a full change
           report — for every job you apply to.
         </p>
-        <div className="mt-8 flex justify-center gap-4">
-          <Link
-            href="/login"
-            className="rounded-lg bg-indigo-600 px-6 py-3 font-medium text-white shadow hover:bg-indigo-700"
-          >
-            Get started
-          </Link>
-          <a
-            href="#pricing"
-            className="rounded-lg border border-slate-300 bg-white px-6 py-3 font-medium text-slate-700 hover:bg-slate-50"
-          >
+      </section>
+
+      {/* Prominent try-before-signup section */}
+      <section className="px-6 pb-20">
+        <TryNow />
+        <p className="mt-4 text-center text-sm text-slate-500">
+          Already have an account?{" "}
+          <Link href="/login" className="text-indigo-600 underline">
+            Sign in
+          </Link>{" "}
+          ·{" "}
+          <a href="#pricing" className="text-indigo-600 underline">
             Pricing
           </a>
-        </div>
+        </p>
       </section>
 
       <section className="mx-auto grid max-w-5xl gap-6 px-6 pb-20 sm:grid-cols-2">

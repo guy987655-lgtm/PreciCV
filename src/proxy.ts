@@ -1,7 +1,13 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-const PROTECTED_PREFIXES = ["/dashboard", "/onboarding", "/jobs", "/settings"];
+const PROTECTED_PREFIXES = [
+  "/dashboard",
+  "/onboarding",
+  "/jobs",
+  "/settings",
+  "/continue",
+];
 
 export async function proxy(request: NextRequest) {
   // Not configured yet (fresh clone without .env.local): let pages through

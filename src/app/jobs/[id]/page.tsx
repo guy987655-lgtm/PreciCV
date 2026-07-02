@@ -38,10 +38,16 @@ export default async function JobPage({
 
   const { data: generation } = await supabase
     .from("generations")
-    .select("id, cv, diff, template, revision_number")
+    .select("id, cv, diff, template, revision_number, is_sample")
     .eq("job_id", id)
     .order("revision_number", { ascending: false })
     .limit(1)
+    .maybeSingle();
+
+  const { data: profileRow } = await supabase
+    .from("profiles")
+    .select("free_sample_used")
+    .eq("user_id", user.id)
     .maybeSingle();
 
   const tier = purchase?.tier as keyof typeof TIERS | undefined;
@@ -71,9 +77,11 @@ export default async function JobPage({
               diff: DiffReportSchema.parse(generation.diff),
               template: generation.template ?? "classic",
               revisionNumber: generation.revision_number ?? 0,
+              isSample: generation.is_sample ?? false,
             }
           : null
       }
+      freeSampleAvailable={!profileRow?.free_sample_used && !purchase}
     />
   );
 }

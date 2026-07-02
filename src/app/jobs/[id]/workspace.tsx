@@ -34,15 +34,43 @@ type Props = {
     diff: DiffReport;
     template: string;
     revisionNumber: number;
+    isSample?: boolean;
   } | null;
+  freeSampleAvailable?: boolean;
 };
 
-export function JobWorkspace({ job, purchase, generation: initialGen }: Props) {
+/** Diagonal repeated watermark for the locked free-sample preview. */
+function SampleWatermark() {
+  return (
+    <div className="pointer-events-none absolute inset-0 z-10 overflow-hidden">
+      <div className="flex h-full w-full -rotate-30 flex-col justify-around opacity-[0.13]">
+        {Array.from({ length: 12 }).map((_, row) => (
+          <div key={row} className="flex justify-around whitespace-nowrap">
+            {Array.from({ length: 4 }).map((_, col) => (
+              <span key={col} className="text-3xl font-black text-indigo-900">
+                PreciCV · PREVIEW
+              </span>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function JobWorkspace({
+  job,
+  purchase,
+  generation: initialGen,
+  freeSampleAvailable = false,
+}: Props) {
   const router = useRouter();
   const [generation, setGeneration] = useState(initialGen);
+  const [sampleLeft, setSampleLeft] = useState(freeSampleAvailable);
   const [busy, setBusy] = useState<"" | "checkout" | "generate" | "revise">("");
   const [error, setError] = useState("");
   const [redFlagModal, setRedFlagModal] = useState(false);
+  const [pendingSample, setPendingSample] = useState(false);
   const [reviseOpen, setReviseOpen] = useState(false);
   const [reviseText, setReviseText] = useState("");
   const [revisionsUsed, setRevisionsUsed] = useState(purchase?.revisionsUsed ?? 0);
@@ -50,6 +78,7 @@ export function JobWorkspace({ job, purchase, generation: initialGen }: Props) {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const hits = job.dealbreakerHits;
+  const isSample = Boolean(generation?.isSample);
 
   /* ---------------- payment ---------------- */
   async function checkout(tier: TierId) {
@@ -77,9 +106,10 @@ export function JobWorkspace({ job, purchase, generation: initialGen }: Props) {
     }
   }
 
-  /* ---------------- generation ---------------- */
-  async function generate(acknowledged: boolean) {
+  /* ---------------- generation (paid credit or free sample) --------- */
+  async function generate(acknowledged: boolean, asSample: boolean) {
     if (hits.length > 0 && !acknowledged) {
+      setPendingSample(asSample);
       setRedFlagModal(true);
       return;
     }
@@ -87,9 +117,9 @@ export function JobWorkspace({ job, purchase, generation: initialGen }: Props) {
     setBusy("generate");
     setError("");
     trackButtonClick({
-      button_name: "generate_cv",
+      button_name: asSample ? "generate_free_sample" : "generate_cv",
       action: "generate",
-      button_text: "Generate tailored CV",
+      button_text: asSample ? "Generate my free sample" : "Generate tailored CV",
       click_source: "job_workspace",
       job_id: job.id,
     });
@@ -97,22 +127,28 @@ export function JobWorkspace({ job, purchase, generation: initialGen }: Props) {
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobId: job.id, acknowledgeRedFlags: acknowledged }),
+        body: JSON.stringify({
+          jobId: job.id,
+          acknowledgeRedFlags: acknowledged,
+          useFreeSample: asSample,
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
         if (data.error === "payment_required") {
           throw new Error("Purchase a tier below to generate.");
         }
-        throw new Error(data.error ?? "Generation failed");
+        throw new Error(data.message ?? data.error ?? "Generation failed");
       }
       setGeneration({
         id: data.generationId,
         cv: data.cv,
         diff: data.diff,
-        template: "classic",
-        revisionNumber: 0,
+        template: generation?.template ?? "classic",
+        revisionNumber: generation?.revisionNumber ?? 0,
+        isSample: data.isSample ?? false,
       });
+      if (asSample) setSampleLeft(false);
       router.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong");
@@ -146,6 +182,7 @@ export function JobWorkspace({ job, purchase, generation: initialGen }: Props) {
         diff: data.diff,
         template: generation?.template ?? "classic",
         revisionNumber: data.revisionNumber,
+        isSample: false,
       });
       setRevisionsUsed((n) => n + 1);
       setReviseOpen(false);
@@ -160,7 +197,7 @@ export function JobWorkspace({ job, purchase, generation: initialGen }: Props) {
   /* ---------------- inline edits: debounced save, no credits ---------- */
   const saveCv = useCallback(
     (next: TailoredCv, template?: string) => {
-      if (!generation) return;
+      if (!generation || isSample) return;
       setGeneration((g) => (g ? { ...g, cv: next, template: template ?? g.template } : g));
       setSaveState("saving");
       if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -174,11 +211,11 @@ export function JobWorkspace({ job, purchase, generation: initialGen }: Props) {
         setTimeout(() => setSaveState("idle"), 1500);
       }, 800);
     },
-    [generation]
+    [generation, isSample]
   );
 
   async function setTemplate(t: CvTemplate) {
-    if (!generation) return;
+    if (!generation || isSample) return;
     setGeneration({ ...generation, template: t });
     await fetch(`/api/generations/${generation.id}`, {
       method: "PATCH",
@@ -198,6 +235,31 @@ export function JobWorkspace({ job, purchase, generation: initialGen }: Props) {
     window.print();
   }
 
+  const tierCards = (
+    <div className="grid gap-6 sm:grid-cols-2">
+      {(Object.entries(TIERS) as [TierId, (typeof TIERS)[TierId]][]).map(
+        ([tierId, tier]) => (
+          <Card
+            key={tierId}
+            className={`p-6 ${tierId === "premium" ? "border-2 border-indigo-500" : ""}`}
+          >
+            <h3 className="font-semibold text-slate-900">{tier.name}</h3>
+            <p className="mt-1 text-3xl font-bold">${tier.priceUsd}</p>
+            <p className="mt-2 text-sm text-slate-600">{tier.description}</p>
+            <Button
+              className="mt-4 w-full"
+              variant={tierId === "premium" ? "primary" : "outline"}
+              disabled={busy === "checkout"}
+              onClick={() => checkout(tierId)}
+            >
+              {busy === "checkout" ? <Spinner /> : `Buy ${tier.name}`}
+            </Button>
+          </Card>
+        )
+      )}
+    </div>
+  );
+
   /* ================= render ================= */
 
   return (
@@ -212,7 +274,7 @@ export function JobWorkspace({ job, purchase, generation: initialGen }: Props) {
             {job.company && <span className="font-normal text-slate-500"> · {job.company}</span>}
           </h1>
         </div>
-        {generation && (
+        {generation && !isSample && (
           <div className="flex items-center gap-3">
             {saveState !== "idle" && (
               <span className="text-xs text-slate-400">
@@ -237,6 +299,7 @@ export function JobWorkspace({ job, purchase, generation: initialGen }: Props) {
             <Button onClick={exportPdf}>Export PDF</Button>
           </div>
         )}
+        {generation && isSample && <Badge tone="amber">Free sample — preview only</Badge>}
       </header>
 
       {/* Red-flag banner */}
@@ -254,29 +317,35 @@ export function JobWorkspace({ job, purchase, generation: initialGen }: Props) {
         </div>
       )}
 
-      {/* State 1: not paid yet → tier selection */}
+      {/* State 1: nothing generated yet */}
       {!purchase && !generation && (
-        <div className="grid gap-6 sm:grid-cols-2 max-w-3xl mx-auto print:hidden">
-          {(Object.entries(TIERS) as [TierId, (typeof TIERS)[TierId]][]).map(
-            ([tierId, tier]) => (
-              <Card
-                key={tierId}
-                className={`p-6 ${tierId === "premium" ? "border-2 border-indigo-500" : ""}`}
+        <div className="mx-auto max-w-3xl space-y-6 print:hidden">
+          {sampleLeft && (
+            <Card className="border-2 border-emerald-300 bg-emerald-50/40 p-6 text-center">
+              <Badge tone="green">One-time free sample</Badge>
+              <h2 className="mt-2 text-lg font-semibold text-slate-900">
+                See it before you pay
+              </h2>
+              <p className="mx-auto mt-1 max-w-md text-sm text-slate-600">
+                Generate a real tailored CV for this job, shown as a
+                watermarked preview (not downloadable). You can use this
+                once per account.
+              </p>
+              <Button
+                size="lg"
+                className="mt-4 bg-emerald-600 hover:bg-emerald-700"
+                disabled={busy === "generate"}
+                onClick={() => generate(false, true)}
               >
-                <h3 className="font-semibold text-slate-900">{tier.name}</h3>
-                <p className="mt-1 text-3xl font-bold">${tier.priceUsd}</p>
-                <p className="mt-2 text-sm text-slate-600">{tier.description}</p>
-                <Button
-                  className="mt-4 w-full"
-                  variant={tierId === "premium" ? "primary" : "outline"}
-                  disabled={busy === "checkout"}
-                  onClick={() => checkout(tierId)}
-                >
-                  {busy === "checkout" ? <Spinner /> : `Buy ${tier.name}`}
-                </Button>
-              </Card>
-            )
+                {busy === "generate" ? (
+                  <Spinner label="Preparing your sample… (30–90 seconds)" />
+                ) : (
+                  "Generate my free sample"
+                )}
+              </Button>
+            </Card>
           )}
+          {tierCards}
         </div>
       )}
 
@@ -295,7 +364,7 @@ export function JobWorkspace({ job, purchase, generation: initialGen }: Props) {
             size="lg"
             className="mt-6"
             disabled={busy === "generate"}
-            onClick={() => generate(false)}
+            onClick={() => generate(false, false)}
           >
             {busy === "generate" ? (
               <Spinner label="Tailoring your CV… (30–90 seconds)" />
@@ -304,6 +373,19 @@ export function JobWorkspace({ job, purchase, generation: initialGen }: Props) {
             )}
           </Button>
         </Card>
+      )}
+
+      {/* Paid while a sample exists → unlock banner */}
+      {purchase && generation && isSample && (
+        <div className="mb-6 flex items-center justify-between rounded-xl border border-indigo-200 bg-indigo-50 p-4 print:hidden">
+          <p className="text-sm text-indigo-900">
+            <strong>Payment received.</strong> Unlock your CV to enable
+            editing, templates and PDF export.
+          </p>
+          <Button disabled={busy === "generate"} onClick={() => generate(true, false)}>
+            {busy === "generate" ? <Spinner /> : "Unlock full version"}
+          </Button>
+        </div>
       )}
 
       {/* State 3: the Side-by-Side Review Workspace (PRD §5) */}
@@ -392,7 +474,7 @@ export function JobWorkspace({ job, purchase, generation: initialGen }: Props) {
             </Card>
 
             {/* Premium AI revisions */}
-            {purchase?.tier === "premium" && (
+            {purchase?.tier === "premium" && !isSample && (
               <Card className="p-5">
                 <div className="flex items-center justify-between">
                   <h2 className="font-semibold text-slate-900">AI revisions</h2>
@@ -412,21 +494,47 @@ export function JobWorkspace({ job, purchase, generation: initialGen }: Props) {
             )}
           </div>
 
-          {/* Right pane: editable CV */}
+          {/* Right pane: the CV — editable when owned, watermarked when sample */}
           <div>
-            <p className="mb-2 text-xs text-slate-400 print:hidden">
-              Click any text on the CV to edit it directly — free, no credits used.
-            </p>
-            <div className="overflow-auto rounded-xl border border-slate-200 bg-slate-100 p-4 print:border-0 print:bg-white print:p-0">
-              <div className="origin-top-left scale-[0.85] lg:scale-100">
-                <CvRenderer
-                  cv={generation.cv}
-                  template={generation.template as CvTemplate}
-                  editable
-                  onChange={(next) => saveCv(next)}
-                />
+            {isSample ? (
+              <p className="mb-2 text-xs text-amber-700 print:hidden">
+                🔒 Watermarked preview — purchase this job to unlock editing,
+                templates and PDF download.
+              </p>
+            ) : (
+              <p className="mb-2 text-xs text-slate-400 print:hidden">
+                Click any text on the CV to edit it directly — free, no credits used.
+              </p>
+            )}
+            <div
+              className={`overflow-auto rounded-xl border border-slate-200 bg-slate-100 p-4 ${
+                isSample
+                  ? "print:hidden select-none"
+                  : "print:border-0 print:bg-white print:p-0"
+              }`}
+            >
+              <div className="relative origin-top-left scale-[0.85] lg:scale-100">
+                {isSample && <SampleWatermark />}
+                <div className={isSample ? "pointer-events-none" : ""}>
+                  <CvRenderer
+                    cv={generation.cv}
+                    template={generation.template as CvTemplate}
+                    editable={!isSample}
+                    onChange={(next) => saveCv(next)}
+                  />
+                </div>
               </div>
             </div>
+
+            {/* Sample → conversion CTA */}
+            {isSample && !purchase && (
+              <div className="mt-6 print:hidden">
+                <h2 className="mb-3 text-center text-lg font-semibold text-slate-900">
+                  Like what you see? Unlock the full version
+                </h2>
+                {tierCards}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -447,14 +555,16 @@ export function JobWorkspace({ job, purchase, generation: initialGen }: Props) {
             </p>
           ))}
           <p className="pt-2 font-medium text-slate-800">
-            Are you sure you want to proceed and spend a credit?
+            {pendingSample
+              ? "Are you sure you want to use your one-time free sample on it?"
+              : "Are you sure you want to proceed and spend a credit?"}
           </p>
         </div>
         <div className="mt-5 flex justify-end gap-3">
           <Button variant="ghost" onClick={() => setRedFlagModal(false)}>
             Cancel
           </Button>
-          <Button variant="danger" onClick={() => generate(true)}>
+          <Button variant="danger" onClick={() => generate(true, pendingSample)}>
             Proceed anyway
           </Button>
         </div>

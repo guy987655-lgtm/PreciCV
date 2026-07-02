@@ -19,6 +19,22 @@ export async function PATCH(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const { data: gen } = await supabase
+    .from("generations")
+    .select("is_sample")
+    .eq("id", id)
+    .eq("user_id", user.id)
+    .maybeSingle();
+  if (!gen) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  if (gen.is_sample) {
+    return NextResponse.json(
+      { error: "Samples are locked. Purchase the job to unlock editing." },
+      { status: 403 }
+    );
+  }
+
   const body = await request.json();
   const updates: Record<string, unknown> = {};
 

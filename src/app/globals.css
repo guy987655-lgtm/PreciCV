@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f8fafc;
+  --foreground: #0f172a;
 }
 
 @theme inline {
@@ -12,15 +12,50 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Diff report highlighting (PRD §5.1) */
+.diff-removed {
+  background-color: #fdeaea; /* desaturated pastel red */
+  text-decoration: line-through;
+  text-decoration-color: #d99;
+  color: #7f4a4a;
+  border-radius: 3px;
+  padding: 0 3px;
+}
+.diff-added {
+  background-color: #e4f5e9; /* pastel green */
+  color: #2c5f3c;
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
+/* Print-to-PDF: only the CV page prints, sized to A4 */
+@media print {
+  body {
+    background: white;
+  }
+  body * {
+    visibility: hidden;
+  }
+  .cv-page,
+  .cv-page * {
+    visibility: visible;
+  }
+  .cv-page {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 210mm !important;
+    min-height: auto !important;
+    box-shadow: none !important;
+    margin: 0 !important;
+  }
+  @page {
+    size: A4;
+    margin: 0;
+  }
 }

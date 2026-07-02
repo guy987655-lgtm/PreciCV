@@ -1,0 +1,52 @@
+import { NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
+import { TailoredCvSchema, CV_TEMPLATES } from "@/lib/types";
+
+/**
+ * Saves manual inline edits from the Review Workspace (PRD §5.1).
+ * Pure persistence — no LLM call, no credits.
+ */
+export async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const body = await request.json();
+  const updates: Record<string, unknown> = {};
+
+  if (body.cv !== undefined) {
+    const parsed = TailoredCvSchema.safeParse(body.cv);
+    if (!parsed.success) {
+      return NextResponse.json({ error: "Invalid CV payload" }, { status: 400 });
+    }
+    updates.cv = parsed.data;
+  }
+  if (body.template !== undefined) {
+    if (!CV_TEMPLATES.includes(body.template)) {
+      return NextResponse.json({ error: "Unknown template" }, { status: 400 });
+    }
+    updates.template = body.template;
+  }
+  if (Object.keys(updates).length === 0) {
+    return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
+  }
+
+  const { error } = await supabase
+    .from("generations")
+    .update(updates)
+    .eq("id", id)
+    .eq("user_id", user.id);
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ ok: true });
+}

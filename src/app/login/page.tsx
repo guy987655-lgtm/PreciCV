@@ -5,11 +5,12 @@ import { useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { trackButtonClick } from "@/lib/analytics";
 import { Button, Card } from "@/components/ui";
+import { GoogleIcon, LinkedInIcon, GitHubIcon } from "@/components/provider-icons";
 
 const PROVIDERS = [
-  { id: "google", label: "Continue with Google" },
-  { id: "linkedin_oidc", label: "Continue with LinkedIn" },
-  { id: "github", label: "Continue with GitHub" },
+  { id: "google", label: "Continue with Google", Icon: GoogleIcon },
+  { id: "linkedin_oidc", label: "Continue with LinkedIn", Icon: LinkedInIcon },
+  { id: "github", label: "Continue with GitHub", Icon: GitHubIcon },
 ] as const;
 
 function LoginForm() {
@@ -77,6 +78,7 @@ function LoginForm() {
             disabled={!consented}
             onClick={() => signIn(p)}
           >
+            <p.Icon />
             {p.label}
           </Button>
         ))}

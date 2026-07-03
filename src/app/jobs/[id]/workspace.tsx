@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useRef, useState } from "react";
+import { readJson } from "@/lib/fetch-json";
 import { trackButtonClick } from "@/lib/analytics";
 import {
   CvTemplate,
@@ -97,7 +98,7 @@ export function JobWorkspace({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jobId: job.id, tier }),
       });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) throw new Error(data.error ?? "Checkout failed");
       window.location.href = data.url;
     } catch (e) {
@@ -133,7 +134,7 @@ export function JobWorkspace({
           useFreeSample: asSample,
         }),
       });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) {
         if (data.error === "payment_required") {
           throw new Error("Purchase a tier below to generate.");
@@ -174,7 +175,7 @@ export function JobWorkspace({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jobId: job.id, instructions: reviseText }),
       });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) throw new Error(data.message ?? data.error ?? "Revision failed");
       setGeneration({
         id: data.generationId,

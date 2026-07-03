@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { readJson } from "@/lib/fetch-json";
 import { Card, Spinner } from "@/components/ui";
 import { PENDING_KEY } from "../try-now";
 
@@ -44,7 +45,7 @@ export default function ContinuePage() {
             jdText: stash.jdText ?? "",
           }),
         });
-        const data = await res.json();
+        const data = await readJson(res);
         if (!res.ok) throw new Error(data.error ?? "Import failed");
         localStorage.removeItem(PENDING_KEY);
         router.replace(data.jobId ? `/jobs/${data.jobId}` : "/dashboard");

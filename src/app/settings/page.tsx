@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { readJson } from "@/lib/fetch-json";
 import { trackButtonClick, resetAnalytics } from "@/lib/analytics";
 import { Button, Card, Modal, Spinner } from "@/components/ui";
 
@@ -23,7 +24,7 @@ export default function SettingsPage() {
     });
     try {
       const res = await fetch("/api/account/delete", { method: "POST" });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) throw new Error(data.error ?? "Deletion failed");
       resetAnalytics();
       router.push("/?deleted=1");

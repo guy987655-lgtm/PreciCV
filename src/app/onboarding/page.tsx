@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { readJson } from "@/lib/fetch-json";
 import { trackButtonClick } from "@/lib/analytics";
 import { Dealbreaker, MasterProfile, Questionnaire } from "@/lib/types";
 import { Button, Card, Input, Spinner, Textarea, Badge } from "@/components/ui";
@@ -44,7 +45,7 @@ export default function OnboardingPage() {
       const form = new FormData();
       form.append("file", file);
       const res = await fetch("/api/parse-cv", { method: "POST", body: form });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) throw new Error(data.error ?? "Upload failed");
       setProfile(data.profile);
       setQuestionnaire(data.questionnaire);
@@ -87,7 +88,7 @@ export default function OnboardingPage() {
           dealbreakers,
         }),
       });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) throw new Error(data.error ?? "Failed to save");
       setStep("done");
       setTimeout(() => router.push("/dashboard"), 1200);

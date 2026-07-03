@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { readJson } from "@/lib/fetch-json";
 import { trackButtonClick } from "@/lib/analytics";
 import { MasterProfile, Questionnaire } from "@/lib/types";
 import { Button, Card, Spinner, Textarea } from "@/components/ui";
@@ -50,7 +51,7 @@ export function TryNow() {
       const form = new FormData();
       form.append("file", file);
       const res = await fetch("/api/try/parse-cv", { method: "POST", body: form });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) throw new Error(data.error ?? "Upload failed");
       setProfile(data.profile);
       setRawText(data.rawText ?? "");

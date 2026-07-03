@@ -11,6 +11,16 @@ export const maxDuration = 120;
  * imports it via /api/try/import right after the user signs up.
  */
 export async function POST(request: Request) {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return NextResponse.json(
+      {
+        error:
+          "The AI engine isn't configured yet (missing ANTHROPIC_API_KEY on the server).",
+      },
+      { status: 503 }
+    );
+  }
+
   const formData = await request.formData();
   const file = formData.get("file");
   if (!(file instanceof File)) {
@@ -27,6 +37,14 @@ export async function POST(request: Request) {
     throw e;
   }
 
-  const { profile, questionnaire } = await extractProfileFromCv(rawText);
-  return NextResponse.json({ profile, questionnaire, rawText });
+  try {
+    const { profile, questionnaire } = await extractProfileFromCv(rawText);
+    return NextResponse.json({ profile, questionnaire, rawText });
+  } catch (e) {
+    console.error("try/parse-cv extraction failed:", e);
+    return NextResponse.json(
+      { error: "CV analysis failed. Please try again in a moment." },
+      { status: 502 }
+    );
+  }
 }

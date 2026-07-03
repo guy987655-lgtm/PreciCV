@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { readJson } from "@/lib/fetch-json";
 import { trackButtonClick } from "@/lib/analytics";
 import { Button, Card, Input, Spinner, Textarea } from "@/components/ui";
 
@@ -30,7 +31,7 @@ export function NewJobForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: jdUrl }),
       });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) throw new Error(data.error ?? "Failed to fetch URL");
       if (data.fallback) {
         // Anti-scraping fallback (PRD §4.3): prompt manual paste.
@@ -63,7 +64,7 @@ export function NewJobForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jdText, jdUrl: mode === "url" ? jdUrl : jdUrl || "" }),
       });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) throw new Error(data.error ?? "Failed to create job");
       router.push(`/jobs/${data.jobId}`);
     } catch (e) {

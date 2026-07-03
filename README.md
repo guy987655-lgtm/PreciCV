@@ -54,7 +54,13 @@ cp .env.example .env.local
 # fill in the values
 ```
 
-`ANTHROPIC_API_KEY` comes from [console.anthropic.com](https://console.anthropic.com).
+**AI engine — pick one:**
+- **Free (no credit card):** get a `GEMINI_API_KEY` at
+  [aistudio.google.com/apikey](https://aistudio.google.com/apikey). The free
+  tier's daily quota covers testing and early users.
+- **Best quality (paid, per the PRD):** get an `ANTHROPIC_API_KEY` at
+  [console.anthropic.com](https://console.anthropic.com). If both keys are
+  set, Claude is used.
 
 To test the full flow **before** configuring Stripe, set `DEV_FREE_MODE=true`
 (purchases are granted without payment — never enable in production).

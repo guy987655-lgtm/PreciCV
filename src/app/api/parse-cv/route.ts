@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { extractDocText, ParseDocError } from "@/lib/parse-doc";
-import { extractProfileFromCv } from "@/lib/anthropic";
+import {
+  extractProfileFromCv,
+  llmConfigured,
+  LLM_NOT_CONFIGURED_MSG,
+} from "@/lib/llm";
 
 export const maxDuration = 120;
 
@@ -19,11 +23,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return NextResponse.json(
-      { error: "The AI engine isn't configured yet (missing ANTHROPIC_API_KEY on the server)." },
-      { status: 503 }
-    );
+  if (!llmConfigured()) {
+    return NextResponse.json({ error: LLM_NOT_CONFIGURED_MSG }, { status: 503 });
   }
 
   const formData = await request.formData();

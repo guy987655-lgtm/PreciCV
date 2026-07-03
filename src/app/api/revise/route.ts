@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { generateTailoredCv } from "@/lib/anthropic";
+import {
+  generateTailoredCv,
+  llmConfigured,
+  LLM_NOT_CONFIGURED_MSG,
+} from "@/lib/llm";
 import { cosineSimilarity } from "@/lib/similarity";
 import {
   JD_SIMILARITY_THRESHOLD,
@@ -33,11 +37,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return NextResponse.json(
-      { error: "The AI engine isn't configured yet (missing ANTHROPIC_API_KEY on the server)." },
-      { status: 503 }
-    );
+  if (!llmConfigured()) {
+    return NextResponse.json({ error: LLM_NOT_CONFIGURED_MSG }, { status: 503 });
   }
 
   const parsed = BodySchema.safeParse(await request.json());

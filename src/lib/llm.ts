@@ -4,7 +4,6 @@ import {
   Dealbreaker,
   DealbreakerScan,
   DealbreakerScanSchema,
-  DiffReport,
   GenerationResult,
   GenerationResultSchema,
   MasterProfile,
@@ -14,33 +13,56 @@ import {
   TailoredCv,
 } from "./types";
 
-/** Heavy generation model — quality is the absolute priority (PRD §1). */
-const GENERATION_MODEL = "claude-fable-5";
-/** Fast/cheap model for pre-generation checks and the questionnaire. */
-const FAST_MODEL = "claude-haiku-4-5-20251001";
+/**
+ * Provider-agnostic LLM engine.
+ *
+ * - ANTHROPIC_API_KEY set  → Claude (quality first, per the PRD).
+ * - GEMINI_API_KEY set     → Google Gemini free tier (no credit card) —
+ *                            lets the product run at $0 until it earns.
+ * When both are set, Claude wins.
+ */
 
-function client() {
-  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+/** Heavy generation model — quality is the absolute priority (PRD §1). */
+const CLAUDE_GENERATION_MODEL = "claude-fable-5";
+/** Fast/cheap model for pre-generation checks and the questionnaire. */
+const CLAUDE_FAST_MODEL = "claude-haiku-4-5-20251001";
+const GEMINI_MODEL = "gemini-2.5-flash";
+
+export function llmConfigured(): boolean {
+  return Boolean(process.env.ANTHROPIC_API_KEY || process.env.GEMINI_API_KEY);
 }
 
-/**
- * Structured-output helper: forces the model to call a single tool whose
- * input matches the given zod schema, then validates the result.
- */
-async function structuredCall<T>(opts: {
-  model: string;
+export const LLM_NOT_CONFIGURED_MSG =
+  "The AI engine isn't configured yet. Set ANTHROPIC_API_KEY (Claude) or " +
+  "GEMINI_API_KEY (Google's free tier) on the server.";
+
+type StructuredCallOpts<T> = {
+  /** "quality" = heavy tailoring calls; "fast" = cheap pre-checks. */
+  tier: "quality" | "fast";
   system: string;
   prompt: string;
   schema: z.ZodType<T>;
   toolName: string;
   toolDescription: string;
   maxTokens?: number;
-  thinking?: boolean;
-}): Promise<T> {
+};
+
+async function structuredCall<T>(opts: StructuredCallOpts<T>): Promise<T> {
+  if (process.env.ANTHROPIC_API_KEY) return anthropicCall(opts);
+  if (process.env.GEMINI_API_KEY) return geminiCall(opts);
+  throw new Error(LLM_NOT_CONFIGURED_MSG);
+}
+
+/* ------------------------------------------------------------------ */
+/* Claude: forced tool call whose input matches the zod schema         */
+/* ------------------------------------------------------------------ */
+
+async function anthropicCall<T>(opts: StructuredCallOpts<T>): Promise<T> {
+  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const jsonSchema = z.toJSONSchema(opts.schema, { target: "draft-7" });
 
-  const response = await client().messages.create({
-    model: opts.model,
+  const response = await client.messages.create({
+    model: opts.tier === "quality" ? CLAUDE_GENERATION_MODEL : CLAUDE_FAST_MODEL,
     max_tokens: opts.maxTokens ?? 8000,
     system: opts.system,
     messages: [{ role: "user", content: opts.prompt }],
@@ -62,6 +84,86 @@ async function structuredCall<T>(opts: {
 }
 
 /* ------------------------------------------------------------------ */
+/* Gemini: JSON response mode + schema-in-prompt, zod-validated with   */
+/* one self-correction retry                                           */
+/* ------------------------------------------------------------------ */
+
+async function geminiRequest(
+  system: string,
+  prompt: string,
+  maxTokens: number
+): Promise<string> {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": process.env.GEMINI_API_KEY!,
+      },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseMimeType: "application/json",
+          maxOutputTokens: maxTokens,
+        },
+      }),
+    }
+  );
+
+  if (!res.ok) {
+    const body = await res.text();
+    if (res.status === 429) {
+      throw new Error(
+        "The free AI quota was exceeded for now. Try again in a minute (Gemini free tier rate limit)."
+      );
+    }
+    throw new Error(`Gemini API error ${res.status}: ${body.slice(0, 300)}`);
+  }
+
+  const data = await res.json();
+  const text: string = (data.candidates?.[0]?.content?.parts ?? [])
+    .map((p: { text?: string }) => p.text ?? "")
+    .join("");
+  if (!text) throw new Error("Gemini returned an empty response");
+  // Defensive: strip accidental markdown fences.
+  return text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+}
+
+async function geminiCall<T>(opts: StructuredCallOpts<T>): Promise<T> {
+  const jsonSchema = z.toJSONSchema(opts.schema, { target: "draft-7" });
+  const basePrompt =
+    `${opts.prompt}\n\n` +
+    `Respond ONLY with a JSON object that fulfills this task: ` +
+    `${opts.toolDescription}\n` +
+    `The JSON MUST strictly match this JSON Schema:\n` +
+    `${JSON.stringify(jsonSchema)}`;
+  const maxTokens = opts.maxTokens ?? 8000;
+
+  let lastError = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const prompt =
+      attempt === 0
+        ? basePrompt
+        : `${basePrompt}\n\nYour previous response was invalid: ${lastError}\n` +
+          `Return corrected JSON that strictly matches the schema.`;
+    const text = await geminiRequest(opts.system, prompt, maxTokens);
+    try {
+      const parsed = opts.schema.safeParse(JSON.parse(text));
+      if (parsed.success) return parsed.data;
+      lastError = parsed.error.issues
+        .slice(0, 5)
+        .map((i) => `${i.path.join(".")}: ${i.message}`)
+        .join("; ");
+    } catch {
+      lastError = "response was not valid JSON";
+    }
+  }
+  throw new Error(`AI returned invalid structured output (${lastError})`);
+}
+
+/* ------------------------------------------------------------------ */
 /* 1. Baseline extraction from uploaded CV text                        */
 /* ------------------------------------------------------------------ */
 
@@ -74,7 +176,7 @@ export async function extractProfileFromCv(
   rawCvText: string
 ): Promise<{ profile: MasterProfile; questionnaire: Questionnaire }> {
   const result = await structuredCall({
-    model: GENERATION_MODEL,
+    tier: "quality",
     system:
       "You are the data-ingestion engine of PreciCV, a CV tailoring platform. " +
       "You extract a complete, granular professional profile from raw CV text " +
@@ -116,7 +218,7 @@ export async function scanDealbreakers(
     .join("\n");
 
   return structuredCall({
-    model: FAST_MODEL,
+    tier: "fast",
     system:
       "You are a strict pre-screening engine. You check whether a job " +
       "description conflicts with a candidate's absolute non-negotiables " +
@@ -201,7 +303,7 @@ export async function generateTailoredCv(
     `one-page CV and the full change/diff report.`;
 
   let result = await structuredCall({
-    model: GENERATION_MODEL,
+    tier: "quality",
     system: TAILORING_SYSTEM,
     prompt: basePrompt,
     schema: GenerationResultSchema,
@@ -213,7 +315,7 @@ export async function generateTailoredCv(
   // Layout validation: enforce the 1-page budget with one compression retry.
   if (estimateCvChars(result.cv) > ONE_PAGE_CHAR_BUDGET) {
     result = await structuredCall({
-      model: GENERATION_MODEL,
+      tier: "quality",
       system: TAILORING_SYSTEM,
       prompt:
         basePrompt +
@@ -230,5 +332,3 @@ export async function generateTailoredCv(
 
   return result;
 }
-
-export type { DiffReport, TailoredCv };

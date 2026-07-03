@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { readJson } from "@/lib/fetch-json";
 import { Card, Spinner } from "@/components/ui";
-import { PENDING_KEY } from "../try-now";
+import { PENDING_KEY, clearFunnel } from "@/lib/funnel";
 
 /**
  * Landing spot after OAuth for users who started anonymously on the
@@ -48,6 +48,7 @@ export default function ContinuePage() {
         const data = await readJson(res);
         if (!res.ok) throw new Error(data.error ?? "Import failed");
         localStorage.removeItem(PENDING_KEY);
+        clearFunnel();
         router.replace(data.jobId ? `/jobs/${data.jobId}` : "/dashboard");
       } catch (e) {
         setError(e instanceof Error ? e.message : "Something went wrong");

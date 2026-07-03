@@ -101,7 +101,10 @@ export default function OnboardingPage() {
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-12">
-      <h1 className="text-2xl font-bold text-slate-900">Set up your career agent</h1>
+      <a href="/" className="text-sm font-bold text-indigo-700">
+        PreciCV
+      </a>
+      <h1 className="mt-3 text-2xl font-bold text-slate-900">Set up your career agent</h1>
       <p className="mt-1 text-sm text-slate-500">
         Step{" "}
         {step === "upload" ? "1" : step === "questionnaire" ? "2" : step === "dealbreakers" ? "3" : "3"}{" "}
@@ -147,8 +150,14 @@ export default function OnboardingPage() {
           </h2>
           <p className="mt-1 text-sm text-slate-600">
             Your CV was parsed. These questions uncover details that make
-            tailored CVs dramatically stronger. Skip any you like.
+            tailored CVs dramatically stronger.
           </p>
+          <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50/60 px-4 py-3 text-sm text-emerald-900">
+            💡 <strong>Worth 3 minutes:</strong> the more you answer, the more
+            precise your tailored CVs get — and the better your odds of
+            landing interviews. Answer in any language; we&apos;ll polish the
+            wording.
+          </div>
           <div className="mt-6 space-y-5">
             {questionnaire.questions.map((q) => (
               <div key={q.id}>
@@ -165,8 +174,16 @@ export default function OnboardingPage() {
               </div>
             ))}
           </div>
-          <div className="mt-6 flex justify-end">
-            <Button onClick={() => setStep("dealbreakers")}>Continue</Button>
+          <div className="mt-6 flex items-center justify-between">
+            <Button variant="ghost" onClick={() => setStep("upload")}>
+              Back
+            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" onClick={() => setStep("dealbreakers")}>
+                Skip for now
+              </Button>
+              <Button onClick={() => setStep("dealbreakers")}>Continue</Button>
+            </div>
           </div>
         </Card>
       )}

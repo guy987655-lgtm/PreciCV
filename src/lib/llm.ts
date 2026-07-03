@@ -8,6 +8,8 @@ import {
   GenerationResultSchema,
   MasterProfile,
   MasterProfileSchema,
+  McqQuestionnaire,
+  McqQuestionnaireSchema,
   Questionnaire,
   QuestionnaireSchema,
   TailoredCv,
@@ -170,11 +172,15 @@ async function geminiCall<T>(opts: StructuredCallOpts<T>): Promise<T> {
 const ExtractionSchema = z.object({
   profile: MasterProfileSchema,
   questionnaire: QuestionnaireSchema,
+  // Tolerate a missing quick check — the funnel simply skips that step.
+  mcq: McqQuestionnaireSchema.prefault({}),
 });
 
-export async function extractProfileFromCv(
-  rawCvText: string
-): Promise<{ profile: MasterProfile; questionnaire: Questionnaire }> {
+export async function extractProfileFromCv(rawCvText: string): Promise<{
+  profile: MasterProfile;
+  questionnaire: Questionnaire;
+  mcq: McqQuestionnaire;
+}> {
   const result = await structuredCall({
     tier: "quality",
     system:
@@ -185,8 +191,17 @@ export async function extractProfileFromCv(
       "sections appear in the original document in originalSectionOrder " +
       "(e.g. [\"summary\", \"experience\", \"skills\", \"education\"]).",
     prompt:
-      `Extract the professional profile from this CV text. Then produce a ` +
-      `dynamic questionnaire of 4-7 targeted questions that uncover UNSTATED ` +
+      `Extract the professional profile from this CV text. Then produce TWO ` +
+      `question sets:\n\n` +
+      `1. "mcq" — a quick check of 6-10 SHORT multiple-choice questions that ` +
+      `verify the CV is current, adapted to the candidate's detected role and ` +
+      `stack (e.g. for a Data Analyst: SQL flavors, visualization tools, ` +
+      `databases). Each question is answerable in one tap, has 3-5 short ` +
+      `options grounded in THIS CV plus plausible alternatives, and the last ` +
+      `option must be an escape hatch like "None of these" or "Not anymore". ` +
+      `Ask about current usage and recency ("Which of these do you still use ` +
+      `weekly?"), team/scope, and seniority. Set "topic" to a 1-2 word theme.\n\n` +
+      `2. "questionnaire" — 4-7 targeted OPEN questions that uncover UNSTATED ` +
       `information that would strengthen tailored CVs: missing metrics ` +
       `(team sizes, revenue impact, performance numbers), unclear scope, ` +
       `gaps in dates, technologies implied but not listed. Each question ` +
@@ -196,7 +211,8 @@ export async function extractProfileFromCv(
     schema: ExtractionSchema,
     toolName: "save_extracted_profile",
     toolDescription:
-      "Save the extracted master profile and the gap-filling questionnaire.",
+      "Save the extracted master profile, the quick multiple-choice check, " +
+      "and the gap-filling questionnaire.",
     maxTokens: 16000,
   });
   return result;

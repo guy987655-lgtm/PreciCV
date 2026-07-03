@@ -88,6 +88,26 @@ export const DealbreakerScanSchema = z.object({
 export type DealbreakerScan = z.infer<typeof DealbreakerScanSchema>;
 
 /* ------------------------------------------------------------------ */
+/* Quick check — short multiple-choice questions generated from the    */
+/* CV to verify it is current, adapted to the detected role            */
+/* ------------------------------------------------------------------ */
+
+export const McqQuestionSchema = z.object({
+  id: z.string(),
+  /** e.g. "SQL", "Visualization", "Leadership" */
+  topic: z.string().default(""),
+  question: z.string(),
+  options: z.array(z.string()).default([]),
+});
+export const McqQuestionnaireSchema = z.object({
+  questions: z.array(McqQuestionSchema).default([]),
+});
+export type McqQuestionnaire = z.infer<typeof McqQuestionnaireSchema>;
+
+/** Quick-check answers required before the funnel unlocks the next step */
+export const MIN_MCQ_ANSWERS = 3;
+
+/* ------------------------------------------------------------------ */
 /* Dynamic questionnaire                                               */
 /* ------------------------------------------------------------------ */
 

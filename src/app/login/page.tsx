@@ -40,8 +40,10 @@ function LoginForm() {
 
   return (
     <Card className="w-full max-w-md p-8">
-      <h1 className="text-center text-2xl font-bold text-indigo-700">
-        PreciCV
+      <h1 className="text-center text-2xl font-bold">
+        <a href="/" className="text-indigo-700 hover:text-indigo-800">
+          PreciCV
+        </a>
       </h1>
       <p className="mt-2 text-center text-sm text-slate-600">
         Sign in to your career agent

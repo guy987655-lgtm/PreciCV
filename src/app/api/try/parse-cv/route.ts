@@ -36,8 +36,8 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { profile, questionnaire } = await extractProfileFromCv(rawText);
-    return NextResponse.json({ profile, questionnaire, rawText });
+    const { profile, questionnaire, mcq } = await extractProfileFromCv(rawText);
+    return NextResponse.json({ profile, questionnaire, mcq, rawText });
   } catch (e) {
     console.error("try/parse-cv extraction failed:", e);
     return NextResponse.json(

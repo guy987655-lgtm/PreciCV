@@ -24,13 +24,23 @@ export default function LandingPage() {
   return (
     <main className="min-h-screen">
       <nav className="mx-auto flex max-w-5xl items-center justify-between px-6 py-5">
-        <span className="text-xl font-bold text-indigo-700">PreciCV</span>
-        <Link
-          href="/login"
-          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-        >
-          Sign in
+        <Link href="/" className="text-xl font-bold text-indigo-700">
+          PreciCV
         </Link>
+        <div className="flex items-center gap-4">
+          <Link
+            href="/card"
+            className="text-sm font-medium text-slate-600 hover:text-indigo-700"
+          >
+            My card
+          </Link>
+          <Link
+            href="/login"
+            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+          >
+            Sign in
+          </Link>
+        </div>
       </nav>
 
       <section className="mx-auto max-w-3xl px-6 pt-20 pb-16 text-center">

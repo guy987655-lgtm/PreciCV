@@ -14,7 +14,7 @@ export function Button({
   className,
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: "primary" | "secondary" | "outline" | "ghost" | "danger";
+  variant?: "primary" | "secondary" | "outline" | "ghost" | "danger" | "success";
   size?: "sm" | "md" | "lg";
 }) {
   return (
@@ -32,6 +32,8 @@ export function Button({
           "border border-slate-300 text-slate-700 hover:bg-slate-50 bg-white",
         variant === "ghost" && "text-slate-600 hover:bg-slate-100",
         variant === "danger" && "bg-red-600 text-white hover:bg-red-700",
+        variant === "success" &&
+          "bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm",
         className
       )}
       {...props}

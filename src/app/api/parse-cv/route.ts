@@ -43,7 +43,7 @@ export async function POST(request: Request) {
     throw e;
   }
 
-  const { profile, questionnaire } = await extractProfileFromCv(rawText);
+  const { profile, questionnaire, mcq } = await extractProfileFromCv(rawText);
 
   const { error } = await supabase.from("profiles").upsert(
     {
@@ -59,5 +59,5 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ profile, questionnaire });
+  return NextResponse.json({ profile, questionnaire, mcq });
 }

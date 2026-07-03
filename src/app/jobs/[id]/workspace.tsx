@@ -40,6 +40,35 @@ type Props = {
   freeSampleAvailable?: boolean;
 };
 
+/**
+ * Free (registered, non-paying) users get a deliberately limited comparison:
+ * education / skills in full, key points from a single role, and everything
+ * else hidden behind the paywall.
+ */
+function limitSampleCv(cv: TailoredCv): { cv: TailoredCv; hidden: string[] } {
+  const sections: TailoredCv["sections"] = [];
+  const hidden: string[] = [];
+  let roleShown = false;
+  for (const s of cv.sections) {
+    const name = `${s.id} ${s.title}`.toLowerCase();
+    if (/educ|skill|cert|lang/.test(name)) {
+      sections.push(s);
+    } else if (!roleShown && /exp|work|employ|career/.test(name)) {
+      sections.push({ ...s, items: s.items.slice(0, 1) });
+      roleShown = true;
+      if (s.items.length > 1) hidden.push(`${s.items.length - 1} more roles`);
+    } else {
+      hidden.push(s.title || s.id);
+    }
+  }
+  // Fallback: if no section matched the heuristics, show the first one only.
+  if (sections.length === 0 && cv.sections.length > 0) {
+    sections.push(cv.sections[0]);
+    hidden.push(...cv.sections.slice(1).map((s) => s.title || s.id));
+  }
+  return { cv: { ...cv, sections }, hidden };
+}
+
 /** Diagonal repeated watermark for the locked free-sample preview. */
 function SampleWatermark() {
   return (
@@ -76,10 +105,21 @@ export function JobWorkspace({
   const [reviseText, setReviseText] = useState("");
   const [revisionsUsed, setRevisionsUsed] = useState(purchase?.revisionsUsed ?? 0);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  // The user reviews + edits first; files (PDF export) unlock on approval.
+  const [approved, setApproved] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const hits = job.dealbreakerHits;
   const isSample = Boolean(generation?.isSample);
+  const sampleView = generation && isSample ? limitSampleCv(generation.cv) : null;
+  const visibleChanges = generation
+    ? isSample
+      ? generation.diff.changes.slice(0, 3)
+      : generation.diff.changes
+    : [];
+  const hiddenChangeCount = generation
+    ? generation.diff.changes.length - visibleChanges.length
+    : 0;
 
   /* ---------------- payment ---------------- */
   async function checkout(tier: TierId) {
@@ -297,11 +337,53 @@ export function JobWorkspace({
                 </button>
               ))}
             </div>
-            <Button onClick={exportPdf}>Export PDF</Button>
+            {approved && <Button onClick={exportPdf}>Export PDF</Button>}
           </div>
         )}
         {generation && isSample && <Badge tone="amber">Free sample — preview only</Badge>}
       </header>
+
+      {/* Approval gate: review & edit first, files unlock on approval */}
+      {generation && !isSample && !approved && (
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border-2 border-emerald-300 bg-emerald-50/60 p-4 print:hidden">
+          <p className="text-sm text-emerald-900">
+            <strong>Review your tailored CV.</strong> Edit anything inline,
+            keep or remove sections — or approve it as-is. Your final files
+            (CV + simulation report) are created after approval.
+          </p>
+          <Button
+            size="lg"
+            variant="success"
+            onClick={() => {
+              trackButtonClick({
+                button_name: "approve_cv",
+                action: "approve",
+                button_text: "Approve CV",
+                click_source: "job_workspace",
+                job_id: job.id,
+              });
+              setApproved(true);
+            }}
+          >
+            ✓ Approve CV &amp; create my files
+          </Button>
+        </div>
+      )}
+      {generation && !isSample && approved && (
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-300 bg-emerald-50 p-4 print:hidden">
+          <p className="text-sm text-emerald-900">
+            <strong>Approved ✓</strong> Your final files are ready — export
+            the CV as a PDF; the change report alongside it is your
+            simulation report.
+          </p>
+          <div className="flex gap-2">
+            <Button variant="ghost" onClick={() => setApproved(false)}>
+              Keep editing
+            </Button>
+            <Button onClick={exportPdf}>Export PDF</Button>
+          </div>
+        </div>
+      )}
 
       {/* Red-flag banner */}
       {hits.length > 0 && (
@@ -334,7 +416,8 @@ export function JobWorkspace({
               </p>
               <Button
                 size="lg"
-                className="mt-4 bg-emerald-600 hover:bg-emerald-700"
+                variant="success"
+                className="mt-4"
                 disabled={busy === "generate"}
                 onClick={() => generate(false, true)}
               >
@@ -419,7 +502,7 @@ export function JobWorkspace({
                   </ul>
                 </>
               )}
-              {generation.diff.gapAnalysis.gaps.length > 0 && (
+              {!isSample && generation.diff.gapAnalysis.gaps.length > 0 && (
                 <>
                   <h3 className="mt-3 text-xs font-semibold uppercase text-red-700">Gaps</h3>
                   <ul className="mt-1 list-disc pl-4 text-sm text-slate-600">
@@ -429,7 +512,7 @@ export function JobWorkspace({
                   </ul>
                 </>
               )}
-              {generation.diff.gapAnalysis.recommendations.length > 0 && (
+              {!isSample && generation.diff.gapAnalysis.recommendations.length > 0 && (
                 <>
                   <h3 className="mt-3 text-xs font-semibold uppercase text-indigo-700">
                     Recommendations
@@ -441,6 +524,12 @@ export function JobWorkspace({
                   </ul>
                 </>
               )}
+              {isSample && (
+                <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                  🔒 The gap analysis and concrete recommendations are part of
+                  the full report.
+                </p>
+              )}
             </Card>
 
             <Card className="p-5">
@@ -451,7 +540,7 @@ export function JobWorkspace({
                 )}
               </h2>
               <div className="mt-3 space-y-3">
-                {generation.diff.changes.map((c, i) => (
+                {visibleChanges.map((c, i) => (
                   <div key={i} className="rounded-lg border border-slate-100 p-3 text-sm">
                     <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
                       {c.section} · {c.type}
@@ -471,6 +560,13 @@ export function JobWorkspace({
                     )}
                   </div>
                 ))}
+                {hiddenChangeCount > 0 && (
+                  <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                    🔒 {hiddenChangeCount} more change
+                    {hiddenChangeCount > 1 ? "s" : ""} in the full report —
+                    unlock to see everything.
+                  </p>
+                )}
               </div>
             </Card>
 
@@ -499,8 +595,9 @@ export function JobWorkspace({
           <div>
             {isSample ? (
               <p className="mb-2 text-xs text-amber-700 print:hidden">
-                🔒 Watermarked preview — purchase this job to unlock editing,
-                templates and PDF download.
+                🔒 Limited watermarked preview — the free sample shows your
+                education, skills and one role only. Purchase this job to see
+                the complete CV, edit it and download.
               </p>
             ) : (
               <p className="mb-2 text-xs text-slate-400 print:hidden">
@@ -518,7 +615,7 @@ export function JobWorkspace({
                 {isSample && <SampleWatermark />}
                 <div className={isSample ? "pointer-events-none" : ""}>
                   <CvRenderer
-                    cv={generation.cv}
+                    cv={sampleView ? sampleView.cv : generation.cv}
                     template={generation.template as CvTemplate}
                     editable={!isSample}
                     onChange={(next) => saveCv(next)}
@@ -526,6 +623,11 @@ export function JobWorkspace({
                 </div>
               </div>
             </div>
+            {sampleView && sampleView.hidden.length > 0 && (
+              <p className="mt-2 text-xs text-amber-700 print:hidden">
+                🔒 Hidden in the free sample: {sampleView.hidden.join(", ")}.
+              </p>
+            )}
 
             {/* Sample → conversion CTA */}
             {isSample && !purchase && (

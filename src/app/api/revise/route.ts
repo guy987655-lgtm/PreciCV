@@ -67,13 +67,14 @@ export async function POST(request: Request) {
   if (!purchase) {
     return NextResponse.json({ error: "payment_required" }, { status: 402 });
   }
-  if (purchase.tier !== "premium") {
+  const tierInfo = TIERS[purchase.tier as keyof typeof TIERS];
+  if (!tierInfo || tierInfo.maxRevisions === 0) {
     return NextResponse.json(
-      { error: "AI revisions require the Premium tier" },
+      { error: "AI revisions require the Full Prep tier" },
       { status: 403 }
     );
   }
-  const maxRevisions = TIERS.premium.maxRevisions;
+  const maxRevisions = tierInfo.maxRevisions;
   if ((purchase.revisions_used ?? 0) >= maxRevisions) {
     return NextResponse.json(
       { error: `All ${maxRevisions} revisions for this job have been used` },

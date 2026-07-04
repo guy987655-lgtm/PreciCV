@@ -6,12 +6,12 @@ import { TIERS, TierId } from "@/lib/types";
 
 const BodySchema = z.object({
   jobId: z.string().uuid(),
-  tier: z.enum(["standard", "premium"]),
+  tier: z.enum(["base", "match", "full"]),
 });
 
 /**
  * Creates a Stripe Checkout session for a single job purchase
- * (Standard $10 / Premium $15 — PRD §6). One purchase per job_id.
+ * (Base $2 / Job Match $3 / Full Prep $5). One purchase per job_id.
  */
 export async function POST(request: Request) {
   const supabase = await createClient();

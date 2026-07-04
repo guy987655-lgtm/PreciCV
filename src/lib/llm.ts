@@ -176,7 +176,10 @@ const ExtractionSchema = z.object({
   mcq: McqQuestionnaireSchema.prefault({}),
 });
 
-export async function extractProfileFromCv(rawCvText: string): Promise<{
+export async function extractProfileFromCv(
+  rawCvText: string,
+  targetJdText?: string
+): Promise<{
   profile: MasterProfile;
   questionnaire: Questionnaire;
   mcq: McqQuestionnaire;
@@ -196,17 +199,30 @@ export async function extractProfileFromCv(rawCvText: string): Promise<{
       `1. "mcq" — a quick check of 6-10 SHORT multiple-choice questions that ` +
       `verify the CV is current, adapted to the candidate's detected role and ` +
       `stack (e.g. for a Data Analyst: SQL flavors, visualization tools, ` +
-      `databases). Each question is answerable in one tap, has 3-5 short ` +
-      `options grounded in THIS CV plus plausible alternatives, and the last ` +
-      `option must be an escape hatch like "None of these" or "Not anymore". ` +
-      `Ask about current usage and recency ("Which of these do you still use ` +
-      `weekly?"), team/scope, and seniority. Set "topic" to a 1-2 word theme.\n\n` +
+      `databases). Each question is answerable in one tap and has 3-5 short ` +
+      `options grounded in THIS CV plus plausible alternatives. Ask about ` +
+      `current usage and recency ("Which of these do you still use weekly?"), ` +
+      `team/scope, and seniority. The user can always select MULTIPLE options ` +
+      `in priority order, so options may be non-exclusive. CRITICAL — "topic" ` +
+      `is a CATEGORY, not a per-question label: use AT MOST 4 distinct broad ` +
+      `topic values across the whole set (e.g. "SQL & Data", "Visualization", ` +
+      `"Leadership"), each shared by several questions. ` +
+      `Do NOT add an "Other" option — the UI appends one automatically.\n\n` +
       `2. "questionnaire" — 4-7 targeted OPEN questions that uncover UNSTATED ` +
       `information that would strengthen tailored CVs: missing metrics ` +
       `(team sizes, revenue impact, performance numbers), unclear scope, ` +
       `gaps in dates, technologies implied but not listed. Each question ` +
       `must reference something specific from THIS CV. In "why", explain in ` +
       `one sentence how the answer improves future tailoring.\n\n` +
+      (targetJdText?.trim()
+        ? `IMPORTANT: the candidate is targeting the specific job below. Make ` +
+          `BOTH question sets laser-focused on bridging the gap between this ` +
+          `CV and that job's requirements: probe the skills/tools the job ` +
+          `demands, experience the CV under-sells, and anything ambiguous ` +
+          `that matters for THIS role.\n` +
+          `--- TARGET JOB START ---\n${targetJdText.slice(0, 20000)}\n` +
+          `--- TARGET JOB END ---\n\n`
+        : "") +
       `--- CV TEXT START ---\n${rawCvText.slice(0, 50000)}\n--- CV TEXT END ---`,
     schema: ExtractionSchema,
     toolName: "save_extracted_profile",
@@ -216,6 +232,60 @@ export async function extractProfileFromCv(rawCvText: string): Promise<{
     maxTokens: 16000,
   });
   return result;
+}
+
+/* ------------------------------------------------------------------ */
+/* 1b. Role-standard question bank: what the job market expects of     */
+/*     this role → one experience question per topic                   */
+/* ------------------------------------------------------------------ */
+
+export async function generateRoleQuestions(
+  profile: MasterProfile,
+  existingTopics: string[]
+): Promise<McqQuestionnaire> {
+  const roleSummary =
+    `Headline: ${profile.headline}\n` +
+    `Recent titles: ${profile.experience
+      .slice(0, 3)
+      .map((e) => e.title)
+      .filter(Boolean)
+      .join("; ")}\n` +
+    `Skills: ${profile.skills.join(", ")}\n` +
+    `Summary: ${profile.summary}`;
+
+  return structuredCall({
+    tier: "fast",
+    system:
+      "You are the market-research engine of PreciCV. You know the standard " +
+      "requirements, tools and skills that appear in real job postings " +
+      "across the web (LinkedIn, Indeed, company career pages) for any " +
+      "role. You turn that market standard into short experience questions.",
+    prompt:
+      `Candidate role profile:\n${roleSummary}\n\n` +
+      `Identify 20-35 requirements/skills/tools that employers TYPICALLY ` +
+      `list in job postings for this role — the standard market toolkit, ` +
+      `including ones missing from the candidate's own skill list. For EACH ` +
+      `topic produce ONE short multiple-choice question about the ` +
+      `candidate's hands-on experience with it. Options must be short and ` +
+      `one-tap answerable: either experience levels ("Use it daily", "Used ` +
+      `it in past roles", "Basic familiarity", "No experience") or concrete ` +
+      `tool choices. The user can always select MULTIPLE options in priority ` +
+      `order, so options may be non-exclusive. CRITICAL — "topic" is a ` +
+      `CATEGORY, not a per-question label: group ALL questions under at most ` +
+      `5 broad topic values (e.g. "Data & SQL", "BI & Visualization", ` +
+      `"Cloud & Tooling", "Statistics", "Leadership"), each covering several ` +
+      `questions; reuse the existing category names below when they fit. ` +
+      `Do NOT add an "Other" option — the UI appends one automatically.\n\n` +
+      `Existing categories/questions already covered (do not repeat the ` +
+      `questions; do reuse fitting category names):\n` +
+      `${existingTopics.join("; ") || "(none)"}`,
+    schema: McqQuestionnaireSchema,
+    toolName: "save_role_questions",
+    toolDescription:
+      "Save the role-standard experience questions derived from typical " +
+      "job-market requirements.",
+    maxTokens: 10000,
+  });
 }
 
 /* ------------------------------------------------------------------ */

@@ -24,6 +24,9 @@ export async function POST(request: Request) {
   if (!(file instanceof File)) {
     return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
   }
+  // Optional target job — makes the questionnaire gap-bridging specific.
+  const jd = formData.get("jd");
+  const jdText = typeof jd === "string" ? jd : "";
 
   let rawText: string;
   try {
@@ -36,7 +39,10 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { profile, questionnaire, mcq } = await extractProfileFromCv(rawText);
+    const { profile, questionnaire, mcq } = await extractProfileFromCv(
+      rawText,
+      jdText
+    );
     return NextResponse.json({ profile, questionnaire, mcq, rawText });
   } catch (e) {
     console.error("try/parse-cv extraction failed:", e);

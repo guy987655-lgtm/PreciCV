@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { TIERS } from "@/lib/types";
 import { TryNow } from "./try-now";
 
 const features = [
@@ -45,13 +46,13 @@ export default function LandingPage() {
 
       <section className="mx-auto max-w-3xl px-6 pt-20 pb-16 text-center">
         <h1 className="text-4xl font-extrabold tracking-tight text-slate-900 sm:text-5xl">
-          Your AI career agent for{" "}
-          <span className="text-indigo-600">hyper-tailored</span> resumes
+          Match your CV to the{" "}
+          <span className="text-indigo-600">job you actually want</span>
         </h1>
         <p className="mx-auto mt-6 max-w-xl text-lg text-slate-600">
-          Stop wrestling with 14 resume versions. PreciCV keeps one master
-          profile and generates a precise, one-page CV — plus a full change
-          report — for every job you apply to.
+          Upload your CV, paste the job you&apos;re after, and PreciCV bridges
+          the gap: a modernized base CV, a custom CV tailored to that job,
+          and a report showing exactly what changed and why.
         </p>
       </section>
 
@@ -82,31 +83,42 @@ export default function LandingPage() {
         ))}
       </section>
 
-      <section id="pricing" className="mx-auto max-w-4xl px-6 pb-24">
+      <section id="pricing" className="mx-auto max-w-5xl px-6 pb-24">
         <h2 className="text-center text-3xl font-bold text-slate-900">
-          Pay per job. No subscriptions.
+          Pay once, at the end. No subscriptions.
         </h2>
-        <div className="mt-10 grid gap-6 sm:grid-cols-2">
-          <div className="rounded-xl border border-slate-200 bg-white p-8 shadow-sm">
-            <h3 className="text-lg font-semibold">Standard</h3>
-            <p className="mt-2 text-4xl font-bold">$10</p>
-            <p className="text-sm text-slate-500">per job application</p>
-            <ul className="mt-6 space-y-2 text-sm text-slate-600">
-              <li>✓ 1× Tailored one-page CV (PDF)</li>
-              <li>✓ 1× Insights &amp; gap-analysis report</li>
-              <li>✓ Unlimited manual inline edits</li>
-            </ul>
-          </div>
-          <div className="rounded-xl border-2 border-indigo-500 bg-white p-8 shadow-md">
-            <h3 className="text-lg font-semibold text-indigo-700">Premium</h3>
-            <p className="mt-2 text-4xl font-bold">$15</p>
-            <p className="text-sm text-slate-500">per job application</p>
-            <ul className="mt-6 space-y-2 text-sm text-slate-600">
-              <li>✓ Everything in Standard</li>
-              <li>✓ Up to 10 AI revisions for the same job</li>
-              <li>✓ Refine tone, emphasis and content iteratively</li>
-            </ul>
-          </div>
+        <p className="mx-auto mt-2 max-w-xl text-center text-sm text-slate-500">
+          Build your profile and add your job for free — you only pay right
+          before your documents are generated.
+        </p>
+        <div className="mt-10 grid gap-6 sm:grid-cols-3">
+          {(Object.entries(TIERS) as [string, (typeof TIERS)[keyof typeof TIERS]][]).map(
+            ([id, tier]) => (
+              <div
+                key={id}
+                className={`rounded-xl bg-white p-8 ${
+                  id === "match"
+                    ? "border-2 border-indigo-500 shadow-md"
+                    : "border border-slate-200 shadow-sm"
+                }`}
+              >
+                <h3
+                  className={`text-lg font-semibold ${
+                    id === "match" ? "text-indigo-700" : ""
+                  }`}
+                >
+                  {tier.name}
+                </h3>
+                <p className="mt-2 text-4xl font-bold">${tier.priceUsd}</p>
+                <p className="text-sm text-slate-500">one-time</p>
+                <ul className="mt-6 space-y-2 text-sm text-slate-600">
+                  {tier.includes.map((line) => (
+                    <li key={line}>✓ {line}</li>
+                  ))}
+                </ul>
+              </div>
+            )
+          )}
         </div>
       </section>
 

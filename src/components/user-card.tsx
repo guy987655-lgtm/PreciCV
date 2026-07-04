@@ -1,6 +1,6 @@
 "use client";
 
-import { FunnelState } from "@/lib/funnel";
+import { formatMcqAnswer, FunnelState, isMcqAnswered } from "@/lib/funnel";
 import { Badge, Card } from "@/components/ui";
 
 /**
@@ -9,12 +9,19 @@ import { Badge, Card } from "@/components/ui";
  * (kept in the browser); registered users can save it; paying users feed
  * it into report generation.
  */
-export function UserCard({ state }: { state: FunnelState }) {
+export function UserCard({
+  state,
+  compact = false,
+}: {
+  state: FunnelState;
+  /** hides the Q&A lists — used when a full answer list is shown elsewhere */
+  compact?: boolean;
+}) {
   const p = state.profile;
   if (!p) return null;
 
-  const mcqAnswered = (state.mcq?.questions ?? []).filter(
-    (q) => state.mcqAnswers[q.id]
+  const mcqAnswered = (state.mcq?.questions ?? []).filter((q) =>
+    isMcqAnswered(state.mcqAnswers[q.id])
   );
   const openAnswered = (state.questionnaire?.questions ?? []).filter(
     (q) => (state.answers[q.id] ?? "").trim().length > 0
@@ -97,7 +104,7 @@ export function UserCard({ state }: { state: FunnelState }) {
           </div>
         )}
 
-        {mcqAnswered.length > 0 && (
+        {!compact && mcqAnswered.length > 0 && (
           <div>
             <h4 className="text-xs font-semibold uppercase tracking-wide text-emerald-600">
               ✓ Verified in your quick check
@@ -107,7 +114,7 @@ export function UserCard({ state }: { state: FunnelState }) {
                 <li key={q.id} className="text-slate-600">
                   <span className="text-slate-400">{q.question}</span>{" "}
                   <span className="font-medium text-slate-800">
-                    {state.mcqAnswers[q.id]}
+                    {formatMcqAnswer(state.mcqAnswers[q.id])}
                   </span>
                 </li>
               ))}
@@ -115,7 +122,7 @@ export function UserCard({ state }: { state: FunnelState }) {
           </div>
         )}
 
-        {openAnswered.length > 0 && (
+        {!compact && openAnswered.length > 0 && (
           <div>
             <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
               Extra details you added

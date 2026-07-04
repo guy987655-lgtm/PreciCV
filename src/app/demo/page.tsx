@@ -11,7 +11,7 @@ export default function DemoPage() {
   return (
     <div>
       <div className="bg-amber-100 px-4 py-2 text-center text-sm text-amber-900 print:hidden">
-        🎭 Demo mode — this is the <strong>Premium (paying)</strong> workspace with sample
+        🎭 Demo mode — this is the <strong>paid (Full Prep)</strong> workspace with sample
         data. Inline edits won&apos;t persist.{" "}
         <Link href="/demo/sample" className="underline">
           See the free-sample view
@@ -28,7 +28,7 @@ export default function DemoPage() {
           company: "Acme Cloud",
           dealbreakerHits: demoHits,
         }}
-        purchase={{ tier: "premium", revisionsUsed: 2, maxRevisions: 10 }}
+        purchase={{ tier: "full", revisionsUsed: 2, maxRevisions: 10 }}
         generation={{
           id: "00000000-0000-0000-0000-000000000001",
           cv: demoCv,

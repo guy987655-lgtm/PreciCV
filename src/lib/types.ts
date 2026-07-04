@@ -98,14 +98,25 @@ export const McqQuestionSchema = z.object({
   topic: z.string().default(""),
   question: z.string(),
   options: z.array(z.string()).default([]),
+  /**
+   * single — pick exactly one option;
+   * ranked — pick several, click order = priority (1 = highest).
+   */
+  selectType: z.enum(["single", "ranked"]).default("single"),
 });
 export const McqQuestionnaireSchema = z.object({
   questions: z.array(McqQuestionSchema).default([]),
 });
 export type McqQuestionnaire = z.infer<typeof McqQuestionnaireSchema>;
 
-/** Quick-check answers required before the funnel unlocks the next step */
-export const MIN_MCQ_ANSWERS = 3;
+/**
+ * Quick-check answers required before the funnel unlocks the next step.
+ * The pool is dynamically generated (up to ~50 role-specific questions);
+ * when the pool is smaller than this, the whole pool is required.
+ */
+export const MIN_MCQ_ANSWERS = 20;
+/** Soft cap for the dynamically generated question pool. */
+export const MAX_MCQ_POOL = 50;
 
 /* ------------------------------------------------------------------ */
 /* Dynamic questionnaire                                               */
@@ -190,21 +201,48 @@ export type GenerationResult = z.infer<typeof GenerationResultSchema>;
 /* Monetization                                                        */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Payment is the FINAL step: profile + (optionally) job description come
+ * first, and the paywall appears right before generating the documents.
+ * Tiers that require a job description stay locked until one is added.
+ */
 export const TIERS = {
-  standard: {
-    name: "Standard",
-    priceUsd: 10,
-    priceCents: 1000,
+  base: {
+    name: "Base CV Update",
+    priceUsd: 2,
+    priceCents: 200,
     maxRevisions: 0,
-    description: "1x Tailored CV PDF + 1x Insights Report PDF for a single job",
+    requiresJob: false,
+    description: "Your old CV rebuilt into an updated, modernized base CV",
+    includes: ["Updated & modernized base CV"],
   },
-  premium: {
-    name: "Premium",
-    priceUsd: 15,
-    priceCents: 1500,
-    maxRevisions: 10,
+  match: {
+    name: "Job Match",
+    priceUsd: 3,
+    priceCents: 300,
+    maxRevisions: 0,
+    requiresJob: true,
     description:
-      "Standard + up to 10 distinct text revisions locked to the same job",
+      "Base CV + a custom CV tailored to your job + a comparison report",
+    includes: [
+      "Updated base CV",
+      "Custom CV tailored to the job",
+      "Comparison report of every change",
+    ],
+  },
+  full: {
+    name: "Full Prep",
+    priceUsd: 5,
+    priceCents: 500,
+    maxRevisions: 10,
+    requiresJob: true,
+    description:
+      "Everything in Job Match + an interview simulation report",
+    includes: [
+      "Everything in Job Match",
+      "Interview simulation report",
+      "Up to 10 AI revisions",
+    ],
   },
 } as const;
 export type TierId = keyof typeof TIERS;

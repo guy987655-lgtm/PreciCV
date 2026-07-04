@@ -16,6 +16,7 @@ import {
 } from "@/lib/types";
 import { Badge, Button, Card, Modal, Spinner, Textarea } from "@/components/ui";
 import { CvRenderer } from "@/components/cv-renderer";
+import { Paywall } from "@/components/paywall";
 
 type Props = {
   job: {
@@ -276,29 +277,9 @@ export function JobWorkspace({
     window.print();
   }
 
+  // The workspace always has a job attached, so all three tiers are open.
   const tierCards = (
-    <div className="grid gap-6 sm:grid-cols-2">
-      {(Object.entries(TIERS) as [TierId, (typeof TIERS)[TierId]][]).map(
-        ([tierId, tier]) => (
-          <Card
-            key={tierId}
-            className={`p-6 ${tierId === "premium" ? "border-2 border-indigo-500" : ""}`}
-          >
-            <h3 className="font-semibold text-slate-900">{tier.name}</h3>
-            <p className="mt-1 text-3xl font-bold">${tier.priceUsd}</p>
-            <p className="mt-2 text-sm text-slate-600">{tier.description}</p>
-            <Button
-              className="mt-4 w-full"
-              variant={tierId === "premium" ? "primary" : "outline"}
-              disabled={busy === "checkout"}
-              onClick={() => checkout(tierId)}
-            >
-              {busy === "checkout" ? <Spinner /> : `Buy ${tier.name}`}
-            </Button>
-          </Card>
-        )
-      )}
-    </div>
+    <Paywall hasJob busy={busy === "checkout"} onSelect={checkout} />
   );
 
   /* ================= render ================= */
@@ -570,8 +551,8 @@ export function JobWorkspace({
               </div>
             </Card>
 
-            {/* Premium AI revisions */}
-            {purchase?.tier === "premium" && !isSample && (
+            {/* AI revisions (Full Prep tier) */}
+            {purchase && purchase.maxRevisions > 0 && !isSample && (
               <Card className="p-5">
                 <div className="flex items-center justify-between">
                   <h2 className="font-semibold text-slate-900">AI revisions</h2>

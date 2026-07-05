@@ -1,21 +1,21 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Bricolage_Grotesque, Figtree } from "next/font/google";
 import { AnalyticsProvider } from "@/components/analytics-provider";
 import { DevUserSimulator } from "@/components/dev-user-simulator";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const bricolage = Bricolage_Grotesque({
+  variable: "--font-bricolage",
   subsets: ["latin"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const figtree = Figtree({
+  variable: "--font-figtree",
   subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
-  title: "PreciCV — AI-Powered Career Agent & CV Tailoring",
+  title: "SpeCV — AI-Powered Career Agent & CV Tailoring",
   description:
     "Generate precise, custom-tailored, one-page resumes and gap-analysis reports for every job application.",
 };
@@ -26,8 +26,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
-      <body className="min-h-screen bg-slate-50 antialiased">
+    <html lang="en" className={`${bricolage.variable} ${figtree.variable}`}>
+      <body className="min-h-screen bg-bg font-sans text-ink antialiased">
         <AnalyticsProvider>{children}</AnalyticsProvider>
         <DevUserSimulator />
       </body>

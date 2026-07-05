@@ -6,7 +6,7 @@ function cx(...classes: (string | false | undefined)[]) {
   return classes.filter(Boolean).join(" ");
 }
 
-/* Shadcn-style primitives, hand-rolled on Tailwind v4 */
+/* Shadcn-style primitives, hand-rolled on Tailwind v4 — "Sage & Ink" skin */
 
 export function Button({
   variant = "primary",
@@ -14,26 +14,26 @@ export function Button({
   className,
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: "primary" | "secondary" | "outline" | "ghost" | "danger" | "success";
+  variant?: "primary" | "secondary" | "outline" | "ghost" | "danger" | "success" | "dark";
   size?: "sm" | "md" | "lg";
 }) {
   return (
     <button
       className={cx(
-        "inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer",
-        size === "sm" && "px-3 py-1.5 text-sm",
-        size === "md" && "px-4 py-2 text-sm",
-        size === "lg" && "px-6 py-3 text-base",
-        variant === "primary" &&
-          "bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm",
-        variant === "secondary" &&
-          "bg-indigo-50 text-indigo-700 hover:bg-indigo-100",
-        variant === "outline" &&
-          "border border-slate-300 text-slate-700 hover:bg-slate-50 bg-white",
-        variant === "ghost" && "text-slate-600 hover:bg-slate-100",
-        variant === "danger" && "bg-red-600 text-white hover:bg-red-700",
-        variant === "success" &&
-          "bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm",
+        "inline-flex items-center justify-center gap-2 rounded-full font-semibold transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer",
+        size === "sm" && "px-4 py-1.5 text-[13px]",
+        size === "md" && "px-[22px] py-[9px] text-sm",
+        size === "lg" && "px-[30px] py-[13px] text-[15.5px]",
+        // Primary CTA: accent pill with the "3D" bottom shadow
+        (variant === "primary" || variant === "success") &&
+          "bg-accent font-bold text-on-accent shadow-[0_3px_0_#1F4A36] hover:bg-accent-hover active:translate-y-[2px] active:shadow-[0_1px_0_#1F4A36]",
+        // Dark button (nav "Sign in", in-card dark CTA)
+        variant === "dark" && "bg-ink font-bold text-bg hover:bg-[#2c3d33]",
+        variant === "secondary" && "bg-chip text-ink-soft hover:bg-[#dfe4d5]",
+        // Ghost/outline: transparent pill with 1.5px border
+        (variant === "outline" || variant === "ghost") &&
+          "border-[1.5px] border-border-strong bg-transparent text-ink-soft hover:bg-card",
+        variant === "danger" && "bg-red-700 font-bold text-white hover:bg-red-800",
         className
       )}
       {...props}
@@ -48,7 +48,7 @@ export function Card({
   return (
     <div
       className={cx(
-        "rounded-xl border border-slate-200 bg-white shadow-sm",
+        "rounded-[24px] border border-transparent bg-card shadow-[0_12px_40px_rgba(30,43,36,0.08)]",
         className
       )}
       {...props}
@@ -64,16 +64,16 @@ export function Badge({
   children: ReactNode;
 }) {
   const tones = {
-    slate: "bg-slate-100 text-slate-700",
-    green: "bg-emerald-100 text-emerald-800",
+    slate: "bg-chip text-ink-soft",
+    green: "bg-green-50 text-accent-deep",
     red: "bg-red-100 text-red-800",
     amber: "bg-amber-100 text-amber-800",
-    indigo: "bg-indigo-100 text-indigo-800",
+    indigo: "bg-chip text-accent",
   };
   return (
     <span
       className={cx(
-        "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
+        "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold",
         tones[tone]
       )}
     >
@@ -96,16 +96,16 @@ export function Modal({
   if (!open) return null;
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 p-4"
       onClick={onClose}
     >
       <div
-        className="w-full max-w-lg rounded-xl bg-white p-6 shadow-xl"
+        className="w-full max-w-lg rounded-[24px] bg-card p-6 shadow-[0_12px_40px_rgba(30,43,36,0.16)]"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
       >
-        <h2 className="mb-4 text-lg font-semibold text-slate-900">{title}</h2>
+        <h2 className="mb-4 font-display text-lg font-bold text-ink">{title}</h2>
         {children}
       </div>
     </div>
@@ -114,8 +114,8 @@ export function Modal({
 
 export function Spinner({ label }: { label?: string }) {
   return (
-    <span className="inline-flex items-center gap-2 text-sm text-slate-500">
-      <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-indigo-600" />
+    <span className="inline-flex items-center gap-2 text-sm text-ink-faint">
+      <span className="h-4 w-4 animate-spin rounded-full border-2 border-border border-t-accent" />
       {label}
     </span>
   );
@@ -128,7 +128,7 @@ export function Textarea({
   return (
     <textarea
       className={cx(
-        "w-full rounded-lg border border-slate-300 p-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200",
+        "w-full rounded-[14px] border-[1.5px] border-border bg-card p-3.5 text-sm text-ink placeholder:text-placeholder focus:border-green-100 focus:bg-input-focus-bg focus:outline-none",
         className
       )}
       {...props}
@@ -143,7 +143,7 @@ export function Input({
   return (
     <input
       className={cx(
-        "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200",
+        "w-full rounded-[14px] border-[1.5px] border-border bg-card px-3.5 py-2.5 text-sm text-ink placeholder:text-placeholder focus:border-green-100 focus:bg-input-focus-bg focus:outline-none",
         className
       )}
       {...props}

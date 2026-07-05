@@ -18,12 +18,12 @@ function q(
   options: string[] = EXP_OPTS,
   selectType: "single" | "ranked" = "single"
 ): MockQ {
-  return { id, topic, question, options, selectType };
+  return { id, topic, question, options, selectType, required: false };
 }
 
 const MOCK_POOL: MockQ[] = [
   // --- SQL ---
-  q("sql1", "SQL", "Which SQL flavors do you use? Rank by usage.", ["PostgreSQL", "MySQL", "BigQuery", "SQL Server"], "ranked"),
+  q("sql1", "SQL", "Which SQL flavors do you use? Rank by usage.", ["PostgreSQL", "MySQL", "BigQuery", "SQL Server", "None of these"], "ranked"),
   q("sql2", "SQL", "How comfortable are you with window functions?"),
   q("sql3", "SQL", "Do you write CTE-heavy analytical queries?"),
   q("sql4", "SQL", "Have you optimized slow queries in production?"),
@@ -54,7 +54,10 @@ const MOCK_POOL: MockQ[] = [
   q("ld5", "Leadership", "Have you led cross-functional projects?"),
 ];
 
-/** 21 of 25 answered — past the 20-answer threshold, 4 left as suggestions. */
+// First 6 questions are the "required" set the launch flow gates on.
+for (const mq of MOCK_POOL.slice(0, 6)) mq.required = true;
+
+/** 21 of 25 answered — required set fully covered, 4 left as suggestions. */
 const MOCK_MCQ_ANSWERS: Record<string, McqAnswer> = Object.fromEntries(
   MOCK_POOL.slice(0, 21).map((mq) => [
     mq.id,
@@ -82,7 +85,7 @@ const MOCK_JD =
 
 export function mockFunnelState(opts?: { withJob?: boolean }): FunnelState {
   return {
-    step: "job",
+    step: "gate",
     profile: {
       contact: {
         fullName: "Dana Levi",
@@ -158,7 +161,8 @@ export function mockFunnelState(opts?: { withJob?: boolean }): FunnelState {
     answers: { q1: "A squad of 4 analysts" },
     roleQuestionsLoaded: true,
     mcqIndex: 0,
-    jdText: opts?.withJob ? MOCK_JD : "",
+    // The launch flow requires a job upfront — mocks always carry one.
+    jdText: opts?.withJob === false ? "" : MOCK_JD,
     savedAt: Date.now(),
   };
 }

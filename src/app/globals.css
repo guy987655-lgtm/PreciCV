@@ -1,20 +1,56 @@
 @import "tailwindcss";
 
+/* ================================================================== */
+/* "Sage & Ink" design tokens (design_handoff_sage_ink/README.md)      */
+/* ================================================================== */
+
 :root {
-  --background: #f8fafc;
-  --foreground: #0f172a;
+  --background: #f6f7f1;
+  --foreground: #1e2b24;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  /* Colors */
+  --color-bg: #f6f7f1; /* page background */
+  --color-ink: #1e2b24; /* headings, primary text, dark buttons */
+  --color-ink-soft: #5d6b60; /* body/secondary text */
+  --color-ink-faint: #8b9a8d; /* captions, helper text */
+  --color-muted: #a6b2a4; /* disabled/inactive labels */
+  --color-placeholder: #c4cdbe; /* input placeholder text */
+  --color-accent: #2f6b4f; /* primary buttons, links, progress fill */
+  --color-accent-hover: #285e45; /* hover darken ~6% */
+  --color-accent-deep: #1f4a36; /* button 3D bottom shadow, icon ink */
+  --color-accent-soft: #9dbfa6; /* secondary progress fill */
+  --color-green-100: #c9dfc4; /* headline highlight, icon circles */
+  --color-green-50: #e4f0df; /* success banner background */
+  --color-chip: #e9ede2; /* chips, topic tags, progress track */
+  --color-selected-bg: #f1f6ee; /* selected MCQ option background */
+  --color-card: #ffffff; /* cards */
+  --color-border: #e3e9dc; /* default input/card borders (1.5px) */
+  --color-border-strong: #dde3d6; /* ghost button border */
+  --color-dropzone-border: #c3d4be; /* dashed dropzone border */
+  --color-dropzone-bg: #f8faf5; /* dropzone fill */
+  --color-input-focus-bg: #fbfdf9; /* focused input background */
+  --color-on-accent: #f4f8f2; /* text on accent-green buttons */
+
+  /* Typography */
+  --font-sans: var(--font-figtree);
+  --font-display: var(--font-bricolage);
+
+  /* Elevation */
+  --shadow-card: 0 12px 40px rgba(30, 43, 36, 0.08);
+  --shadow-btn-3d: 0 3px 0 #1f4a36;
+  --shadow-btn-3d-pressed: 0 1px 0 #1f4a36;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
+}
+
+/* Hero marker-highlight ("this job") */
+.marker-highlight {
+  background: linear-gradient(transparent 62%, #c9dfc4 62%);
 }
 
 /* Diff report highlighting (PRD §5.1) */
@@ -33,7 +69,13 @@ body {
   padding: 0 3px;
 }
 
-/* Print-to-PDF: only the CV page prints, sized to A4 */
+/* The simulation report exists only as a print target (second file). */
+.report-page {
+  display: none;
+}
+
+/* Print-to-PDF: two deliverable files, both sized to A4.
+   Default → the CV (.cv-page); body.print-report → the report. */
 @media print {
   body {
     background: white;
@@ -41,11 +83,19 @@ body {
   body * {
     visibility: hidden;
   }
-  .cv-page,
-  .cv-page * {
+  body:not(.print-report) .cv-page,
+  body:not(.print-report) .cv-page * {
     visibility: visible;
   }
-  .cv-page {
+  body.print-report .report-page {
+    display: block;
+  }
+  body.print-report .report-page,
+  body.print-report .report-page * {
+    visibility: visible;
+  }
+  .cv-page,
+  .report-page {
     position: absolute;
     left: 0;
     top: 0;

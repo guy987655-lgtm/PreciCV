@@ -105,9 +105,8 @@ export function applySimStatus(status: SimStatus) {
   localStorage.setItem(SIM_KEY, status);
   const meta = simMeta(status);
   if (meta.hasProfile) {
-    // Paid users also carry a target job; free profiles start without one
-    // so the "push them to add a job" flow can be exercised.
-    saveFunnel(mockFunnelState({ withJob: meta.paid }));
+    // The launch flow requires a job upfront — every profile mock has one.
+    saveFunnel(mockFunnelState({ withJob: true }));
   } else {
     localStorage.removeItem(FUNNEL_KEY);
   }

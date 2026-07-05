@@ -30,18 +30,18 @@ export function Paywall({
             <Card
               key={tierId}
               className={`flex flex-col p-5 ${
-                tierId === "match" ? "border-2 border-indigo-500" : ""
+                tierId === "match" ? "border-2 border-accent" : ""
               } ${locked ? "opacity-80" : ""}`}
             >
               <div className="flex items-center justify-between gap-2">
-                <h3 className="font-semibold text-slate-900">{tier.name}</h3>
+                <h3 className="font-bold text-ink">{tier.name}</h3>
                 {tierId === "match" && <Badge tone="indigo">Popular</Badge>}
               </div>
-              <p className="mt-1 text-3xl font-bold">
+              <p className="mt-1 font-display text-3xl font-extrabold text-ink">
                 ${tier.priceUsd}
-                <span className="text-sm font-normal text-slate-400"> one-time</span>
+                <span className="font-sans text-sm font-normal text-ink-faint"> one-time</span>
               </p>
-              <ul className="mt-3 flex-1 space-y-1.5 text-sm text-slate-600">
+              <ul className="mt-3 flex-1 space-y-1.5 text-sm text-ink-soft">
                 {tier.includes.map((line) => (
                   <li key={line}>✓ {line}</li>
                 ))}
@@ -53,7 +53,7 @@ export function Paywall({
                   </Button>
                   {onAddJob && (
                     <button
-                      className="mt-2 cursor-pointer text-center text-xs text-indigo-600 underline"
+                      className="mt-2 cursor-pointer text-center text-xs text-accent underline"
                       onClick={onAddJob}
                     >
                       Add a job description to unlock

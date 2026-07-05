@@ -9,6 +9,12 @@ import { Button, Card, Input, Spinner, Textarea, Badge } from "@/components/ui";
 
 type Step = "upload" | "questionnaire" | "dealbreakers" | "done";
 
+const STEP_PILLS: { id: Step; label: string }[] = [
+  { id: "upload", label: "Upload" },
+  { id: "questionnaire", label: "Questions" },
+  { id: "dealbreakers", label: "Dealbreakers" },
+];
+
 const DEALBREAKER_CATEGORIES: { id: Dealbreaker["category"]; label: string; hint: string }[] = [
   { id: "technology", label: "Technology", hint: "e.g. “I refuse to work with PHP or legacy COBOL systems”" },
   { id: "work_model", label: "Work model", hint: "e.g. “Remote only — no more than 1 office day per week”" },
@@ -99,26 +105,61 @@ export default function OnboardingPage() {
     }
   }
 
+  const stepIdx = STEP_PILLS.findIndex((p) => p.id === step);
+
   return (
-    <main className="mx-auto max-w-2xl px-4 py-12">
-      <a href="/" className="text-sm font-bold text-indigo-700">
-        PreciCV
-      </a>
-      <h1 className="mt-3 text-2xl font-bold text-slate-900">Set up your career agent</h1>
-      <p className="mt-1 text-sm text-slate-500">
-        Step{" "}
-        {step === "upload" ? "1" : step === "questionnaire" ? "2" : step === "dealbreakers" ? "3" : "3"}{" "}
-        of 3
-      </p>
+    <main className="mx-auto max-w-[720px] px-4 py-8">
+      <div className="flex justify-center">
+        <a
+          href="/"
+          className="font-display text-[21px] font-extrabold tracking-tight text-ink"
+        >
+          Spe<span className="text-accent">CV</span>
+        </a>
+      </div>
+
+      {/* Step pills */}
+      <div className="mt-5 flex flex-wrap items-center justify-center gap-1.5">
+        {STEP_PILLS.map((p, i) => {
+          const status =
+            step === "done"
+              ? "done"
+              : p.id === step
+                ? "active"
+                : i < stepIdx
+                  ? "done"
+                  : "todo";
+          return (
+            <span
+              key={p.id}
+              className={
+                status === "active"
+                  ? "rounded-full bg-ink px-4 py-1.5 text-[12.5px] font-bold text-bg"
+                  : status === "done"
+                    ? "rounded-full px-3 py-1.5 text-[12.5px] font-bold text-accent"
+                    : "rounded-full px-3 py-1.5 text-[12.5px] font-semibold text-muted"
+              }
+            >
+              {status === "done" ? `✓ ${p.label}` : p.label}
+            </span>
+          );
+        })}
+      </div>
+
+      <div className="mt-6 text-center">
+        <h1 className="font-display text-[30px] font-extrabold tracking-tight text-ink">
+          Set up your career agent
+        </h1>
+      </div>
 
       {step === "upload" && (
-        <Card className="mt-6 p-8">
-          <h2 className="font-semibold text-slate-900">Upload your current CV</h2>
-          <p className="mt-1 text-sm text-slate-600">
+        <Card className="mt-5 p-7">
+          <h2 className="text-[17px] font-bold text-ink">Upload your current CV</h2>
+          <p className="mt-1 text-[14.5px] text-ink-soft">
             PDF or DOCX. We extract your baseline profile into your private
             Master Data Lake — this is the only time you&apos;ll ever upload it.
           </p>
-          <label className="mt-6 flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-300 p-10 hover:border-indigo-400 hover:bg-indigo-50/40">
+          <label className="mt-6 flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-dropzone-border bg-dropzone-bg p-10 text-center transition-colors hover:border-accent-soft">
             <input
               type="file"
               accept=".pdf,.docx"
@@ -133,8 +174,10 @@ export default function OnboardingPage() {
               <Spinner label="Reading your CV and building your profile… (this can take up to a minute)" />
             ) : (
               <>
-                <span className="text-3xl">📄</span>
-                <span className="mt-2 text-sm font-medium text-slate-700">
+                <span className="flex h-[46px] w-[46px] items-center justify-center rounded-full bg-green-100 text-xl font-extrabold text-accent-deep">
+                  ↑
+                </span>
+                <span className="text-[15px] font-bold text-ink">
                   Click to choose a PDF / DOCX
                 </span>
               </>
@@ -144,28 +187,25 @@ export default function OnboardingPage() {
       )}
 
       {step === "questionnaire" && questionnaire && (
-        <Card className="mt-6 p-8">
-          <h2 className="font-semibold text-slate-900">
-            Let&apos;s fill the gaps{profile?.contact.fullName ? `, ${profile.contact.fullName.split(" ")[0]}` : ""}
+        <Card className="mt-5 p-7">
+          <h2 className="text-[17px] font-bold text-ink">
+            Let&apos;s fill the gaps
+            {profile?.contact.fullName ? `, ${profile.contact.fullName.split(" ")[0]}` : ""}
           </h2>
-          <p className="mt-1 text-sm text-slate-600">
-            Your CV was parsed. These questions uncover details that make
-            tailored CVs dramatically stronger.
-          </p>
-          <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50/60 px-4 py-3 text-sm text-emerald-900">
-            💡 <strong>Worth 3 minutes:</strong> the more you answer, the more
-            precise your tailored CVs get — and the better your odds of
-            landing interviews. Answer in any language; we&apos;ll polish the
+          <p className="mt-1 text-[14.5px] text-ink-soft">
+            Real material recruiters look for — the more you answer, the more
+            precise your tailored CVs get. Any language; we&apos;ll polish the
             wording.
-          </div>
-          <div className="mt-6 space-y-5">
+          </p>
+          <div className="mt-6 flex flex-col gap-[22px]">
             {questionnaire.questions.map((q) => (
               <div key={q.id}>
-                <label className="text-sm font-medium text-slate-800">{q.question}</label>
-                <p className="text-xs text-slate-500">{q.why}</p>
+                <div className="text-[15.5px] font-bold text-ink">{q.question}</div>
+                <div className="mt-0.5 text-[13px] text-ink-faint">{q.why}</div>
                 <Textarea
                   rows={2}
-                  className="mt-1.5"
+                  className="mt-2.5"
+                  placeholder="Type your answer…"
                   value={answers[q.id] ?? ""}
                   onChange={(e) =>
                     setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))
@@ -176,22 +216,25 @@ export default function OnboardingPage() {
           </div>
           <div className="mt-6 flex items-center justify-between">
             <Button variant="ghost" onClick={() => setStep("upload")}>
-              Back
+              ← Back
             </Button>
-            <div className="flex items-center gap-2">
-              <Button variant="ghost" onClick={() => setStep("dealbreakers")}>
+            <div className="flex items-center gap-3">
+              <button
+                className="cursor-pointer text-sm font-semibold text-ink-faint transition-colors hover:text-ink-soft"
+                onClick={() => setStep("dealbreakers")}
+              >
                 Skip for now
-              </Button>
-              <Button onClick={() => setStep("dealbreakers")}>Continue</Button>
+              </button>
+              <Button onClick={() => setStep("dealbreakers")}>Continue →</Button>
             </div>
           </div>
         </Card>
       )}
 
       {step === "dealbreakers" && (
-        <Card className="mt-6 p-8">
-          <h2 className="font-semibold text-slate-900">Your absolute dealbreakers</h2>
-          <p className="mt-1 text-sm text-slate-600">
+        <Card className="mt-5 p-7">
+          <h2 className="text-[17px] font-bold text-ink">Your absolute dealbreakers</h2>
+          <p className="mt-1 text-[14.5px] text-ink-soft">
             Non-negotiables. Every job description will be scanned against
             these <strong>before</strong> you spend a credit.
           </p>
@@ -201,17 +244,17 @@ export default function OnboardingPage() {
               <button
                 key={c.id}
                 onClick={() => setDbCategory(c.id)}
-                className={`rounded-full px-3 py-1 text-xs font-medium transition-colors cursor-pointer ${
+                className={`cursor-pointer rounded-full px-3.5 py-1.5 text-xs font-semibold transition-colors ${
                   dbCategory === c.id
-                    ? "bg-indigo-600 text-white"
-                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                    ? "bg-accent text-white"
+                    : "bg-chip text-ink-soft hover:bg-[#dfe4d5]"
                 }`}
               >
                 {c.label}
               </button>
             ))}
           </div>
-          <p className="mt-2 text-xs text-slate-400">
+          <p className="mt-2 text-[13px] text-ink-faint">
             {DEALBREAKER_CATEGORIES.find((c) => c.id === dbCategory)?.hint}
           </p>
           <div className="mt-2 flex gap-2">
@@ -231,14 +274,14 @@ export default function OnboardingPage() {
               {dealbreakers.map((d) => (
                 <li
                   key={d.id}
-                  className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm"
+                  className="flex items-center justify-between rounded-[14px] bg-dropzone-bg px-3.5 py-2.5 text-sm"
                 >
-                  <span>
-                    <Badge tone="red">{d.category.replace("_", " ")}</Badge>{" "}
-                    <span className="ml-1 text-slate-700">{d.description}</span>
+                  <span className="flex items-center gap-2">
+                    <Badge tone="red">{d.category.replace("_", " ")}</Badge>
+                    <span className="text-ink-soft">{d.description}</span>
                   </span>
                   <button
-                    className="text-slate-400 hover:text-red-600 cursor-pointer"
+                    className="cursor-pointer text-muted transition-colors hover:text-red-700"
                     onClick={() =>
                       setDealbreakers((prev) => prev.filter((x) => x.id !== d.id))
                     }
@@ -252,7 +295,7 @@ export default function OnboardingPage() {
 
           <div className="mt-6 flex items-center justify-between">
             <Button variant="ghost" onClick={() => setStep("questionnaire")}>
-              Back
+              ← Back
             </Button>
             <Button onClick={finish} disabled={busy}>
               {busy ? <Spinner /> : "Finish setup"}
@@ -262,16 +305,22 @@ export default function OnboardingPage() {
       )}
 
       {step === "done" && (
-        <Card className="mt-6 p-8 text-center">
-          <span className="text-4xl">🎉</span>
-          <h2 className="mt-2 font-semibold text-slate-900">
+        <Card className="mt-5 p-8 text-center">
+          <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-green-100">
+            <span className="flex h-[26px] w-[26px] items-center justify-center rounded-full bg-accent text-sm font-extrabold text-white">
+              ✓
+            </span>
+          </span>
+          <h2 className="mt-3 font-display text-xl font-extrabold text-ink">
             Your Master Data Lake is ready
           </h2>
-          <p className="mt-1 text-sm text-slate-600">Taking you to your dashboard…</p>
+          <p className="mt-1 text-[14.5px] text-ink-soft">
+            Taking you to your dashboard…
+          </p>
         </Card>
       )}
 
-      {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mt-4 text-center text-sm text-red-700">{error}</p>}
     </main>
   );
 }

@@ -1,4 +1,9 @@
-import { MasterProfile, McqQuestionnaire, Questionnaire } from "./types";
+import {
+  MasterProfile,
+  MAX_REQUIRED_QUESTIONS,
+  McqQuestionnaire,
+  Questionnaire,
+} from "./types";
 
 type McqQuestion = McqQuestionnaire["questions"][number];
 
@@ -7,12 +12,26 @@ export const MAX_MCQ_SEGMENTS = 6;
 
 /**
  * Guards the segmented mini-navigation against over-fragmented topics
- * (e.g. an LLM giving every question its own topic): keeps the largest
- * topics as segments, folds the rest into "More", and reorders the pool
- * so each category is a contiguous run in the carousel.
+ * (e.g. an LLM giving every question its own topic): required questions
+ * come first (capped at MAX_REQUIRED_QUESTIONS — extras demote to
+ * optional), then the optional pool grouped by topic so each category is
+ * a contiguous run in the carousel.
  */
-export function normalizeMcqPool(questions: McqQuestion[]): McqQuestion[] {
-  if (questions.length === 0) return questions;
+export function normalizeMcqPool(input: McqQuestion[]): McqQuestion[] {
+  if (input.length === 0) return input;
+
+  // Required first, hard-capped; everything past the cap becomes optional.
+  let requiredSeen = 0;
+  const normalized = input.map((q) => {
+    if (!q.required) return q;
+    requiredSeen++;
+    return requiredSeen <= MAX_REQUIRED_QUESTIONS
+      ? q
+      : { ...q, required: false };
+  });
+  const required = normalized.filter((q) => q.required);
+  const questions = normalized.filter((q) => !q.required);
+  if (questions.length === 0) return required;
   const groups = new Map<string, McqQuestion[]>();
   for (const q of questions) {
     const t = q.topic?.trim() || "General";
@@ -21,7 +40,7 @@ export function normalizeMcqPool(questions: McqQuestion[]): McqQuestion[] {
   }
   let entries = [...groups.entries()];
   if (entries.length <= MAX_MCQ_SEGMENTS) {
-    return entries.flatMap(([, qs]) => qs);
+    return [...required, ...entries.flatMap(([, qs]) => qs)];
   }
 
   const largest = Math.max(...entries.map(([, qs]) => qs.length));
@@ -42,7 +61,7 @@ export function normalizeMcqPool(questions: McqQuestion[]): McqQuestion[] {
         .map((q) => ({ ...q, topic: "More" })),
     ];
     entries = [...kept, more];
-    return entries.flatMap(([, qs]) => qs);
+    return [...required, ...entries.flatMap(([, qs]) => qs)];
   }
 
   // Degenerate case: (nearly) every question has its own topic — split the
@@ -58,7 +77,7 @@ export function normalizeMcqPool(questions: McqQuestion[]): McqQuestion[] {
     usedLabels.add(label);
     out.push(...chunk.map((q) => ({ ...q, topic: label })));
   }
-  return out;
+  return [...required, ...out];
 }
 
 /**
@@ -74,7 +93,7 @@ export const PENDING_KEY = "precicv_pending";
 /** Sentinel for the auto-appended free-text "Other…" choice. */
 export const OTHER_OPTION = "__other__";
 
-export type FunnelStep = "upload" | "mcq" | "open" | "job" | "gate";
+export type FunnelStep = "upload" | "mcq" | "open" | "gate";
 
 export type McqAnswer = {
   /** Chosen options in click order — for ranked questions index = priority. */
@@ -159,8 +178,11 @@ export function loadFunnel(): FunnelState | null {
       }
     }
     const state = { ...EMPTY_FUNNEL, ...(parsed as FunnelState), mcqAnswers };
-    // The "card" step was removed from the flow — the dossier lives on /card.
-    if ((state.step as string) === "card") state.step = "job";
+    // Removed steps: "card" (dossier lives on /card) and "job" (the JD is
+    // now required upfront) — route saved states somewhere sensible.
+    if (["card", "job"].includes(state.step as string)) {
+      state.step = state.jdText?.trim().length >= 100 ? "gate" : "upload";
+    }
     // Repair over-fragmented topic segmentation in already-saved pools.
     if (state.mcq?.questions?.length) {
       state.mcq = { questions: normalizeMcqPool(state.mcq.questions) };
@@ -186,6 +208,28 @@ export function saveFunnel(state: FunnelState) {
 export function clearFunnel() {
   if (typeof window === "undefined") return;
   localStorage.removeItem(FUNNEL_KEY);
+}
+
+/**
+ * The profile with every questionnaire answer folded into additionalFacts —
+ * this is what generation must receive, otherwise the quick check and the
+ * open questions have zero effect on the tailored CV.
+ */
+export function profileWithAnswers(state: FunnelState): MasterProfile | null {
+  if (!state.profile) return null;
+  const facts: string[] = [];
+  for (const q of state.mcq?.questions ?? []) {
+    const a = state.mcqAnswers[q.id];
+    if (isMcqAnswered(a)) facts.push(`${q.question} — ${formatMcqAnswer(a)}`);
+  }
+  for (const q of state.questionnaire?.questions ?? []) {
+    const ans = (state.answers[q.id] ?? "").trim();
+    if (ans) facts.push(`${q.question} — ${ans}`);
+  }
+  return {
+    ...state.profile,
+    additionalFacts: [...state.profile.additionalFacts, ...facts],
+  };
 }
 
 /**

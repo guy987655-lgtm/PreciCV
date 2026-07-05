@@ -10,9 +10,7 @@ import {
   isMcqAnswered,
   loadFunnel,
   saveFunnel,
-  stashForSignup,
 } from "@/lib/funnel";
-import { trackButtonClick } from "@/lib/analytics";
 import { useSimUser } from "@/lib/sim-user";
 import { Badge, Button, Card, Input, Textarea } from "@/components/ui";
 import { UserCard } from "@/components/user-card";
@@ -58,21 +56,12 @@ export default function CardPage() {
     update({ ...state, answers: { ...state.answers, [qId]: text } });
   }
 
-  function save() {
-    if (!state) return;
-    trackButtonClick({
-      button_name: "save_user_card",
-      action: "signup_gate",
-      button_text: "Save my card — free",
-      click_source: "card_page",
-    });
-    stashForSignup(state);
-    router.push("/login?next=/continue");
-  }
-
   function tailorToJob() {
     if (!state) return;
-    saveFunnel({ ...state, step: "job" });
+    // The JD is captured on the upload step now; land there (or straight
+    // on results when a job already exists).
+    const step = state.jdText?.trim().length >= 100 ? "gate" : "upload";
+    saveFunnel({ ...state, step });
     router.push("/");
   }
 
@@ -108,12 +97,15 @@ export default function CardPage() {
   return (
     <main className="mx-auto max-w-2xl px-4 py-10">
       <nav className="mb-8 flex items-center justify-between">
-        <Link href="/" className="text-xl font-bold text-indigo-700">
-          PreciCV
+        <Link
+          href="/"
+          className="font-display text-[21px] font-extrabold tracking-tight text-ink"
+        >
+          Spe<span className="text-accent">CV</span>
         </Link>
-        <Link href="/login" className="text-sm text-indigo-600 hover:underline">
-          Sign in
-        </Link>
+        <span className="rounded-full bg-green-50 px-3.5 py-1.5 text-[12.5px] font-bold text-accent">
+          Free during launch
+        </span>
       </nav>
 
       {hydrated && !hasCard && (
@@ -143,20 +135,12 @@ export default function CardPage() {
           </div>
           <p className="mt-1 text-sm text-slate-600">
             {simRegistered
-              ? sim === "paid_with_profile"
-                ? "Saved to your account. As a paid user, this card powers your custom CVs and simulation reports."
-                : "Saved to your account — it follows you anywhere, and you get free tips."
-              : "Stored in this browser only. Save it to a free account so it follows you anywhere — and unlocks free tips."}
+              ? "Saved to your account. This card powers your custom CVs and simulation reports."
+              : "Stored in this browser — it powers every CV and report you generate. Clearing site data resets it."}
           </p>
 
           <div className="mt-5">
             <UserCard state={state} compact />
-          </div>
-
-          <div className="mt-3 grid gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600 sm:grid-cols-3">
-            <p><strong>Guest:</strong> card lives in this browser only.</p>
-            <p><strong>Free account:</strong> card saved + free tips.</p>
-            <p><strong>Paid:</strong> card powers custom CVs &amp; reports.</p>
           </div>
 
           {/* Keyword search across all past answers */}
@@ -331,11 +315,6 @@ export default function CardPage() {
           )}
 
           <div className="mt-8 flex flex-wrap justify-end gap-2">
-            {!simRegistered && (
-              <Button variant="secondary" onClick={save}>
-                Save my card — free
-              </Button>
-            )}
             <Button onClick={tailorToJob}>Tailor my CV to a job →</Button>
           </div>
         </>

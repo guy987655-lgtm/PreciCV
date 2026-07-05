@@ -86,7 +86,7 @@ export async function POST(request: Request) {
           currency: "usd",
           unit_amount: tierInfo.priceCents,
           product_data: {
-            name: `PreciCV ${tierInfo.name} — Tailored CV`,
+            name: `SpeCV ${tierInfo.name} — Tailored CV`,
             description: tierInfo.description,
           },
         },

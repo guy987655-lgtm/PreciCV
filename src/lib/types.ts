@@ -103,18 +103,16 @@ export const McqQuestionSchema = z.object({
    * ranked — pick several, click order = priority (1 = highest).
    */
   selectType: z.enum(["single", "ranked"]).default("single"),
+  /** Essential to bridge this CV to THIS job — must be answered. */
+  required: z.boolean().default(false),
 });
 export const McqQuestionnaireSchema = z.object({
   questions: z.array(McqQuestionSchema).default([]),
 });
 export type McqQuestionnaire = z.infer<typeof McqQuestionnaireSchema>;
 
-/**
- * Quick-check answers required before the funnel unlocks the next step.
- * The pool is dynamically generated (up to ~50 role-specific questions);
- * when the pool is smaller than this, the whole pool is required.
- */
-export const MIN_MCQ_ANSWERS = 20;
+/** Hard cap on questions a user MUST answer before continuing. */
+export const MAX_REQUIRED_QUESTIONS = 10;
 /** Soft cap for the dynamically generated question pool. */
 export const MAX_MCQ_POOL = 50;
 
@@ -189,9 +187,26 @@ export const DiffReportSchema = z.object({
 });
 export type DiffReport = z.infer<typeof DiffReportSchema>;
 
+/* Interview simulation — the second deliverable file */
+export const InterviewSimulationSchema = z.object({
+  /** 30-second elevator pitch aligned to this job, in the candidate's voice */
+  pitch: z.string().default(""),
+  questions: z
+    .array(
+      z.object({
+        question: z.string(),
+        whyTheyAsk: z.string().default(""),
+        howToAnswer: z.string().default(""),
+      })
+    )
+    .default([]),
+});
+export type InterviewSimulation = z.infer<typeof InterviewSimulationSchema>;
+
 export const GenerationResultSchema = z.object({
   cv: TailoredCvSchema,
   diff: DiffReportSchema,
+  simulation: InterviewSimulationSchema.prefault({}),
   jobTitle: z.string().default(""),
   company: z.string().default(""),
 });

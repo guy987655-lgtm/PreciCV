@@ -9,7 +9,7 @@ export default function TermsPage() {
         </em>
       </p>
       <p>
-        PreciCV generates tailored CVs from information you provide. You are
+        SpeCV generates tailored CVs from information you provide. You are
         responsible for the accuracy of your data and of any CV you submit to
         employers. Purchases are per job application as described at checkout.
       </p>

@@ -35,7 +35,7 @@ export default async function DashboardPage() {
       <header className="flex items-center justify-between">
         <div>
           <Link href="/" className="text-sm font-bold text-indigo-700">
-            PreciCV
+            SpeCV
           </Link>
           <h1 className="text-2xl font-bold text-slate-900">
             {fullName ? `Welcome back, ${fullName.split(" ")[0]}` : "Dashboard"}

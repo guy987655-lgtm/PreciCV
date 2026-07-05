@@ -79,7 +79,7 @@ function SampleWatermark() {
           <div key={row} className="flex justify-around whitespace-nowrap">
             {Array.from({ length: 4 }).map((_, col) => (
               <span key={col} className="text-3xl font-black text-indigo-900">
-                PreciCV · PREVIEW
+                SpeCV · PREVIEW
               </span>
             ))}
           </div>

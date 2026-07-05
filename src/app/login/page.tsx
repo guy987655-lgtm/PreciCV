@@ -42,7 +42,7 @@ function LoginForm() {
     <Card className="w-full max-w-md p-8">
       <h1 className="text-center text-2xl font-bold">
         <a href="/" className="text-indigo-700 hover:text-indigo-800">
-          PreciCV
+          SpeCV
         </a>
       </h1>
       <p className="mt-2 text-center text-sm text-slate-600">

@@ -90,13 +90,16 @@ async function anthropicCall<T>(opts: StructuredCallOpts<T>): Promise<T> {
 /* one self-correction retry                                           */
 /* ------------------------------------------------------------------ */
 
-async function geminiRequest(
+const GEMINI_FALLBACK_MODEL = "gemini-2.5-flash-lite";
+
+async function geminiRequestOnce(
+  model: string,
   system: string,
   prompt: string,
   maxTokens: number
-): Promise<string> {
+): Promise<{ ok: true; text: string } | { ok: false; status: number; body: string }> {
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
     {
       method: "POST",
       headers: {
@@ -109,28 +112,58 @@ async function geminiRequest(
         generationConfig: {
           responseMimeType: "application/json",
           maxOutputTokens: maxTokens,
+          // Disable "thinking" — it silently eats the output-token budget
+          // and can truncate long JSON mid-stream.
+          thinkingConfig: { thinkingBudget: 0 },
         },
       }),
     }
   );
 
   if (!res.ok) {
-    const body = await res.text();
-    if (res.status === 429) {
-      throw new Error(
-        "The free AI quota was exceeded for now. Try again in a minute (Gemini free tier rate limit)."
-      );
-    }
-    throw new Error(`Gemini API error ${res.status}: ${body.slice(0, 300)}`);
+    return { ok: false, status: res.status, body: await res.text() };
   }
-
   const data = await res.json();
   const text: string = (data.candidates?.[0]?.content?.parts ?? [])
     .map((p: { text?: string }) => p.text ?? "")
     .join("");
-  if (!text) throw new Error("Gemini returned an empty response");
+  if (!text) return { ok: false, status: 0, body: "empty response" };
   // Defensive: strip accidental markdown fences.
-  return text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  return {
+    ok: true,
+    text: text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""),
+  };
+}
+
+/**
+ * Gemini with resilience: transient overload (429/500/503) retries with
+ * backoff, then falls back to flash-lite (a separate capacity pool).
+ */
+async function geminiRequest(
+  system: string,
+  prompt: string,
+  maxTokens: number
+): Promise<string> {
+  const plan: { model: string; delayMs: number }[] = [
+    { model: GEMINI_MODEL, delayMs: 0 },
+    { model: GEMINI_MODEL, delayMs: 1500 },
+    { model: GEMINI_FALLBACK_MODEL, delayMs: 1000 },
+  ];
+  let last: { status: number; body: string } = { status: 0, body: "" };
+  for (const attempt of plan) {
+    if (attempt.delayMs) await new Promise((r) => setTimeout(r, attempt.delayMs));
+    const res = await geminiRequestOnce(attempt.model, system, prompt, maxTokens);
+    if (res.ok) return res.text;
+    last = res;
+    // Only transient failures are worth retrying / falling back.
+    if (![429, 500, 503, 0].includes(res.status)) break;
+  }
+  if (last.status === 429 || last.status === 503) {
+    throw new Error(
+      "The free AI engine is briefly overloaded. Please try again in a minute."
+    );
+  }
+  throw new Error(`Gemini API error ${last.status}: ${last.body.slice(0, 300)}`);
 }
 
 async function geminiCall<T>(opts: StructuredCallOpts<T>): Promise<T> {
@@ -187,7 +220,7 @@ export async function extractProfileFromCv(
   const result = await structuredCall({
     tier: "quality",
     system:
-      "You are the data-ingestion engine of PreciCV, a CV tailoring platform. " +
+      "You are the data-ingestion engine of SpeCV, a CV tailoring platform. " +
       "You extract a complete, granular professional profile from raw CV text " +
       "into the Master Data Lake schema. Preserve every fact — do not summarize " +
       "away details, metrics, or technologies. Record the order in which major " +
@@ -196,18 +229,22 @@ export async function extractProfileFromCv(
     prompt:
       `Extract the professional profile from this CV text. Then produce TWO ` +
       `question sets:\n\n` +
-      `1. "mcq" — a quick check of 6-10 SHORT multiple-choice questions that ` +
-      `verify the CV is current, adapted to the candidate's detected role and ` +
-      `stack (e.g. for a Data Analyst: SQL flavors, visualization tools, ` +
-      `databases). Each question is answerable in one tap and has 3-5 short ` +
-      `options grounded in THIS CV plus plausible alternatives. Ask about ` +
-      `current usage and recency ("Which of these do you still use weekly?"), ` +
-      `team/scope, and seniority. The user can always select MULTIPLE options ` +
-      `in priority order, so options may be non-exclusive. CRITICAL — "topic" ` +
-      `is a CATEGORY, not a per-question label: use AT MOST 4 distinct broad ` +
-      `topic values across the whole set (e.g. "SQL & Data", "Visualization", ` +
-      `"Leadership"), each shared by several questions. ` +
-      `Do NOT add an "Other" option — the UI appends one automatically.\n\n` +
+      `1. "mcq" — a quick check of 8-14 SHORT multiple-choice questions. ` +
+      `Ask ONLY what genuinely matters for bridging THIS CV to the target ` +
+      `job (when given) — no filler. Mark "required": true on ONLY the ` +
+      `questions that are ESSENTIAL to close the gap between the CV and the ` +
+      `job (at most 8); everything else is "required": false (optional ` +
+      `enrichment). Each question is answerable in one tap and has 3-5 short ` +
+      `options grounded in THIS CV plus plausible alternatives. Set ` +
+      `"selectType": "single" when exactly one answer is logical (skill ` +
+      `level, yes/no, team size, recency); use "ranked" ONLY when picking ` +
+      `several and prioritizing them makes sense (e.g. tools used). For ` +
+      `questions listing concrete tools/technologies, the LAST option must ` +
+      `be "None of these". CRITICAL — "topic" is a CATEGORY, not a ` +
+      `per-question label: use AT MOST 4 distinct broad topic values across ` +
+      `the whole set (e.g. "SQL & Data", "Visualization", "Leadership"), ` +
+      `each shared by several questions. Do NOT add an "Other" option — the ` +
+      `UI appends one automatically.\n\n` +
       `2. "questionnaire" — 4-7 targeted OPEN questions that uncover UNSTATED ` +
       `information that would strengthen tailored CVs: missing metrics ` +
       `(team sizes, revenue impact, performance numbers), unclear scope, ` +
@@ -256,7 +293,7 @@ export async function generateRoleQuestions(
   return structuredCall({
     tier: "fast",
     system:
-      "You are the market-research engine of PreciCV. You know the standard " +
+      "You are the market-research engine of SpeCV. You know the standard " +
       "requirements, tools and skills that appear in real job postings " +
       "across the web (LinkedIn, Indeed, company career pages) for any " +
       "role. You turn that market standard into short experience questions.",
@@ -266,16 +303,20 @@ export async function generateRoleQuestions(
       `list in job postings for this role — the standard market toolkit, ` +
       `including ones missing from the candidate's own skill list. For EACH ` +
       `topic produce ONE short multiple-choice question about the ` +
-      `candidate's hands-on experience with it. Options must be short and ` +
-      `one-tap answerable: either experience levels ("Use it daily", "Used ` +
-      `it in past roles", "Basic familiarity", "No experience") or concrete ` +
-      `tool choices. The user can always select MULTIPLE options in priority ` +
-      `order, so options may be non-exclusive. CRITICAL — "topic" is a ` +
-      `CATEGORY, not a per-question label: group ALL questions under at most ` +
-      `5 broad topic values (e.g. "Data & SQL", "BI & Visualization", ` +
-      `"Cloud & Tooling", "Statistics", "Leadership"), each covering several ` +
-      `questions; reuse the existing category names below when they fit. ` +
-      `Do NOT add an "Other" option — the UI appends one automatically.\n\n` +
+      `candidate's hands-on experience with it. These are ALL optional ` +
+      `enrichment — set "required": false on every question. Options must ` +
+      `be short and one-tap answerable: either experience levels ("Use it ` +
+      `daily", "Used it in past roles", "Basic familiarity", "No ` +
+      `experience") or concrete tool choices. Set "selectType": "single" ` +
+      `when exactly one answer is logical (levels, yes/no, amounts); use ` +
+      `"ranked" ONLY when picking several and prioritizing makes sense. For ` +
+      `questions listing concrete tools, the LAST option must be "None of ` +
+      `these". CRITICAL — "topic" is a CATEGORY, not a per-question label: ` +
+      `group ALL questions under at most 5 broad topic values (e.g. "Data & ` +
+      `SQL", "BI & Visualization", "Cloud & Tooling", "Statistics", ` +
+      `"Leadership"), each covering several questions; reuse the existing ` +
+      `category names below when they fit. Do NOT add an "Other" option — ` +
+      `the UI appends one automatically.\n\n` +
       `Existing categories/questions already covered (do not repeat the ` +
       `questions; do reuse fitting category names):\n` +
       `${existingTopics.join("; ") || "(none)"}`,
@@ -347,7 +388,7 @@ export function estimateCvChars(cv: TailoredCv): number {
 }
 
 const TAILORING_SYSTEM =
-  "You are the tailoring engine of PreciCV. You produce a custom-tailored, " +
+  "You are the tailoring engine of SpeCV. You produce a custom-tailored, " +
   "STRICTLY ONE-PAGE resume from a candidate's master profile and a target " +
   "job description, plus a transparent change report.\n\n" +
   "Non-negotiable rules:\n" +
@@ -367,7 +408,12 @@ const TAILORING_SYSTEM =
   "one-sentence reason tied to the JD.\n" +
   "6. In gapAnalysis, be honest: matchScore 0-100, real strengths, real " +
   "gaps, and concrete recommendations (courses, framing, talking points).\n" +
-  "7. Give every section and item a short stable id (e.g. 'exp-1').";
+  "7. Give every section and item a short stable id (e.g. 'exp-1').\n" +
+  "8. In 'simulation', prepare the candidate for THIS job's interview: a " +
+  "30-second elevator pitch in the candidate's voice, and 6-8 questions " +
+  "this employer is likely to ask (mix of role-specific, behavioral, and " +
+  "gap-probing). For each: whyTheyAsk (one sentence) and howToAnswer — " +
+  "concrete guidance grounded ONLY in the candidate's real background.";
 
 export async function generateTailoredCv(
   profile: MasterProfile,
@@ -386,7 +432,8 @@ export async function generateTailoredCv(
       ? `\nUSER REVISION INSTRUCTIONS:\n${opts.revisionInstructions}\n`
       : "") +
     `\nAlso extract jobTitle and company from the JD. Produce the tailored ` +
-    `one-page CV and the full change/diff report.`;
+    `one-page CV, the full change/diff report, and the interview ` +
+    `simulation (pitch + likely questions with guidance).`;
 
   let result = await structuredCall({
     tier: "quality",

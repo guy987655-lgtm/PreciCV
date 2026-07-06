@@ -5,7 +5,13 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { readJson } from "@/lib/fetch-json";
 import { trackButtonClick } from "@/lib/analytics";
-import { CV_TEMPLATES, MAX_MCQ_POOL, McqQuestionnaire } from "@/lib/types";
+import {
+  CV_TEMPLATES,
+  CvTemplate,
+  MAX_MCQ_POOL,
+  McqQuestionnaire,
+  TailoredCv,
+} from "@/lib/types";
 import {
   EMPTY_FUNNEL,
   FunnelState,
@@ -60,6 +66,75 @@ function CheckCircle({ size = 26 }: { size?: number }) {
 }
 
 /**
+ * Full-screen CV preview: the entire one-page CV shown at once, scaled to
+ * fit the viewport so nothing is cut off and no scrolling is needed. Closing
+ * (backdrop click, the × button, or Esc) returns to the normal Results view.
+ */
+function FullScreenCv({
+  cv,
+  template,
+  theme,
+  onClose,
+}: {
+  cv: TailoredCv;
+  template: CvTemplate;
+  theme: "light" | "dark";
+  onClose: () => void;
+}) {
+  // A4 at 96dpi ≈ 794 × 1123px — scale so the whole sheet fits on screen.
+  const A4_W = 794;
+  const A4_H = 1123;
+  const [scale, setScale] = useState(0.5);
+  useEffect(() => {
+    const recalc = () => {
+      const availW = window.innerWidth - 48;
+      const availH = window.innerHeight - 88;
+      setScale(Math.min(availW / A4_W, availH / A4_H, 1.4));
+    };
+    recalc();
+    window.addEventListener("resize", recalc);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("resize", recalc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-ink/80 p-6 backdrop-blur-sm print:hidden"
+      onClick={onClose}
+    >
+      <button
+        aria-label="Close preview"
+        onClick={onClose}
+        className="absolute right-5 top-5 flex h-11 w-11 cursor-pointer items-center justify-center rounded-full bg-white/90 text-2xl font-bold text-ink shadow-lg hover:bg-white"
+      >
+        ×
+      </button>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ width: A4_W * scale, height: A4_H * scale }}
+      >
+        <div
+          style={{
+            width: A4_W,
+            height: A4_H,
+            transform: `scale(${scale})`,
+            transformOrigin: "top left",
+          }}
+        >
+          <CvRenderer cv={cv} template={template} theme={theme} domId={null} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * The homepage funnel: upload a CV + (optionally) paste a target job →
  * quick multiple-choice check → open questions → the job → gate. The gate
  * depends on the user state: unregistered users hit the Registration Wall;
@@ -87,6 +162,10 @@ export function TryNow() {
   const [quotaMessage, setQuotaMessage] = useState("");
   const [remaining, setRemaining] = useState<number | null>(null);
   const [splitView, setSplitView] = useState(false);
+  // Global background theme for the CV preview — any design on light or dark.
+  const [cvTheme, setCvTheme] = useState<"light" | "dark">("light");
+  // Full-screen preview: the whole CV shown at once, scaled to fit.
+  const [fullScreen, setFullScreen] = useState(false);
   // Re-editing a finished flow → confirm before generating a fresh report.
   const [showRegenConfirm, setShowRegenConfirm] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -102,6 +181,12 @@ export function TryNow() {
   useEffect(() => {
     if (hydrated) saveFunnel(state);
   }, [state, hydrated]);
+
+  // Every step transition starts at the top of the page — otherwise a long
+  // step (e.g. the quick check) leaves the next step scrolled halfway down.
+  useEffect(() => {
+    if (hydrated) window.scrollTo({ top: 0 });
+  }, [state.step, hydrated]);
 
   // Home button while the funnel is mounted → swap back to the hero
   // (the flow itself is untouched; "Continue progress" resumes it).
@@ -247,13 +332,17 @@ export function TryNow() {
           .map((q, i) => ({ ...q, id: `role_${i}_${q.id || i}` }));
         // Re-group so every category stays a contiguous carousel run.
         const merged = normalizeMcqPool([...existing, ...fresh]);
+        // Auto-advance straight to the first newly generated question so the
+        // user immediately sees the fresh questions are ready (no manual Next).
+        const freshIds = new Set(fresh.map((q) => q.id));
+        const firstFresh = merged.findIndex((q) => freshIds.has(q.id));
         const currentId = existing[s.mcqIndex]?.id;
         const keptIndex = merged.findIndex((q) => q.id === currentId);
         return {
           ...s,
           roleQuestionsLoaded: true,
           mcq: { questions: merged },
-          mcqIndex: keptIndex >= 0 ? keptIndex : 0,
+          mcqIndex: firstFresh >= 0 ? firstFresh : keptIndex >= 0 ? keptIndex : 0,
         };
       });
     } catch (e) {
@@ -576,7 +665,7 @@ export function TryNow() {
                 setDragOver(false);
                 if (!busy) acceptFile(e.dataTransfer.files?.[0]);
               }}
-              className={`flex min-h-56 flex-1 cursor-pointer flex-col items-center justify-center gap-2.5 rounded-2xl border-[2.5px] border-dashed p-6 text-center transition-all ${
+              className={`flex min-h-[300px] flex-1 cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-[2.5px] border-dashed p-7 text-center transition-all ${
                 dragOver
                   ? "scale-[1.01] border-accent bg-selected-bg ring-4 ring-accent/15"
                   : file
@@ -593,20 +682,20 @@ export function TryNow() {
                 onChange={(e) => acceptFile(e.target.files?.[0])}
               />
               {file ? (
-                <CheckCircle size={54} />
+                <CheckCircle size={64} />
               ) : (
-                <span className="flex h-[54px] w-[54px] items-center justify-center rounded-full bg-green-100 text-2xl font-extrabold text-accent-deep">
+                <span className="flex h-16 w-16 items-center justify-center rounded-full bg-green-100 text-[28px] font-extrabold text-accent-deep">
                   ↑
                 </span>
               )}
-              <span className="text-[16px] font-bold text-ink">
+              <span className="text-[18px] font-bold text-ink">
                 {file
                   ? file.name
                   : dragOver
                     ? "Drop your file to upload"
                     : "Drag & drop your CV here"}
               </span>
-              <span className="text-[13px] text-ink-faint">
+              <span className="text-[14px] text-ink-faint">
                 {file ? "Click or drop to replace" : "or click to browse · PDF or DOCX"}
               </span>
             </label>
@@ -621,8 +710,8 @@ export function TryNow() {
               </span>
             </div>
             <Textarea
-              rows={10}
-              className="min-h-56 flex-1 resize-none rounded-lg border-2 leading-relaxed"
+              rows={13}
+              className="min-h-[300px] flex-1 resize-none rounded-lg border-2 text-[15px] leading-relaxed"
               placeholder={
                 "--- Copied from LinkedIn ---\nSenior Product Manager, Growth\nTel Aviv · Hybrid\nWe're looking for a PM to own our activation funnel end-to-end…"
               }
@@ -644,7 +733,8 @@ export function TryNow() {
           <Button
             variant={cta === "dark" ? "dark" : "primary"}
             size="lg"
-            className="flex-1"
+            className="flex-1 text-[17px]"
+            style={{ paddingTop: 17, paddingBottom: 17 }}
             disabled={!file || !hasJob || busy}
             onClick={analyze}
           >
@@ -687,7 +777,7 @@ export function TryNow() {
   /* ================= HERO layout (landing, mock 2c) ================= */
   if (heroMode) {
     return (
-      <section className="mx-auto grid max-w-[1280px] items-center gap-10 px-6 pb-4 pt-10 sm:px-14 lg:grid-cols-[1fr_440px] lg:gap-14 lg:pt-16">
+      <section className="mx-auto grid max-w-[1320px] items-center gap-10 px-6 pb-4 pt-10 sm:px-14 lg:grid-cols-[1fr_540px] lg:gap-14 lg:pt-16">
         <div className="flex flex-col gap-[22px]">
           {bannerEl}
           <h1 className="font-display text-[42px] font-extrabold leading-[1.05] tracking-[-0.02em] text-ink [text-wrap:balance] sm:text-[60px]">
@@ -695,9 +785,9 @@ export function TryNow() {
             <span className="marker-highlight">this job</span>. Not every job.
           </h1>
           <p className="max-w-[460px] text-lg leading-[1.55] text-ink-soft">
-            Drop in your CV and the job you want. We ask the right questions,
-            then hand you a one-pager that speaks that employer&apos;s
-            language.
+            Add your CV and the job you want. We ask a few short questions,
+            then give you a one-page CV that matches what this employer is
+            looking for.
           </p>
           <div className="mt-1.5 flex flex-wrap items-center gap-3.5">
             <Button
@@ -725,7 +815,7 @@ export function TryNow() {
               </Button>
             )}
             <span className="text-sm text-ink-faint">
-              Free during launch — no account needed
+              Free to use — no account needed
             </span>
           </div>
           <div className="mt-2.5 flex flex-wrap gap-2">
@@ -743,8 +833,8 @@ export function TryNow() {
         </div>
 
         <div ref={uploadCardRef}>
-          <Card className="flex flex-col gap-3.5 p-[30px]">
-            <div className="text-[17px] font-bold text-ink">
+          <Card className="flex flex-col gap-4 p-8">
+            <div className="text-[18px] font-bold text-ink">
               Start here — no account needed
             </div>
             {uploadFields("dark")}
@@ -780,7 +870,7 @@ export function TryNow() {
           />
           <Card className="flex flex-col gap-3.5 p-7">{uploadFields("primary")}</Card>
           <p className="text-center text-[13px] text-ink-faint">
-            Takes about a minute · Free during launch
+            Takes about a minute · Free to use
           </p>
         </div>
       )}
@@ -797,9 +887,24 @@ export function TryNow() {
             sub={
               requiredCount > 0
                 ? `Only ${requiredCount} question${requiredCount === 1 ? "" : "s"} ${requiredCount === 1 ? "is" : "are"} required — everything else is optional.`
-                : "All questions here are optional — answer what sharpens your story."
+                : "All questions here are optional — answer what makes your story stronger."
             }
           />
+
+          {/* Top navigation: once the required questions are done, a Continue
+              button sits right by the progress bar so users don't have to
+              scroll to the bottom of the carousel to move on. */}
+          {mcqUnlocked && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border-2 border-accent bg-selected-bg px-4 py-2.5">
+              <span className="flex items-center gap-2 text-[13.5px] font-bold text-accent-deep">
+                <CheckCircle size={22} />
+                Required questions done
+              </span>
+              <Button size="md" onClick={() => goTo("open")}>
+                Continue to Sharpen →
+              </Button>
+            </div>
+          )}
 
           {/* Segmented category mini-navigation */}
           <div className="flex gap-2.5">
@@ -944,8 +1049,8 @@ export function TryNow() {
             <div className="flex items-center justify-center gap-2 rounded-2xl border-2 border-accent bg-selected-bg px-4 py-3 text-center">
               <CheckCircle size={24} />
               <p className="text-[14px] font-bold text-accent-deep">
-                Required questions done — you can continue. Add more to sharpen
-                your match, or move on.
+                Required questions done — you can continue. Answer more to
+                improve your match, or move on.
               </p>
             </div>
           )}
@@ -969,8 +1074,8 @@ export function TryNow() {
       {state.step === "open" && state.questionnaire && (
         <div className="flex flex-col gap-[18px]">
           <Heading
-            title={`${state.questionnaire.questions.length} optional questions worth three minutes`}
-            sub="Real material recruiters look for. Any language — we'll polish the wording."
+            title={`${state.questionnaire.questions.length} optional questions — about three minutes`}
+            sub="The details recruiters look for. Write in any language — we'll fix the wording."
           />
 
           {/* This whole step is optional — make skipping the obvious path,
@@ -978,8 +1083,7 @@ export function TryNow() {
           <div className="-mt-1 flex flex-col items-center gap-3 rounded-2xl border-2 border-accent bg-selected-bg px-5 py-4 text-center">
             <p className="text-[14px] leading-relaxed text-ink-soft">
               This step is <strong className="text-ink">completely optional</strong>.
-              You can answer now — or come back and finish these anytime from
-              the{" "}
+              Answer now, or finish them later from the{" "}
               <Link href="/card" className="font-bold text-accent underline">
                 My Card
               </Link>{" "}
@@ -1037,9 +1141,8 @@ export function TryNow() {
               : "Ready to see your tailored CV"}
           </h2>
           <p className="text-[15.5px] leading-[1.55] text-ink-soft">
-            A one-page CV tailored to this job, and an interview simulation
-            report with the questions you&apos;re likely to face. Free during
-            launch.
+            A one-page CV made for this job, plus an interview report with the
+            questions you are likely to be asked.
           </p>
           {quotaMessage && (
             <div className="w-full rounded-2xl border-[1.5px] border-border bg-chip px-5 py-4 text-[14px] text-ink-soft">
@@ -1048,7 +1151,7 @@ export function TryNow() {
           )}
           {generateBusy ? (
             <div className="rounded-2xl border-[1.5px] border-border bg-card px-6 py-4">
-              <Spinner label="Tailoring your CV and building the report… (30–90 seconds)" />
+              <Spinner label="Building your CV and report… (30–90 seconds)" />
             </div>
           ) : (
             <Button size="lg" onClick={generateNow}>
@@ -1090,14 +1193,32 @@ export function TryNow() {
               </h2>
             </div>
             <div className="mb-3 mt-3 flex flex-col gap-3 print:hidden">
-              {/* Design gallery — 11 templates incl. dark-background designs */}
+              {/* Design gallery — 10 designs, each viewable on a light or a
+                  dark background via the global theme toggle. */}
               <div>
-                <p className="mb-1.5 text-xs font-semibold text-ink-faint">
-                  Choose a design
-                </p>
+                <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs font-semibold text-ink-faint">
+                    Choose a design
+                  </p>
+                  {/* Background theme toggle — previews any design light/dark */}
+                  <div className="inline-flex overflow-hidden rounded-full border border-border">
+                    {(["light", "dark"] as const).map((th) => (
+                      <button
+                        key={th}
+                        onClick={() => setCvTheme(th)}
+                        className={`cursor-pointer px-3 py-1 text-xs font-semibold transition-colors ${
+                          cvTheme === th
+                            ? "bg-ink text-bg"
+                            : "bg-card text-ink-soft hover:bg-chip"
+                        }`}
+                      >
+                        {th === "light" ? "☀ Light" : "☾ Dark"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <div className="flex flex-wrap gap-1.5">
                   {CV_TEMPLATES.map((t) => {
-                    const m = CV_TEMPLATE_META[t];
                     const active = template === t;
                     return (
                       <button
@@ -1109,24 +1230,7 @@ export function TryNow() {
                             : "border-border bg-card text-ink-soft hover:bg-chip"
                         }`}
                       >
-                        <span
-                          aria-hidden
-                          className={`h-2.5 w-2.5 rounded-full border ${
-                            m.dark
-                              ? "border-black/30 bg-ink"
-                              : "border-border bg-white"
-                          }`}
-                        />
-                        {m.label}
-                        {m.dark && (
-                          <span
-                            className={`text-[9px] font-bold uppercase tracking-wide ${
-                              active ? "text-bg/70" : "text-ink-faint"
-                            }`}
-                          >
-                            dark
-                          </span>
-                        )}
+                        {CV_TEMPLATE_META[t].label}
                       </button>
                     );
                   })}
@@ -1138,6 +1242,12 @@ export function TryNow() {
                   Preview your one-page CV, then download.
                 </p>
                 <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => setFullScreen(true)}
+                    className="cursor-pointer rounded-full border border-border bg-card px-3 py-1 text-xs font-semibold text-ink-soft hover:bg-chip"
+                  >
+                    ⛶ Display review
+                  </button>
                   <button
                     onClick={() => setSplitView((v) => !v)}
                     className={`cursor-pointer rounded-full border px-3 py-1 text-xs font-semibold ${
@@ -1155,12 +1265,17 @@ export function TryNow() {
               </div>
             </div>
             <div className="overflow-auto rounded-2xl border border-border bg-chip p-4 print:border-0 print:bg-white print:p-0">
-              <CvRenderer cv={results.cv} template={template} split={splitView} />
+              <CvRenderer
+                cv={results.cv}
+                template={template}
+                theme={cvTheme}
+                split={splitView}
+              />
             </div>
             <p className="mt-3 text-center text-xs text-ink-faint print:hidden">
               {remaining !== null
                 ? `${remaining} free CV${remaining === 1 ? "" : "s"} left today.`
-                : "Free during launch."}
+                : "Free to use."}
             </p>
           </div>
 
@@ -1374,6 +1489,15 @@ export function TryNow() {
           <Button onClick={confirmRegenerate}>Generate updated report →</Button>
         </div>
       </Modal>
+
+      {fullScreen && results && (
+        <FullScreenCv
+          cv={results.cv}
+          template={template}
+          theme={cvTheme}
+          onClose={() => setFullScreen(false)}
+        />
+      )}
     </section>
   );
 }

@@ -48,9 +48,6 @@ export function Navbar() {
             {t.label}
           </Link>
         ))}
-        <span className="hidden rounded-full bg-green-50 px-[15px] py-2 text-[13.5px] font-bold text-accent sm:inline-flex">
-          Free during launch
-        </span>
       </div>
     </nav>
   );

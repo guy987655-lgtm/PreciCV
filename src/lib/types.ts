@@ -269,10 +269,12 @@ export type TierId = keyof typeof TIERS;
 export const JD_SIMILARITY_THRESHOLD = 0.85;
 
 /**
- * The CV design gallery. All templates share one structured model (see
- * TailoredCv) and print to a single A4 page; they differ in typeface,
- * spacing and color. `onyx`, `midnight` and `slate` are dark-background
- * designs. Visual definitions live in src/components/cv-renderer.tsx.
+ * The CV design gallery: 10 distinct designs. All templates share one
+ * structured model (see TailoredCv) and print to a single A4 page; they
+ * differ in typeface, spacing and color only. Each one can be previewed
+ * on a light OR dark background via the global theme toggle — the design
+ * itself is background-agnostic. Visual definitions live in
+ * src/components/cv-renderer.tsx.
  */
 export const CV_TEMPLATES = [
   "classic",
@@ -285,6 +287,5 @@ export const CV_TEMPLATES = [
   "minimal",
   "onyx",
   "midnight",
-  "slate",
 ] as const;
 export type CvTemplate = (typeof CV_TEMPLATES)[number];

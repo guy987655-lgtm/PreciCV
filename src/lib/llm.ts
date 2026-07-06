@@ -396,9 +396,15 @@ const TAILORING_SYSTEM =
   "must come from the master profile. You may rephrase, reorder, merge and " +
   "cut — never fabricate.\n" +
   "2. THE ONE-PAGE CONSTRAINT IS ABSOLUTE. Edit, summarize and prioritize " +
-  "aggressively. Drop experience irrelevant to this JD. Older roles get one " +
-  "line. Total body text across all fields must stay under " +
-  `${ONE_PAGE_CHAR_BUDGET} characters.\n` +
+  "aggressively. If a role is not relevant to this job, drop it ENTIRELY. " +
+  "But every role you keep MUST have at least one bullet describing what the " +
+  "person did — never output a job with a title and dates but no bullets. " +
+  "Shorten by cutting the NUMBER of bullets (an old or minor role can keep " +
+  "just one tight line), never down to zero. Total body text across all " +
+  `fields must stay under ${ONE_PAGE_CHAR_BUDGET} characters.\n` +
+  "2b. Put the professional summary ONLY in the top-level 'summary' field. " +
+  "Do NOT also create a section titled 'Summary' or 'Profile' — that would " +
+  "duplicate it. Never emit an empty section or an item with no content.\n" +
   "3. Mirror the JD's terminology where the profile genuinely supports it " +
   "(ATS keyword alignment), leading with the most relevant achievements.\n" +
   "4. Respect the original CV's section order (originalSectionOrder) when " +
@@ -417,6 +423,57 @@ const TAILORING_SYSTEM =
   "and 'tone': how the interviewer will ask it ('friendly' = warm " +
   "rapport-building, 'curious' = genuinely probing for detail, " +
   "'challenging' = skeptical, pressure-testing a gap).";
+
+/** Loose match: same company/title ignoring case, spacing and punctuation. */
+function norm(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+function looseMatch(a: string, b: string): boolean {
+  const x = norm(a);
+  const y = norm(b);
+  if (!x || !y) return false;
+  return x === y || x.includes(y) || y.includes(x);
+}
+
+/**
+ * Safety net for the "blank role" bug: the model must never leave a kept
+ * experience entry with a title/dates but no bullets. When it does, we
+ * borrow the strongest bullet for that exact company/title straight from
+ * the base profile (the uploaded CV + mandatory answers) — no invention,
+ * strictly the user's own material. Empty and summary-duplicate sections
+ * are dropped so the rendered CV stays clean.
+ */
+function repairCv(cv: TailoredCv, profile: MasterProfile): TailoredCv {
+  for (const section of cv.sections) {
+    for (const item of section.items) {
+      if (item.bullets.length > 0) continue;
+      const match = profile.experience.find(
+        (e) =>
+          (e.company && item.secondary && looseMatch(e.company, item.secondary)) ||
+          (e.title && item.primary && looseMatch(e.title, item.primary))
+      );
+      if (match && match.bullets.length > 0) {
+        item.bullets = [match.bullets[0]];
+      }
+    }
+  }
+  // Drop sections that merely duplicate the top-level summary, plus any
+  // section left with no usable items.
+  cv.sections = cv.sections.filter((section) => {
+    const title = norm(section.title);
+    if (cv.summary && (title === "summary" || title === "profile")) return false;
+    const usable = section.items.filter(
+      (it) =>
+        it.primary.trim() ||
+        it.secondary.trim() ||
+        it.meta.trim() ||
+        it.bullets.length > 0
+    );
+    section.items = usable;
+    return usable.length > 0;
+  });
+  return cv;
+}
 
 export async function generateTailoredCv(
   profile: MasterProfile,
@@ -466,5 +523,6 @@ export async function generateTailoredCv(
     });
   }
 
+  result.cv = repairCv(result.cv, profile);
   return result;
 }

@@ -1,16 +1,19 @@
 "use client";
 
+import { CSSProperties } from "react";
 import { CvTemplate, TailoredCv } from "@/lib/types";
 
 /**
- * Renders a TailoredCv in one of 11 print-ready templates. Every design
- * shares the same structured model (contact → summary → sections → skills)
- * and lays out to a single A4 page, modelled on a clean professional
- * one-pager (Guy_Ratzon_Resume_BASE.pdf); they differ only in typeface,
- * spacing and color. Three are dark-background designs (onyx / midnight /
- * slate). `split` renders the body in two balanced columns with the header
- * and summary spanning the full width, and each section kept whole so a
- * column always begins with a section heading — never mid-paragraph.
+ * Renders a TailoredCv in one of 10 print-ready designs. Every design shares
+ * the same structured model (contact → summary → sections → skills) and lays
+ * out to a single A4 page; they differ only in typeface, spacing and accent
+ * color. Each design is background-agnostic: a global `theme` ("light" |
+ * "dark") sets the page background and text color, so any of the 10 can be
+ * previewed and exported on either a light or a dark sheet.
+ *
+ * `split` renders the body in two balanced columns with the header and
+ * summary spanning the full width, each section kept whole so a column always
+ * begins with a section heading — never mid-paragraph.
  *
  * Optional inline editing (workspace only) makes text nodes contentEditable;
  * the public Results tab renders read-only.
@@ -21,12 +24,14 @@ function Editable({
   onCommit,
   editable,
   className,
+  style,
   as: Tag = "span",
 }: {
   value: string;
   onCommit?: (v: string) => void;
   editable: boolean;
   className?: string;
+  style?: CSSProperties;
   as?: "span" | "p" | "h1" | "h2" | "h3" | "li" | "div";
 }) {
   return (
@@ -37,6 +42,7 @@ function Editable({
           ? " outline-none hover:bg-indigo-50/60 focus:bg-indigo-50 focus:ring-1 focus:ring-indigo-300 rounded-sm transition-colors cursor-text"
           : "")
       }
+      style={style}
       contentEditable={editable}
       suppressContentEditableWarning
       onBlur={(e) => {
@@ -49,25 +55,6 @@ function Editable({
   );
 }
 
-type TemplateStyle = {
-  /** Human label for the template picker. */
-  label: string;
-  /** Dark-background design (light text) — affects the picker swatch. */
-  dark: boolean;
-  /** Font family + text color + page background. */
-  page: string;
-  name: string;
-  headline: string;
-  /** justify + text color for the contact row. */
-  contactRow: string;
-  /** color for secondary/meta text (company, dates, contact). */
-  subtle: string;
-  sectionTitle: string;
-  bullet: string;
-  /** divider color between the two columns in split view. */
-  ruleColor: string;
-};
-
 const FONT = {
   serif: "font-[family-name:var(--font-source-serif)]",
   playfair: "font-[family-name:var(--font-playfair)]",
@@ -79,174 +66,189 @@ const FONT = {
   figtree: "font-[family-name:var(--font-figtree)]",
 } as const;
 
-const TEMPLATE_STYLES: Record<CvTemplate, TemplateStyle> = {
+type CvTheme = "light" | "dark";
+
+/** Background + neutral text tones, shared by every template. */
+const PALETTE: Record<CvTheme, { bg: string; text: string; subtle: string; rule: string }> = {
+  light: { bg: "#ffffff", text: "#1a1a1a", subtle: "#64748b", rule: "#d9d9d9" },
+  dark: { bg: "#171c24", text: "#e8ecf1", subtle: "#9aa5b3", rule: "rgba(255,255,255,0.18)" },
+};
+
+type SectionVariant = "underline" | "chip" | "plain";
+
+type TemplateDef = {
+  label: string;
+  /** Signature accent (name / headings), per background. */
+  accent: { light: string; dark: string };
+  center?: boolean;
+  nameUsesAccent?: boolean;
+  headlineUsesAccent?: boolean;
+  sectionVariant: SectionVariant;
+  /** For "plain" titles that read as muted labels (Minimal). */
+  sectionUsesSubtle?: boolean;
+  /** Page-level typography extras (font family, base size). */
+  page: string;
+  /** Structural name classes — size/weight/tracking (no color, no centering). */
+  name: string;
+  /** Structural headline classes (no color, no centering). */
+  headline: string;
+  /** Extra classes on the contact row (font/size). */
+  contactExtra?: string;
+  /** Structural section-title classes — size/weight/tracking/border (no color). */
+  sectionTitle: string;
+  bullet: string;
+};
+
+const TEMPLATES: Record<CvTemplate, TemplateDef> = {
   classic: {
     label: "Classic",
-    dark: false,
-    page: `${FONT.serif} bg-white text-[#1a1a1a]`,
-    name: "text-center text-[27px] font-bold tracking-[0.02em]",
-    headline: "text-center text-[12.5px] text-slate-600 mt-1",
-    contactRow: "justify-center",
-    subtle: "text-slate-500",
+    accent: { light: "#334155", dark: "#cbd5e1" },
+    center: true,
+    sectionVariant: "underline",
+    page: `${FONT.serif}`,
+    name: "text-[27px] font-bold tracking-[0.02em]",
+    headline: "text-[12.5px] mt-1",
     sectionTitle:
-      "text-[11px] font-bold uppercase tracking-[0.18em] border-b border-slate-300 pb-1 mb-2 mt-4",
+      "text-[11px] font-bold uppercase tracking-[0.18em] border-b pb-1 mb-2 mt-4",
     bullet: "list-disc",
-    ruleColor: "#d8d8d8",
   },
   modern: {
     label: "Modern",
-    dark: false,
-    page: `${FONT.figtree} bg-white text-slate-900`,
-    name: "text-[27px] font-extrabold tracking-tight text-[#1f4a36]",
-    headline: "text-[13px] font-semibold text-[#2f6b4f] mt-0.5",
-    contactRow: "justify-start",
-    subtle: "text-slate-500",
+    accent: { light: "#2f6b4f", dark: "#86cea6" },
+    nameUsesAccent: true,
+    headlineUsesAccent: true,
+    sectionVariant: "underline",
+    page: `${FONT.figtree}`,
+    name: "text-[27px] font-extrabold tracking-tight",
+    headline: "text-[13px] font-semibold mt-0.5",
     sectionTitle:
-      "text-[11px] font-bold uppercase tracking-widest text-[#2f6b4f] border-b-2 border-[#c9dfc4] pb-1 mb-2 mt-4",
-    bullet: "list-disc marker:text-[#9dbfa6]",
-    ruleColor: "#e3e9dc",
+      "text-[11px] font-bold uppercase tracking-widest border-b-2 pb-1 mb-2 mt-4",
+    bullet: "list-disc",
   },
   compact: {
     label: "Compact",
-    dark: false,
-    page: `${FONT.inter} bg-white text-slate-900 text-[10.5px] leading-snug`,
+    accent: { light: "#475569", dark: "#b4bdca" },
+    sectionVariant: "underline",
+    page: `${FONT.inter} text-[10.5px] leading-snug`,
     name: "text-[21px] font-bold tracking-tight",
-    headline: "text-[11px] text-slate-600",
-    contactRow: "justify-start",
-    subtle: "text-slate-500",
+    headline: "text-[11px] mt-0",
     sectionTitle:
-      "text-[10px] font-bold uppercase tracking-wider bg-slate-100 px-2 py-0.5 mb-1.5 mt-3",
+      "text-[10px] font-bold uppercase tracking-wider border-b pb-0.5 mb-1.5 mt-3",
     bullet: "list-[square]",
-    ruleColor: "#e3e9dc",
   },
   executive: {
     label: "Executive",
-    dark: false,
-    page: `${FONT.serif} bg-white text-[#20242b]`,
-    name: `text-center text-[30px] font-bold ${FONT.playfair} tracking-[0.01em]`,
-    headline:
-      "text-center text-[11.5px] uppercase tracking-[0.28em] text-slate-500 mt-2",
-    contactRow: "justify-center",
-    subtle: "text-slate-500",
-    sectionTitle: `text-[12px] font-semibold ${FONT.playfair} uppercase tracking-[0.18em] border-b border-slate-300 pb-1 mb-2 mt-4`,
+    accent: { light: "#475569", dark: "#c3ccd8" },
+    center: true,
+    sectionVariant: "underline",
+    page: `${FONT.serif}`,
+    name: `text-[30px] font-bold ${FONT.playfair} tracking-[0.01em]`,
+    headline: "text-[11.5px] uppercase tracking-[0.28em] mt-2",
+    sectionTitle: `text-[12px] font-semibold ${FONT.playfair} uppercase tracking-[0.18em] border-b pb-1 mb-2 mt-4`,
     bullet: "list-disc",
-    ruleColor: "#d7d7d7",
   },
   elegant: {
     label: "Elegant",
-    dark: false,
-    page: `${FONT.lora} bg-white text-[#2b2b2b]`,
-    name: `text-[28px] font-semibold ${FONT.playfair} text-[#7a5b34]`,
-    headline: "text-[12.5px] italic text-slate-600 mt-0.5",
-    contactRow: "justify-start",
-    subtle: "text-slate-500",
-    sectionTitle: `text-[12px] font-semibold ${FONT.playfair} uppercase tracking-[0.15em] text-[#7a5b34] border-b border-[#e4dccb] pb-1 mb-2 mt-4`,
-    bullet: "list-disc marker:text-[#c2a878]",
-    ruleColor: "#e6ddcd",
+    accent: { light: "#8a6a3c", dark: "#d8b878" },
+    nameUsesAccent: true,
+    sectionVariant: "underline",
+    page: `${FONT.lora}`,
+    name: `text-[28px] font-semibold ${FONT.playfair}`,
+    headline: "text-[12.5px] italic mt-0.5",
+    sectionTitle: `text-[12px] font-semibold ${FONT.playfair} uppercase tracking-[0.15em] border-b pb-1 mb-2 mt-4`,
+    bullet: "list-disc",
   },
   technical: {
     label: "Technical",
-    dark: false,
-    page: `${FONT.figtree} bg-white text-slate-900`,
+    accent: { light: "#2f6b4f", dark: "#6ee7b7" },
+    headlineUsesAccent: true,
+    sectionVariant: "underline",
+    page: `${FONT.figtree}`,
     name: `text-[24px] font-bold ${FONT.mono} tracking-tight`,
-    headline: `text-[12px] ${FONT.mono} text-[#2f6b4f] mt-1`,
-    contactRow: `justify-start ${FONT.mono} text-[9.5px] tracking-tight`,
-    subtle: "text-slate-500",
-    sectionTitle: `text-[11px] font-bold uppercase tracking-widest ${FONT.mono} border-b-2 border-slate-800 pb-1 mb-2 mt-4`,
-    bullet: "list-[square] marker:text-slate-400",
-    ruleColor: "#e3e9dc",
+    headline: `text-[12px] ${FONT.mono} mt-1`,
+    contactExtra: `${FONT.mono} text-[9.5px] tracking-tight`,
+    sectionTitle: `text-[11px] font-bold uppercase tracking-widest ${FONT.mono} border-b-2 pb-1 mb-2 mt-4`,
+    bullet: "list-[square]",
   },
   contemporary: {
     label: "Contemporary",
-    dark: false,
-    page: `${FONT.space} bg-white text-[#141414]`,
+    accent: { light: "#2f6b4f", dark: "#86cea6" },
+    headlineUsesAccent: true,
+    sectionVariant: "chip",
+    page: `${FONT.space}`,
     name: "text-[28px] font-bold tracking-tight",
-    headline: "text-[13px] font-medium text-[#2f6b4f] mt-0.5",
-    contactRow: "justify-start",
-    subtle: "text-slate-500",
+    headline: "text-[13px] font-medium mt-0.5",
     sectionTitle:
-      "inline-block text-[10.5px] font-bold uppercase tracking-wider text-white bg-[#1e2b24] px-2.5 py-1 rounded mb-2 mt-4",
-    bullet: "list-disc marker:text-[#2f6b4f]",
-    ruleColor: "#e3e9dc",
+      "inline-block text-[10.5px] font-bold uppercase tracking-wider px-2.5 py-1 rounded mb-2 mt-4",
+    bullet: "list-disc",
   },
   minimal: {
     label: "Minimal",
-    dark: false,
-    page: `${FONT.archivo} bg-white text-[#1c1c1c]`,
+    accent: { light: "#94a3b8", dark: "#9aa5b3" },
+    sectionVariant: "plain",
+    sectionUsesSubtle: true,
+    page: `${FONT.archivo}`,
     name: "text-[25px] font-semibold tracking-tight",
-    headline: "text-[12px] text-slate-500 mt-0.5",
-    contactRow: "justify-start",
-    subtle: "text-slate-400",
+    headline: "text-[12px] mt-0.5",
     sectionTitle:
-      "text-[10.5px] font-semibold uppercase tracking-[0.28em] text-slate-400 mb-1.5 mt-5",
-    bullet: "list-disc marker:text-slate-300",
-    ruleColor: "#ececec",
+      "text-[10.5px] font-semibold uppercase tracking-[0.28em] mb-1.5 mt-5",
+    bullet: "list-disc",
   },
   onyx: {
     label: "Onyx",
-    dark: true,
-    page: `${FONT.space} bg-[#1e2b24] text-[#e8ede6]`,
-    name: "text-[27px] font-bold tracking-tight text-white",
-    headline: "text-[13px] font-medium text-[#9dbfa6] mt-0.5",
-    contactRow: "justify-start",
-    subtle: "text-[#9aa89c]",
+    accent: { light: "#2f6b4f", dark: "#9dbfa6" },
+    headlineUsesAccent: true,
+    sectionVariant: "underline",
+    page: `${FONT.space}`,
+    name: "text-[27px] font-bold tracking-tight",
+    headline: "text-[13px] font-medium mt-0.5",
     sectionTitle:
-      "text-[11px] font-bold uppercase tracking-widest text-[#9dbfa6] border-b border-[#3a4a40] pb-1 mb-2 mt-4",
-    bullet: "list-disc marker:text-[#5f8f74]",
-    ruleColor: "rgba(157,191,166,0.28)",
+      "text-[11px] font-bold uppercase tracking-widest border-b pb-1 mb-2 mt-4",
+    bullet: "list-disc",
   },
   midnight: {
     label: "Midnight",
-    dark: true,
-    page: `${FONT.serif} bg-[#0f172a] text-[#dbe2ef]`,
-    name: `text-center text-[29px] font-bold ${FONT.playfair} text-white tracking-wide`,
-    headline:
-      "text-center text-[12px] uppercase tracking-[0.25em] text-[#d4af6a] mt-2",
-    contactRow: "justify-center",
-    subtle: "text-[#93a3bd]",
-    sectionTitle: `text-[11px] font-semibold ${FONT.playfair} uppercase tracking-[0.2em] text-[#d4af6a] border-b border-[#2a3852] pb-1 mb-2 mt-4`,
-    bullet: "list-disc marker:text-[#d4af6a]",
-    ruleColor: "rgba(212,175,106,0.28)",
-  },
-  slate: {
-    label: "Slate",
-    dark: true,
-    page: `${FONT.inter} bg-[#1f2430] text-[#e2e6ee]`,
-    name: "text-[26px] font-extrabold tracking-tight text-white",
-    headline: "text-[13px] font-semibold text-[#4fd1c5] mt-0.5",
-    contactRow: "justify-start",
-    subtle: "text-[#98a1b3]",
-    sectionTitle:
-      "text-[11px] font-bold uppercase tracking-widest text-[#4fd1c5] border-b border-[#343b4a] pb-1 mb-2 mt-4",
-    bullet: "list-disc marker:text-[#4fd1c5]",
-    ruleColor: "rgba(79,209,197,0.24)",
+    accent: { light: "#a97e30", dark: "#d4af6a" },
+    center: true,
+    headlineUsesAccent: true,
+    sectionVariant: "underline",
+    page: `${FONT.serif}`,
+    name: `text-[29px] font-bold ${FONT.playfair} tracking-wide`,
+    headline: "text-[12px] uppercase tracking-[0.25em] mt-2",
+    sectionTitle: `text-[11px] font-semibold ${FONT.playfair} uppercase tracking-[0.2em] border-b pb-1 mb-2 mt-4`,
+    bullet: "list-disc",
   },
 };
 
-/** Template id → picker metadata (label + dark flag). */
-export const CV_TEMPLATE_META: Record<CvTemplate, { label: string; dark: boolean }> =
+/** Template id → picker metadata (label). */
+export const CV_TEMPLATE_META: Record<CvTemplate, { label: string }> =
   Object.fromEntries(
-    (Object.keys(TEMPLATE_STYLES) as CvTemplate[]).map((t) => [
-      t,
-      { label: TEMPLATE_STYLES[t].label, dark: TEMPLATE_STYLES[t].dark },
-    ])
-  ) as Record<CvTemplate, { label: string; dark: boolean }>;
+    (Object.keys(TEMPLATES) as CvTemplate[]).map((t) => [t, { label: TEMPLATES[t].label }])
+  ) as Record<CvTemplate, { label: string }>;
 
 export function CvRenderer({
   cv,
   template,
+  theme = "light",
   editable = false,
   split = false,
+  domId = "cv-page",
   onChange,
 }: {
   cv: TailoredCv;
   template: CvTemplate;
+  /** Global background theme — any design renders on light or dark. */
+  theme?: CvTheme;
   editable?: boolean;
   /** Two-column body layout (screen comparison view). */
   split?: boolean;
+  /** DOM id for the printable node; pass null for off-screen duplicates. */
+  domId?: string | null;
   onChange?: (next: TailoredCv) => void;
 }) {
-  const s = TEMPLATE_STYLES[template] ?? TEMPLATE_STYLES.classic;
+  const t = TEMPLATES[template] ?? TEMPLATES.classic;
+  const pal = PALETTE[theme];
+  const accent = t.accent[theme];
 
   const commit = (mutate: (draft: TailoredCv) => void) => {
     if (!onChange) return;
@@ -263,20 +265,48 @@ export function CvRenderer({
     cv.contact.website,
   ].filter(Boolean);
 
+  // Defensive de-dupe: never render a section that merely repeats the
+  // top-level summary, or one left with no content (guards older cached
+  // generations too — the engine already strips these on new runs).
+  const sections = cv.sections.filter((section) => {
+    const title = section.title.trim().toLowerCase();
+    if (cv.summary && (title === "summary" || title === "profile")) return false;
+    const hasContent = section.items.some(
+      (it) => it.primary || it.secondary || it.meta || it.bullets.length > 0
+    );
+    return hasContent;
+  });
+
   // Each section stays whole in split view so a column can only begin with a
   // section heading, never a paragraph continued from the previous column.
   const blockCls = split ? "break-inside-avoid" : "";
 
+  const sectionTitleStyle: CSSProperties =
+    t.sectionVariant === "chip"
+      ? { background: accent, color: pal.bg }
+      : t.sectionVariant === "underline"
+        ? { borderColor: pal.rule, color: accent }
+        : { color: t.sectionUsesSubtle ? pal.subtle : accent };
+
+  const pageStyle = {
+    width: "210mm",
+    minHeight: "297mm",
+    background: pal.bg,
+    color: pal.text,
+    "--cv-accent": accent,
+  } as CSSProperties;
+
   return (
     <div
-      id="cv-page"
-      className={`cv-page mx-auto flex flex-col px-12 py-10 text-[11px] leading-normal shadow-sm ${s.page}`}
-      style={{ width: "210mm", minHeight: "297mm" }}
+      {...(domId ? { id: domId } : {})}
+      className={`cv-page mx-auto flex flex-col px-12 py-10 text-[11px] leading-normal shadow-sm ${t.page}`}
+      style={pageStyle}
     >
       {/* Full-width header — spans the page even in split view */}
       <Editable
         as="h1"
-        className={s.name}
+        className={`${t.name}${t.center ? " text-center" : ""}`}
+        style={{ color: t.nameUsesAccent ? accent : pal.text }}
         value={cv.contact.fullName}
         editable={editable}
         onCommit={(v) => commit((d) => void (d.contact.fullName = v))}
@@ -284,14 +314,18 @@ export function CvRenderer({
       {cv.headline && (
         <Editable
           as="p"
-          className={s.headline}
+          className={`${t.headline}${t.center ? " text-center" : ""}`}
+          style={{ color: t.headlineUsesAccent ? accent : pal.subtle }}
           value={cv.headline}
           editable={editable}
           onCommit={(v) => commit((d) => void (d.headline = v))}
         />
       )}
       <div
-        className={`mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] ${s.subtle} ${s.contactRow}`}
+        className={`mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] ${t.contactExtra ?? ""} ${
+          t.center ? "justify-center" : "justify-start"
+        }`}
+        style={{ color: pal.subtle }}
       >
         {contactBits.map((bit, i) => (
           <span key={i}>{bit}</span>
@@ -300,7 +334,9 @@ export function CvRenderer({
 
       {cv.summary && (
         <div className="mt-1">
-          <h2 className={s.sectionTitle}>Summary</h2>
+          <h2 className={t.sectionTitle} style={sectionTitleStyle}>
+            Summary
+          </h2>
           <Editable
             as="p"
             value={cv.summary}
@@ -311,22 +347,19 @@ export function CvRenderer({
       )}
 
       {/* Body — in split view two balanced columns, kept in the exported PDF
-          too. Otherwise a single column that grows (flex-1) and spreads its
-          sections (justify-between) so the page is filled top-to-bottom
-          instead of leaving a large blank strip at the foot of the sheet. */}
+          too. Otherwise a single natural top-to-bottom flow with tight,
+          consistent spacing (no page-fill stretching, which left big gaps
+          between paragraphs). */}
       <div
-        className={
-          split
-            ? "mt-1 gap-x-10 [column-count:2]"
-            : "mt-2 flex flex-1 flex-col justify-between"
-        }
-        style={split ? { columnRule: `1px solid ${s.ruleColor}` } : undefined}
+        className={split ? "mt-1 gap-x-10 [column-count:2]" : "mt-2 flex flex-col"}
+        style={split ? { columnRule: `1px solid ${pal.rule}` } : undefined}
       >
-        {cv.sections.map((section, si) => (
+        {sections.map((section, si) => (
           <div key={section.id} className={blockCls}>
             <Editable
               as="h2"
-              className={s.sectionTitle}
+              className={t.sectionTitle}
+              style={sectionTitleStyle}
               value={section.title}
               editable={editable}
               onCommit={(v) => commit((d) => void (d.sections[si].title = v))}
@@ -347,7 +380,7 @@ export function CvRenderer({
                       <>
                         {" · "}
                         <Editable
-                          className={s.subtle}
+                          style={{ color: pal.subtle }}
                           value={item.secondary}
                           editable={editable}
                           onCommit={(v) =>
@@ -361,7 +394,8 @@ export function CvRenderer({
                   </div>
                   {item.meta && (
                     <Editable
-                      className={`shrink-0 text-[10px] ${s.subtle}`}
+                      className="shrink-0 text-[10px]"
+                      style={{ color: pal.subtle }}
                       value={item.meta}
                       editable={editable}
                       onCommit={(v) =>
@@ -371,7 +405,9 @@ export function CvRenderer({
                   )}
                 </div>
                 {item.bullets.length > 0 && (
-                  <ul className={`ml-4 mt-0.5 space-y-0.5 ${s.bullet}`}>
+                  <ul
+                    className={`ml-4 mt-0.5 space-y-0.5 marker:[color:var(--cv-accent)] ${t.bullet}`}
+                  >
                     {item.bullets.map((bullet, bi) => (
                       <Editable
                         key={bi}
@@ -398,7 +434,9 @@ export function CvRenderer({
 
         {cv.skills.length > 0 && (
           <div className={blockCls}>
-            <h2 className={s.sectionTitle}>Skills</h2>
+            <h2 className={t.sectionTitle} style={sectionTitleStyle}>
+              Skills
+            </h2>
             <Editable
               as="p"
               value={cv.skills.join(" · ")}

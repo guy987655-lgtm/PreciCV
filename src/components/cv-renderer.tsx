@@ -270,7 +270,7 @@ export function CvRenderer({
   return (
     <div
       id="cv-page"
-      className={`cv-page mx-auto px-12 py-10 text-[11px] leading-normal shadow-sm ${s.page}`}
+      className={`cv-page mx-auto flex flex-col px-12 py-10 text-[11px] leading-normal shadow-sm ${s.page}`}
       style={{ width: "210mm", minHeight: "297mm" }}
     >
       {/* Full-width header — spans the page even in split view */}
@@ -310,9 +310,16 @@ export function CvRenderer({
         </div>
       )}
 
-      {/* Body — two balanced columns in split view, single column otherwise */}
+      {/* Body — in split view two balanced columns, kept in the exported PDF
+          too. Otherwise a single column that grows (flex-1) and spreads its
+          sections (justify-between) so the page is filled top-to-bottom
+          instead of leaving a large blank strip at the foot of the sheet. */}
       <div
-        className={split ? "mt-1 gap-x-10 [column-count:2] print:[column-count:1]" : ""}
+        className={
+          split
+            ? "mt-1 gap-x-10 [column-count:2]"
+            : "mt-2 flex flex-1 flex-col justify-between"
+        }
         style={split ? { columnRule: `1px solid ${s.ruleColor}` } : undefined}
       >
         {cv.sections.map((section, si) => (

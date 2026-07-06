@@ -10,7 +10,13 @@ import { checkDailyQuota } from "@/lib/rate-limit";
 
 export const maxDuration = 300;
 
-const DAILY_LIMIT = 3;
+/**
+ * One free generation per day. The cap is enforced per IP (see
+ * src/lib/rate-limit.ts) as well as per browser cookie, so opening an
+ * Incognito window — which drops the cookie but keeps the IP — does not
+ * grant a second free CV.
+ */
+const DAILY_LIMIT = 1;
 
 const BodySchema = z.object({
   profile: MasterProfileSchema,
@@ -34,8 +40,8 @@ export async function POST(request: Request) {
       {
         error: "quota_exceeded",
         message:
-          `You've used all ${quota.limit} free CVs for today. ` +
-          `Try again after ${quota.resetAt.toLocaleString()}.`,
+          `You've used your free ${quota.limit === 1 ? "CV" : `${quota.limit} CVs`} for today. ` +
+          `Come back after ${quota.resetAt.toLocaleString()} for another.`,
         resetAt: quota.resetAt.toISOString(),
       },
       { status: 429 }

@@ -115,9 +115,13 @@ body {
     left: 0;
     top: 0;
     width: 210mm !important;
-    min-height: auto !important;
     box-shadow: none !important;
     margin: 0 !important;
+  }
+  /* The CV keeps its full A4 height so its content spreads to fill the
+     page (see cv-renderer flex-fill); the report flows to its content. */
+  .report-page {
+    min-height: auto !important;
   }
   @page {
     size: A4;

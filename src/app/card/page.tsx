@@ -52,6 +52,20 @@ function AnswerChips({ answer }: { answer?: McqAnswer }) {
   );
 }
 
+/** A visible chevron so users always have a clear way to collapse a row. */
+function CollapseArrow({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      aria-label="Collapse this question"
+      title="Collapse"
+      className="shrink-0 cursor-pointer rounded-full px-2 py-0.5 text-sm font-bold text-ink-faint transition-colors hover:bg-chip hover:text-ink"
+    >
+      ▲
+    </button>
+  );
+}
+
 /** Collapsible section (accordion) — "Answered" / "Unanswered". */
 function Section({
   title,
@@ -91,8 +105,10 @@ function Section({
  * The User Card dashboard — the central profile hub: identity summary,
  * keyword search across every question, and two accordions (Answered /
  * Unanswered) whose collapsed rows show a faded snippet of the question.
- * Expanding a row shows the full Q&A and edits in place; clicking outside
- * the open row closes it. Everything reads/writes the local funnel state.
+ * Expanding a row shows the full Q&A; edits are held as a local draft and
+ * only saved on "Done" (which also collapses the row and opens the next
+ * one) or the collapse arrow. Everything reads/writes the local funnel
+ * state.
  */
 export default function CardPage() {
   const sim = useSimUser();
@@ -100,23 +116,16 @@ export default function CardPage() {
   const [hydrated, setHydrated] = useState(false);
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Draft answers for the open row. Edits stay local while the row is open
+  // (so typing/selecting never re-partitions the list and collapses the row);
+  // they're committed to the funnel only when the user clicks "Done".
+  const [draftMcq, setDraftMcq] = useState<McqAnswer | null>(null);
+  const [draftText, setDraftText] = useState("");
 
   useEffect(() => {
     setState(loadFunnel());
     setHydrated(true);
   }, []);
-
-  // Click anywhere outside the open answer box → close it (§5.5).
-  useEffect(() => {
-    if (!expandedId) return;
-    function onDown(e: MouseEvent) {
-      if (!(e.target as HTMLElement).closest("[data-qrow]")) {
-        setExpandedId(null);
-      }
-    }
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [expandedId]);
 
   // Simulated states: "registered — no profile" forces the empty state;
   // "registered/paid with profile" present the card as account-saved.
@@ -166,17 +175,70 @@ export default function CardPage() {
   const answeredCount = answeredMcq.length + answeredOpen.length;
   const unansweredCount = unansweredMcq.length + unansweredOpen.length;
 
+  /* ------------- open ⇄ commit ⇄ advance (draft-based editing) -------- */
+  const isMcqId = (qId: string) => mcqQs.some((q) => q.id === qId);
+
+  /** Open a row for editing, seeding the draft from its saved answer. */
+  function beginEdit(qId: string) {
+    if (!state) return;
+    setExpandedId(qId);
+    if (isMcqId(qId)) {
+      setDraftMcq(state.mcqAnswers[qId] ?? { selected: [] });
+      setDraftText("");
+    } else {
+      setDraftText(state.answers[qId] ?? "");
+      setDraftMcq(null);
+    }
+  }
+
+  /** Persist the draft of a given row to the funnel state. */
+  function commitEdit(qId: string) {
+    if (!state) return;
+    if (isMcqId(qId)) {
+      if (draftMcq) updateMcq(qId, draftMcq);
+    } else {
+      updateOpen(qId, draftText);
+    }
+  }
+
+  /** Clicking another collapsed row saves the currently-open one first. */
+  function expandRow(qId: string) {
+    if (expandedId && expandedId !== qId) commitEdit(expandedId);
+    beginEdit(qId);
+  }
+
+  /** The collapse arrow: save and close, staying put (no advance). */
+  function closeRow() {
+    if (expandedId) commitEdit(expandedId);
+    setExpandedId(null);
+  }
+
+  /** "Done": save this answer, close the row, and open the next question
+   *  in the order they're shown on screen (so the flow reads top-to-bottom). */
+  function doneRow(qId: string) {
+    commitEdit(qId);
+    const shown = [
+      ...answeredMcq,
+      ...answeredOpen,
+      ...unansweredMcq,
+      ...unansweredOpen,
+    ].map((q) => q.id);
+    const nextId = shown[shown.indexOf(qId) + 1];
+    if (nextId) beginEdit(nextId);
+    else setExpandedId(null);
+  }
+
   /* ------------- one row = one question (collapsed ⇄ expanded) -------
      Render functions (not components): a new component type per render
      would remount the row and drop textarea focus on every keystroke. */
   function mcqRow(q: McqQuestion, answered: boolean) {
     const expanded = expandedId === q.id;
     return (
-      <div key={q.id} data-qrow className="border-b border-border last:border-b-0">
+      <div key={q.id} className="border-b border-border last:border-b-0">
         {!expanded ? (
           <button
             className="flex w-full cursor-pointer items-center gap-2 px-5 py-3 text-left"
-            onClick={() => setExpandedId(q.id)}
+            onClick={() => expandRow(q.id)}
           >
             <span className="shrink-0 rounded bg-chip px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
               {q.topic || "General"}
@@ -193,26 +255,29 @@ export default function CardPage() {
           </button>
         ) : (
           <div className="px-5 py-4">
-            <span className="inline-block rounded bg-chip px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
-              {q.topic || "General"}
-            </span>
+            <div className="flex items-center justify-between gap-3">
+              <span className="inline-block rounded bg-chip px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
+                {q.topic || "General"}
+              </span>
+              <CollapseArrow onClick={closeRow} />
+            </div>
             <p className="mt-1.5 text-[15px] font-semibold text-ink">
               {q.question}
             </p>
-            {answered && (
+            {(draftMcq?.selected.length ?? 0) > 0 && (
               <div className="mt-2">
-                <AnswerChips answer={state!.mcqAnswers[q.id]} />
+                <AnswerChips answer={draftMcq ?? undefined} />
               </div>
             )}
             <div className="mt-3">
               <McqOptions
                 question={q}
-                answer={state!.mcqAnswers[q.id]}
-                onChange={(next) => updateMcq(q.id, next)}
+                answer={draftMcq ?? { selected: [] }}
+                onChange={(next) => setDraftMcq(next)}
               />
             </div>
             <div className="mt-3 text-right">
-              <Button size="sm" variant="secondary" onClick={() => setExpandedId(null)}>
+              <Button size="sm" onClick={() => doneRow(q.id)}>
                 Done
               </Button>
             </div>
@@ -225,11 +290,11 @@ export default function CardPage() {
   function openRow(q: OpenQuestion, answered: boolean) {
     const expanded = expandedId === q.id;
     return (
-      <div key={q.id} data-qrow className="border-b border-border last:border-b-0">
+      <div key={q.id} className="border-b border-border last:border-b-0">
         {!expanded ? (
           <button
             className="flex w-full cursor-pointer items-center gap-2 px-5 py-3 text-left"
-            onClick={() => setExpandedId(q.id)}
+            onClick={() => expandRow(q.id)}
           >
             <span className="min-w-0 truncate text-sm text-muted">
               {q.question}
@@ -242,17 +307,20 @@ export default function CardPage() {
           </button>
         ) : (
           <div className="px-5 py-4">
-            <p className="text-[15px] font-semibold text-ink">{q.question}</p>
+            <div className="flex items-start justify-between gap-3">
+              <p className="text-[15px] font-semibold text-ink">{q.question}</p>
+              <CollapseArrow onClick={closeRow} />
+            </div>
             {q.why && <p className="mt-0.5 text-[12.5px] text-ink-faint">{q.why}</p>}
             <Textarea
               rows={2}
               className="mt-2.5"
               placeholder="Your answer — any language works…"
-              value={state!.answers[q.id] ?? ""}
-              onChange={(e) => updateOpen(q.id, e.target.value)}
+              value={draftText}
+              onChange={(e) => setDraftText(e.target.value)}
             />
             <div className="mt-3 text-right">
-              <Button size="sm" variant="secondary" onClick={() => setExpandedId(null)}>
+              <Button size="sm" onClick={() => doneRow(q.id)}>
                 Done
               </Button>
             </div>

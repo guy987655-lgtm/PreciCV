@@ -24,7 +24,7 @@ import {
 } from "@/lib/funnel";
 import { printBoth } from "@/lib/download";
 import { simMeta, useSimUser } from "@/lib/sim-user";
-import { Badge, Button, Card, Spinner, Textarea } from "@/components/ui";
+import { Badge, Button, Card, Modal, Spinner, Textarea } from "@/components/ui";
 import { Paywall } from "@/components/paywall";
 import { McqOptions } from "@/components/mcq-options";
 import { CvRenderer, CV_TEMPLATE_META } from "@/components/cv-renderer";
@@ -87,6 +87,8 @@ export function TryNow() {
   const [quotaMessage, setQuotaMessage] = useState("");
   const [remaining, setRemaining] = useState<number | null>(null);
   const [splitView, setSplitView] = useState(false);
+  // Re-editing a finished flow → confirm before generating a fresh report.
+  const [showRegenConfirm, setShowRegenConfirm] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const results = state.results;
   const template = state.template;
@@ -313,10 +315,33 @@ export function TryNow() {
     }
   }
 
-  /** Questions done (answered or skipped) → results; generation starts. */
+  /** Questions done (answered or skipped) → results; generation starts.
+   *  If this flow already produced a report, the user came back to edit a
+   *  finished flow — confirm first (see confirmRegenerate). */
   function finishQuestions() {
+    if (results) {
+      setShowRegenConfirm(true);
+      return;
+    }
     goTo("gate");
     if (!meta.registered && !results && !generateBusy) generateNow();
+  }
+
+  /** Confirmed regenerate: archive the finished flow as its own History row
+   *  (kept intact), then start a fresh generation under a brand-new flow id. */
+  function confirmRegenerate() {
+    setShowRegenConfirm(false);
+    if (state.profile) pushToHistory(state); // old report stays in History
+    setState((s) => ({
+      ...s,
+      flowId: crypto.randomUUID(),
+      results: null,
+      downloadedCv: false,
+      downloadedReport: false,
+      step: "gate",
+      furthestStep: Math.max(s.furthestStep ?? 0, STEP_ORDER.indexOf("gate")),
+    }));
+    if (!meta.registered) generateNow();
   }
 
   /** One click → both files (CV, then the report as the dialog closes). */
@@ -1327,6 +1352,28 @@ export function TryNow() {
       {error && (
         <p className="mt-3 text-center text-sm text-red-700">{error}</p>
       )}
+
+      <Modal
+        open={showRegenConfirm}
+        onClose={() => setShowRegenConfirm(false)}
+        title="Generate an updated report?"
+      >
+        <p className="text-[14.5px] leading-relaxed text-ink-soft">
+          You already generated a CV and report for this flow. Confirming will
+          build a new, updated version from your latest answers — your previous
+          version stays saved as its own entry in your{" "}
+          <Link href="/history" className="font-bold text-accent underline">
+            History
+          </Link>
+          .
+        </p>
+        <div className="mt-5 flex flex-wrap justify-end gap-3">
+          <Button variant="ghost" onClick={() => setShowRegenConfirm(false)}>
+            Cancel — keep editing
+          </Button>
+          <Button onClick={confirmRegenerate}>Generate updated report →</Button>
+        </div>
+      </Modal>
     </section>
   );
 }

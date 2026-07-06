@@ -5,33 +5,32 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { readJson } from "@/lib/fetch-json";
 import { trackButtonClick } from "@/lib/analytics";
-import {
-  CV_TEMPLATES,
-  CvTemplate,
-  GenerationResult,
-  MAX_MCQ_POOL,
-  McqQuestionnaire,
-} from "@/lib/types";
+import { CV_TEMPLATES, MAX_MCQ_POOL, McqQuestionnaire } from "@/lib/types";
 import {
   EMPTY_FUNNEL,
   FunnelState,
   FunnelStep,
+  HOME_EVENT,
   McqAnswer,
+  STEP_ORDER,
   clearFunnel,
   isMcqAnswered,
   loadFunnel,
   normalizeMcqPool,
   profileWithAnswers,
+  pushToHistory,
   saveFunnel,
   stashForSignup,
 } from "@/lib/funnel";
+import { printBoth } from "@/lib/download";
 import { simMeta, useSimUser } from "@/lib/sim-user";
 import { Badge, Button, Card, Spinner, Textarea } from "@/components/ui";
 import { Paywall } from "@/components/paywall";
 import { McqOptions } from "@/components/mcq-options";
 import { CvRenderer } from "@/components/cv-renderer";
+import { ReportPage } from "@/components/report-page";
+import { InterviewScene, TONE_META } from "@/components/interview-faces";
 
-const STEP_ORDER: FunnelStep[] = ["upload", "mcq", "open", "gate"];
 const STEP_LABELS: Record<FunnelStep, string> = {
   upload: "CV + Job",
   mcq: "Quick check",
@@ -72,12 +71,15 @@ export function TryNow() {
   const uploadCardRef = useRef<HTMLDivElement>(null);
 
   // V1 public launch: no accounts/payment yet — guests generate directly,
-  // rate-limited server-side (src/lib/rate-limit.ts).
-  const [results, setResults] = useState<GenerationResult | null>(null);
+  // rate-limited server-side (src/lib/rate-limit.ts). Results live in the
+  // persisted funnel state so History can resume and re-download them.
   const [generateBusy, setGenerateBusy] = useState(false);
   const [quotaMessage, setQuotaMessage] = useState("");
   const [remaining, setRemaining] = useState<number | null>(null);
-  const [template, setTemplate] = useState<CvTemplate>("classic");
+  const [splitView, setSplitView] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const results = state.results;
+  const template = state.template;
 
   // Restore any in-progress funnel (logo click / refresh must not lose data).
   useEffect(() => {
@@ -89,12 +91,24 @@ export function TryNow() {
     if (hydrated) saveFunnel(state);
   }, [state, hydrated]);
 
+  // Home button while the funnel is mounted → swap back to the hero
+  // (the flow itself is untouched; "Continue progress" resumes it).
+  useEffect(() => {
+    const onHome = () => setState((s) => ({ ...s, step: "upload" }));
+    window.addEventListener(HOME_EVENT, onHome);
+    return () => window.removeEventListener(HOME_EVENT, onHome);
+  }, []);
+
   function patch(p: Partial<FunnelState>) {
     setState((s) => ({ ...s, ...p }));
   }
   function goTo(step: FunnelStep) {
     setError("");
-    patch({ step });
+    setState((s) => ({
+      ...s,
+      step,
+      furthestStep: Math.max(s.furthestStep ?? 0, STEP_ORDER.indexOf(step)),
+    }));
   }
 
   /* ------------- quick-check answer handling (functional updates) ---- */
@@ -148,7 +162,14 @@ export function TryNow() {
       const res = await fetch("/api/try/parse-cv", { method: "POST", body: form });
       const data = await readJson(res);
       if (!res.ok) throw new Error(data.error ?? "Upload failed");
-      patch({
+      // A new CV upload starts a NEW flow — the previous one is archived
+      // to History, never overwritten.
+      if (state.profile) pushToHistory(state);
+      const nextStep: FunnelStep =
+        (data.mcq?.questions?.length ?? 0) > 0 ? "mcq" : "open";
+      setState((s) => ({
+        ...s,
+        flowId: crypto.randomUUID(),
         profile: data.profile,
         rawText: data.rawText ?? "",
         questionnaire: data.questionnaire,
@@ -157,8 +178,12 @@ export function TryNow() {
         answers: {},
         roleQuestionsLoaded: false,
         mcqIndex: 0,
-        step: (data.mcq?.questions?.length ?? 0) > 0 ? "mcq" : "open",
-      });
+        results: null,
+        downloadedCv: false,
+        downloadedReport: false,
+        step: nextStep,
+        furthestStep: STEP_ORDER.indexOf(nextStep),
+      }));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong");
     } finally {
@@ -250,12 +275,14 @@ export function TryNow() {
         return;
       }
       if (!res.ok) throw new Error(data.error ?? "Generation failed");
-      setResults({
-        cv: data.cv,
-        diff: data.diff,
-        simulation: data.simulation ?? { pitch: "", questions: [] },
-        jobTitle: data.jobTitle,
-        company: data.company,
+      patch({
+        results: {
+          cv: data.cv,
+          diff: data.diff,
+          simulation: data.simulation ?? { pitch: "", questions: [] },
+          jobTitle: data.jobTitle,
+          company: data.company,
+        },
       });
       setRemaining(data.remaining ?? null);
     } catch (e) {
@@ -271,17 +298,19 @@ export function TryNow() {
     if (!meta.registered && !results && !generateBusy) generateNow();
   }
 
-  /** Two deliverable files via print-to-PDF: the CV and the report. */
-  function exportPdf(target: "cv" | "report") {
+  /** One click → both files (CV, then the report as the dialog closes). */
+  function exportBoth() {
     trackButtonClick({
-      button_name: target === "cv" ? "anon_export_pdf" : "anon_export_report",
+      button_name: "anon_export_bundle",
       action: "export",
-      button_text: target === "cv" ? "Download CV (PDF)" : "Download report (PDF)",
+      button_text: "Download my files",
       click_source: "landing_try_now",
     });
-    document.body.classList.toggle("print-report", target === "report");
-    window.print();
-    setTimeout(() => document.body.classList.remove("print-report"), 500);
+    printBoth({
+      name: state.profile?.contact.fullName,
+      company: results?.company,
+    });
+    patch({ downloadedCv: true, downloadedReport: true });
   }
 
   function goToSignup(source: string) {
@@ -410,24 +439,29 @@ export function TryNow() {
   /* ---------------- shared chrome ---------------- */
   const heroMode = state.step === "upload" && !meta.registered;
 
+  // Clickable stepper: any step already reached can be revisited.
   const stepPills = state.profile && (
     <div className="mb-7 flex flex-wrap items-center justify-center gap-1.5">
       {STEP_ORDER.map((s, i) => {
         const status =
           s === state.step ? "active" : i < stepIdx ? "done" : "todo";
+        const reachable = i <= (state.furthestStep ?? stepIdx);
         return (
-          <span
+          <button
             key={s}
+            disabled={!reachable}
+            onClick={() => reachable && goTo(s)}
             className={
-              status === "active"
+              (status === "active"
                 ? "rounded-full bg-ink px-4 py-1.5 text-[12.5px] font-bold text-bg"
                 : status === "done"
-                  ? "rounded-full px-3 py-1.5 text-[12.5px] font-bold text-accent"
-                  : "rounded-full px-3 py-1.5 text-[12.5px] font-semibold text-muted"
+                  ? "rounded-full px-3 py-1.5 text-[12.5px] font-bold text-accent hover:bg-chip"
+                  : "rounded-full px-3 py-1.5 text-[12.5px] font-semibold text-muted") +
+              (reachable ? " cursor-pointer" : " cursor-default")
             }
           >
             {status === "done" ? `✓ ${STEP_LABELS[s]}` : STEP_LABELS[s]}
-          </span>
+          </button>
         );
       })}
     </div>
@@ -474,6 +508,7 @@ export function TryNow() {
             }`}
           >
             <input
+              ref={fileInputRef}
               type="file"
               accept=".pdf,.docx"
               className="hidden"
@@ -499,7 +534,7 @@ export function TryNow() {
             rows={6}
             className="flex-1 resize-none rounded-2xl"
             placeholder={
-              "Paste the job you're targeting… (required)\nWe only ask questions that matter for THIS job."
+              "--- Copied from LinkedIn ---\nSenior Product Manager, Growth\nTel Aviv · Hybrid\nWe're looking for a PM to own our activation funnel end-to-end…"
             }
             value={state.jdText}
             onChange={(e) => patch({ jdText: e.target.value })}
@@ -570,15 +605,28 @@ export function TryNow() {
           <div className="mt-1.5 flex flex-wrap items-center gap-3.5">
             <Button
               size="lg"
-              onClick={() =>
+              onClick={() => {
+                // Straight to business: open the OS file dialog.
                 uploadCardRef.current?.scrollIntoView({
                   behavior: "smooth",
                   block: "center",
-                })
-              }
+                });
+                fileInputRef.current?.click();
+              }}
             >
               Try it free →
             </Button>
+            {state.profile && (
+              <Button
+                variant="outline"
+                size="lg"
+                onClick={() =>
+                  goTo(STEP_ORDER[state.furthestStep ?? 0] ?? "upload")
+                }
+              >
+                Continue progress →
+              </Button>
+            )}
             <span className="text-sm text-ink-faint">
               Free during launch — no account needed
             </span>
@@ -914,9 +962,10 @@ export function TryNow() {
       )}
 
       {state.step === "gate" && !meta.registered && results && (
-        <div className="grid gap-6 lg:grid-cols-[minmax(280px,1fr)_2fr]">
-          <div className="space-y-4 print:hidden">
-            <div className="text-center lg:text-left">
+        <div className="flex flex-col gap-6">
+          {/* ---- 1. Tailored CV ---- */}
+          <div>
+            <div className="text-center">
               <h2 className="font-display text-xl font-extrabold text-ink">
                 {results.jobTitle || "Your tailored CV"}
                 {results.company && (
@@ -927,105 +976,7 @@ export function TryNow() {
                 )}
               </h2>
             </div>
-            <Card className="p-5">
-              <div className="flex items-center justify-between">
-                <h3 className="font-bold text-ink">Match analysis</h3>
-                <span className="font-display text-2xl font-extrabold text-accent">
-                  {results.diff.gapAnalysis.matchScore}%
-                </span>
-              </div>
-              <div className="mt-2 h-2 overflow-hidden rounded-full bg-chip">
-                <div
-                  className="h-full rounded-full bg-accent"
-                  style={{ width: `${results.diff.gapAnalysis.matchScore}%` }}
-                />
-              </div>
-              {results.diff.gapAnalysis.strengths.length > 0 && (
-                <>
-                  <h4 className="mt-4 text-xs font-bold uppercase text-accent">
-                    Strengths
-                  </h4>
-                  <ul className="mt-1 list-disc pl-4 text-sm text-ink-soft">
-                    {results.diff.gapAnalysis.strengths.map((s, i) => (
-                      <li key={i}>{s}</li>
-                    ))}
-                  </ul>
-                </>
-              )}
-              {results.diff.gapAnalysis.gaps.length > 0 && (
-                <>
-                  <h4 className="mt-3 text-xs font-bold uppercase text-red-700">
-                    Gaps
-                  </h4>
-                  <ul className="mt-1 list-disc pl-4 text-sm text-ink-soft">
-                    {results.diff.gapAnalysis.gaps.map((g, i) => (
-                      <li key={i}>{g}</li>
-                    ))}
-                  </ul>
-                </>
-              )}
-              {results.diff.gapAnalysis.recommendations.length > 0 && (
-                <>
-                  <h4 className="mt-3 text-xs font-bold uppercase text-accent">
-                    Recommendations
-                  </h4>
-                  <ul className="mt-1 list-disc pl-4 text-sm text-ink-soft">
-                    {results.diff.gapAnalysis.recommendations.map((r, i) => (
-                      <li key={i}>{r}</li>
-                    ))}
-                  </ul>
-                </>
-              )}
-            </Card>
-            {(results.simulation.pitch ||
-              results.simulation.questions.length > 0) && (
-              <Card className="p-5">
-                <h3 className="font-bold text-ink">Interview simulation</h3>
-                {results.simulation.pitch && (
-                  <div className="mt-3 rounded-[14px] bg-green-50 p-3 text-sm text-accent-deep">
-                    <p className="text-xs font-bold uppercase">Your 30-second pitch</p>
-                    <p className="mt-1 italic">“{results.simulation.pitch}”</p>
-                  </div>
-                )}
-                <div className="mt-3 space-y-3">
-                  {results.simulation.questions.map((q, i) => (
-                    <div key={i} className="rounded-[14px] border border-border p-3 text-sm">
-                      <p className="font-semibold text-ink">{q.question}</p>
-                      {q.whyTheyAsk && (
-                        <p className="mt-1 text-xs italic text-ink-faint">
-                          Why they ask: {q.whyTheyAsk}
-                        </p>
-                      )}
-                      {q.howToAnswer && (
-                        <p className="mt-1.5 text-[13px] text-ink-soft">{q.howToAnswer}</p>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </Card>
-            )}
-
-            <Card className="p-5">
-              <h3 className="font-bold text-ink">Change report</h3>
-              <div className="mt-3 space-y-3">
-                {results.diff.changes.map((c, i) => (
-                  <div key={i} className="rounded-[14px] border border-border p-3 text-sm">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">
-                      {c.section} · {c.type}
-                    </p>
-                    {c.original && <p className="diff-removed mt-1">{c.original}</p>}
-                    {c.updated && <p className="diff-added mt-1">{c.updated}</p>}
-                    {c.reason && (
-                      <p className="mt-1.5 text-xs italic text-ink-faint">{c.reason}</p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </Card>
-          </div>
-
-          <div>
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2 print:hidden">
+            <div className="mb-2 mt-3 flex flex-wrap items-center justify-between gap-2 print:hidden">
               <p className="text-xs text-ink-faint">
                 ✏️ Click any text to edit — changes stay in this session only.
               </p>
@@ -1034,7 +985,7 @@ export function TryNow() {
                   {CV_TEMPLATES.map((t) => (
                     <button
                       key={t}
-                      onClick={() => setTemplate(t)}
+                      onClick={() => patch({ template: t })}
                       className={`cursor-pointer rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${
                         template === t
                           ? "bg-ink text-bg"
@@ -1045,154 +996,176 @@ export function TryNow() {
                     </button>
                   ))}
                 </div>
-                <Button variant="outline" size="sm" onClick={() => exportPdf("report")}>
-                  Download report (PDF)
-                </Button>
-                <Button size="sm" onClick={() => exportPdf("cv")}>
-                  Download CV (PDF)
+                <button
+                  onClick={() => setSplitView((v) => !v)}
+                  className={`cursor-pointer rounded-full border px-3 py-1 text-xs font-semibold ${
+                    splitView
+                      ? "border-accent bg-selected-bg text-accent"
+                      : "border-border bg-card text-ink-soft hover:bg-chip"
+                  }`}
+                >
+                  ⿻ Split view
+                </button>
+                <Button size="sm" onClick={exportBoth}>
+                  Download my files (2 PDFs)
                 </Button>
               </div>
             </div>
-            <div className="overflow-auto rounded-2xl border border-border bg-chip p-4 print:border-0 print:bg-white print:p-0">
+            <div
+              className={`overflow-auto rounded-2xl border border-border bg-chip p-4 print:border-0 print:bg-white print:p-0 ${
+                splitView ? "cv-split" : ""
+              }`}
+            >
               <CvRenderer
                 cv={results.cv}
                 template={template}
                 editable
                 onChange={(next) =>
-                  setResults((r) => (r ? { ...r, cv: next } : r))
+                  setState((s) =>
+                    s.results ? { ...s, results: { ...s.results, cv: next } } : s
+                  )
                 }
               />
             </div>
-            <p className="mt-4 text-center text-xs text-ink-faint print:hidden">
+            <p className="mt-3 text-center text-xs text-ink-faint print:hidden">
               {remaining !== null
                 ? `${remaining} free CV${remaining === 1 ? "" : "s"} left today.`
                 : "Free during launch."}
             </p>
           </div>
 
-          {/* Printable simulation report — hidden on screen, becomes the
-              second deliverable file via "Download report (PDF)" */}
-          <div className="report-page bg-white p-[14mm] font-sans text-[12px] leading-relaxed text-slate-900">
-            <div className="border-b-2 border-slate-900 pb-3">
-              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
-                SpeCV · Match &amp; Interview Simulation Report
-              </p>
-              <h1 className="mt-1 text-[22px] font-extrabold">
-                {state.profile?.contact.fullName || "Candidate"}
-              </h1>
-              <p className="text-[12px] text-slate-600">
-                Target role: {results.jobTitle || "—"}
-                {results.company ? ` · ${results.company}` : ""} · Generated{" "}
-                {new Date().toLocaleDateString("en-GB")}
-              </p>
-            </div>
-
-            <div className="mt-4 flex items-baseline gap-3">
-              <span className="text-[28px] font-extrabold">
+          {/* ---- 2. Match analysis ---- */}
+          <Card className="p-6 print:hidden">
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-ink">Match analysis</h3>
+              <span className="font-display text-2xl font-extrabold text-accent">
                 {results.diff.gapAnalysis.matchScore}%
               </span>
-              <span className="text-[12px] font-bold uppercase tracking-wide text-slate-500">
-                match score
-              </span>
             </div>
-
-            {results.diff.gapAnalysis.strengths.length > 0 && (
-              <>
-                <h2 className="mt-4 text-[13px] font-extrabold uppercase tracking-wide">
-                  Strengths
-                </h2>
-                <ul className="mt-1 list-disc pl-5">
-                  {results.diff.gapAnalysis.strengths.map((s, i) => (
-                    <li key={i}>{s}</li>
-                  ))}
-                </ul>
-              </>
-            )}
-            {results.diff.gapAnalysis.gaps.length > 0 && (
-              <>
-                <h2 className="mt-3 text-[13px] font-extrabold uppercase tracking-wide">
-                  Gaps to prepare for
-                </h2>
-                <ul className="mt-1 list-disc pl-5">
-                  {results.diff.gapAnalysis.gaps.map((g, i) => (
-                    <li key={i}>{g}</li>
-                  ))}
-                </ul>
-              </>
-            )}
+            <div className="mt-2 h-2 overflow-hidden rounded-full bg-chip">
+              <div
+                className="h-full rounded-full bg-accent"
+                style={{ width: `${results.diff.gapAnalysis.matchScore}%` }}
+              />
+            </div>
+            <div className="mt-2 grid gap-x-8 sm:grid-cols-2">
+              <div>
+                {results.diff.gapAnalysis.strengths.length > 0 && (
+                  <>
+                    <h4 className="mt-2 text-xs font-bold uppercase text-accent">
+                      Strengths
+                    </h4>
+                    <ul className="mt-1 list-disc pl-4 text-sm text-ink-soft">
+                      {results.diff.gapAnalysis.strengths.map((s, i) => (
+                        <li key={i}>{s}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </div>
+              <div>
+                {results.diff.gapAnalysis.gaps.length > 0 && (
+                  <>
+                    <h4 className="mt-2 text-xs font-bold uppercase text-red-700">
+                      Gaps
+                    </h4>
+                    <ul className="mt-1 list-disc pl-4 text-sm text-ink-soft">
+                      {results.diff.gapAnalysis.gaps.map((g, i) => (
+                        <li key={i}>{g}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </div>
+            </div>
             {results.diff.gapAnalysis.recommendations.length > 0 && (
               <>
-                <h2 className="mt-3 text-[13px] font-extrabold uppercase tracking-wide">
+                <h4 className="mt-3 text-xs font-bold uppercase text-accent">
                   Recommendations
-                </h2>
-                <ul className="mt-1 list-disc pl-5">
+                </h4>
+                <ul className="mt-1 list-disc pl-4 text-sm text-ink-soft">
                   {results.diff.gapAnalysis.recommendations.map((r, i) => (
                     <li key={i}>{r}</li>
                   ))}
                 </ul>
               </>
             )}
+          </Card>
 
-            {results.simulation.pitch && (
-              <>
-                <h2 className="mt-4 text-[13px] font-extrabold uppercase tracking-wide">
-                  Your 30-second pitch
-                </h2>
-                <p className="mt-1 italic">“{results.simulation.pitch}”</p>
-              </>
-            )}
-            {results.simulation.questions.length > 0 && (
-              <>
-                <h2 className="mt-4 text-[13px] font-extrabold uppercase tracking-wide">
-                  Interview simulation — likely questions
-                </h2>
-                <div className="mt-1 space-y-2.5">
-                  {results.simulation.questions.map((q, i) => (
-                    <div key={i}>
-                      <p className="font-bold">
-                        {i + 1}. {q.question}
-                      </p>
-                      {q.whyTheyAsk && (
-                        <p className="text-[11px] italic text-slate-500">
-                          Why they ask: {q.whyTheyAsk}
-                        </p>
-                      )}
-                      {q.howToAnswer && <p>{q.howToAnswer}</p>}
-                    </div>
-                  ))}
+          {/* ---- 3. Interview simulation (comic scenes per tone) ---- */}
+          {(results.simulation.pitch ||
+            results.simulation.questions.length > 0) && (
+            <Card className="p-6 print:hidden">
+              <h3 className="font-bold text-ink">Interview simulation</h3>
+              {results.simulation.pitch && (
+                <div className="mt-3 rounded-[14px] bg-green-50 p-3 text-sm text-accent-deep">
+                  <p className="text-xs font-bold uppercase">Your 30-second pitch</p>
+                  <p className="mt-1 italic">“{results.simulation.pitch}”</p>
                 </div>
-              </>
-            )}
-
-            {results.diff.changes.length > 0 && (
-              <>
-                <h2 className="mt-4 text-[13px] font-extrabold uppercase tracking-wide">
-                  What we changed in your CV, and why
-                </h2>
-                <div className="mt-1 space-y-2">
-                  {results.diff.changes.map((c, i) => (
-                    <div key={i}>
-                      <p className="text-[10px] font-bold uppercase text-slate-500">
-                        {c.section} · {c.type}
-                      </p>
-                      {c.original && (
-                        <p className="text-slate-500 line-through">{c.original}</p>
-                      )}
-                      {c.updated && <p>{c.updated}</p>}
-                      {c.reason && (
-                        <p className="text-[11px] italic text-slate-500">{c.reason}</p>
-                      )}
+              )}
+              <div className="mt-3 space-y-3">
+                {results.simulation.questions.map((q, i) => {
+                  const tone = TONE_META[q.tone] ?? TONE_META.curious;
+                  return (
+                    <div
+                      key={i}
+                      className="flex gap-3 rounded-[14px] border border-border p-3 text-sm"
+                    >
+                      <InterviewScene tone={q.tone} />
+                      <div className="min-w-0 flex-1">
+                        <span
+                          className="rounded-full px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide text-white"
+                          style={{ background: tone.chip }}
+                        >
+                          {tone.label}
+                        </span>
+                        <span className="ml-2 text-[11px] italic text-ink-faint">
+                          {tone.hint}
+                        </span>
+                        <p className="mt-1 font-semibold text-ink">{q.question}</p>
+                        {q.whyTheyAsk && (
+                          <p className="mt-1 text-xs italic text-ink-faint">
+                            Why they ask: {q.whyTheyAsk}
+                          </p>
+                        )}
+                        {q.howToAnswer && (
+                          <p className="mt-1.5 text-[13px] text-ink-soft">
+                            {q.howToAnswer}
+                          </p>
+                        )}
+                      </div>
                     </div>
-                  ))}
-                </div>
-              </>
-            )}
+                  );
+                })}
+              </div>
+            </Card>
+          )}
 
-            <p className="mt-6 border-t border-slate-300 pt-2 text-[10px] text-slate-400">
-              Generated by SpeCV — every claim traces back to the
-              candidate&apos;s own CV and answers. Nothing was invented.
-            </p>
-          </div>
+          {/* ---- 4. Change report ---- */}
+          <Card className="p-6 print:hidden">
+            <h3 className="font-bold text-ink">Change report</h3>
+            <div className="mt-3 space-y-3">
+              {results.diff.changes.map((c, i) => (
+                <div key={i} className="rounded-[14px] border border-border p-3 text-sm">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">
+                    {c.section} · {c.type}
+                  </p>
+                  {c.original && <p className="diff-removed mt-1">{c.original}</p>}
+                  {c.updated && <p className="diff-added mt-1">{c.updated}</p>}
+                  {c.reason && (
+                    <p className="mt-1.5 text-xs italic text-ink-faint">{c.reason}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {/* Printable simulation report — hidden on screen, becomes the
+              second deliverable file of the download bundle */}
+          <ReportPage
+            results={results}
+            candidateName={state.profile?.contact.fullName || ""}
+          />
         </div>
       )}
 

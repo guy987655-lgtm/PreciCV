@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Bricolage_Grotesque, Figtree } from "next/font/google";
 import { AnalyticsProvider } from "@/components/analytics-provider";
 import { DevUserSimulator } from "@/components/dev-user-simulator";
+import { ScrollToTop } from "@/components/scroll-to-top";
 import "./globals.css";
 
 const bricolage = Bricolage_Grotesque({
@@ -29,6 +30,7 @@ export default function RootLayout({
     <html lang="en" className={`${bricolage.variable} ${figtree.variable}`}>
       <body className="min-h-screen bg-bg font-sans text-ink antialiased">
         <AnalyticsProvider>{children}</AnalyticsProvider>
+        <ScrollToTop />
         <DevUserSimulator />
       </body>
     </html>

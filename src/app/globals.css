@@ -74,6 +74,29 @@ body {
   display: none;
 }
 
+/* Hidden CV print holder (History page downloads a stored flow's CV). */
+.print-cv-holder {
+  display: none;
+}
+
+/* Printed files must match the on-screen colors 1:1. */
+.cv-page,
+.report-page {
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+/* Results page "split view": the one-pager flows into two side-by-side
+   columns so the whole document is visible without scrolling. */
+.cv-split .cv-page {
+  column-count: 2;
+  column-gap: 40px;
+  column-rule: 1.5px solid #e3e9dc;
+  max-width: none !important;
+  width: 100% !important;
+  min-height: 0 !important;
+}
+
 /* Print-to-PDF: two deliverable files, both sized to A4.
    Default → the CV (.cv-page); body.print-report → the report. */
 @media print {
@@ -86,6 +109,13 @@ body {
   body:not(.print-report) .cv-page,
   body:not(.print-report) .cv-page * {
     visibility: visible;
+  }
+  body:not(.print-report) .print-cv-holder {
+    display: block;
+  }
+  /* Split view is a screen-only affordance — print stays single-column. */
+  .cv-split .cv-page {
+    column-count: 1;
   }
   body.print-report .report-page {
     display: block;

@@ -197,11 +197,14 @@ export const InterviewSimulationSchema = z.object({
         question: z.string(),
         whyTheyAsk: z.string().default(""),
         howToAnswer: z.string().default(""),
+        /** How the interviewer asks it — drives the comic illustration. */
+        tone: z.enum(["friendly", "curious", "challenging"]).default("curious"),
       })
     )
     .default([]),
 });
 export type InterviewSimulation = z.infer<typeof InterviewSimulationSchema>;
+export type InterviewTone = InterviewSimulation["questions"][number]["tone"];
 
 export const GenerationResultSchema = z.object({
   cv: TailoredCvSchema,

@@ -1,4 +1,6 @@
 import {
+  CvTemplate,
+  GenerationResult,
   MasterProfile,
   MAX_REQUIRED_QUESTIONS,
   McqQuestionnaire,
@@ -95,6 +97,24 @@ export const OTHER_OPTION = "__other__";
 
 export type FunnelStep = "upload" | "mcq" | "open" | "gate";
 
+/** Funnel step sequence — shared by the stepper, resume and History. */
+export const STEP_ORDER: FunnelStep[] = ["upload", "mcq", "open", "gate"];
+
+/** Fired by the Home nav button so a mounted funnel swaps to the hero. */
+export const HOME_EVENT = "specv:home";
+
+/**
+ * Home always lands on the homepage hero: the active flow is kept — only
+ * its visible step returns to "upload" (furthestStep survives, so the
+ * hero's "Continue progress" button can jump straight back).
+ */
+export function goHome() {
+  if (typeof window === "undefined") return;
+  const s = loadFunnel();
+  if (s?.profile && s.step !== "upload") saveFunnel({ ...s, step: "upload" });
+  window.dispatchEvent(new Event(HOME_EVENT));
+}
+
 export type McqAnswer = {
   /** Chosen options in click order — for ranked questions index = priority. */
   selected: string[];
@@ -105,7 +125,11 @@ export type McqAnswer = {
 };
 
 export type FunnelState = {
+  /** unique per flow — a new flow starts on every CV upload */
+  flowId: string;
   step: FunnelStep;
+  /** the furthest step index the user reached (for stepper + resume) */
+  furthestStep: number;
   profile: MasterProfile | null;
   rawText: string;
   questionnaire: Questionnaire | null;
@@ -119,11 +143,18 @@ export type FunnelState = {
   /** carousel position within the quick-check question pool */
   mcqIndex: number;
   jdText: string;
+  /** the generated deliverables — persisted so History can re-download */
+  results: GenerationResult | null;
+  template: CvTemplate;
+  downloadedCv: boolean;
+  downloadedReport: boolean;
   savedAt: number;
 };
 
 export const EMPTY_FUNNEL: FunnelState = {
+  flowId: "",
   step: "upload",
+  furthestStep: 0,
   profile: null,
   rawText: "",
   questionnaire: null,
@@ -133,6 +164,10 @@ export const EMPTY_FUNNEL: FunnelState = {
   roleQuestionsLoaded: false,
   mcqIndex: 0,
   jdText: "",
+  results: null,
+  template: "classic",
+  downloadedCv: false,
+  downloadedReport: false,
   savedAt: 0,
 };
 
@@ -208,6 +243,76 @@ export function saveFunnel(state: FunnelState) {
 export function clearFunnel() {
   if (typeof window === "undefined") return;
   localStorage.removeItem(FUNNEL_KEY);
+}
+
+/* ------------------------------------------------------------------ */
+/* History — every CV upload starts a flow; old flows are never lost   */
+/* ------------------------------------------------------------------ */
+
+export const HISTORY_KEY = "specv_history_v1";
+const HISTORY_MAX = 20;
+
+export function loadHistory(): FunnelState[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(arr)) return [];
+    return arr.map((f) => ({ ...EMPTY_FUNNEL, ...f })) as FunnelState[];
+  } catch {
+    return [];
+  }
+}
+
+function persistHistory(flows: FunnelState[]) {
+  try {
+    localStorage.setItem(
+      HISTORY_KEY,
+      JSON.stringify(flows.slice(0, HISTORY_MAX))
+    );
+  } catch {
+    // Storage full — drop the oldest half and retry once.
+    try {
+      localStorage.setItem(
+        HISTORY_KEY,
+        JSON.stringify(flows.slice(0, Math.ceil(HISTORY_MAX / 2)))
+      );
+    } catch {
+      /* give up quietly */
+    }
+  }
+}
+
+/** Archives a flow (deduped by flowId, newest first). */
+export function pushToHistory(state: FunnelState) {
+  if (typeof window === "undefined" || !state.profile) return;
+  const id = state.flowId || crypto.randomUUID();
+  const rest = loadHistory().filter((f) => f.flowId !== id);
+  persistHistory([{ ...state, flowId: id }, ...rest]);
+}
+
+export function removeFromHistory(flowId: string) {
+  if (typeof window === "undefined") return;
+  persistHistory(loadHistory().filter((f) => f.flowId !== flowId));
+}
+
+/** Updates an archived flow in place (e.g. download flags). */
+export function updateHistoryEntry(flowId: string, patch: Partial<FunnelState>) {
+  if (typeof window === "undefined") return;
+  persistHistory(
+    loadHistory().map((f) => (f.flowId === flowId ? { ...f, ...patch } : f))
+  );
+}
+
+/**
+ * Makes an archived flow the active one; the current active flow (if any,
+ * and different) is archived first so nothing is ever overwritten.
+ */
+export function activateFlow(flow: FunnelState) {
+  const active = loadFunnel();
+  if (active?.profile && active.flowId !== flow.flowId) pushToHistory(active);
+  removeFromHistory(flow.flowId);
+  saveFunnel(flow);
 }
 
 /**

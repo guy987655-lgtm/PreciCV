@@ -412,8 +412,11 @@ const TAILORING_SYSTEM =
   "8. In 'simulation', prepare the candidate for THIS job's interview: a " +
   "30-second elevator pitch in the candidate's voice, and 6-8 questions " +
   "this employer is likely to ask (mix of role-specific, behavioral, and " +
-  "gap-probing). For each: whyTheyAsk (one sentence) and howToAnswer — " +
-  "concrete guidance grounded ONLY in the candidate's real background.";
+  "gap-probing). For each: whyTheyAsk (one sentence), howToAnswer — " +
+  "concrete guidance grounded ONLY in the candidate's real background — " +
+  "and 'tone': how the interviewer will ask it ('friendly' = warm " +
+  "rapport-building, 'curious' = genuinely probing for detail, " +
+  "'challenging' = skeptical, pressure-testing a gap).";
 
 export async function generateTailoredCv(
   profile: MasterProfile,

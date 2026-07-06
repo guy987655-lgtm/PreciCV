@@ -85,7 +85,13 @@ const MOCK_JD =
 
 export function mockFunnelState(opts?: { withJob?: boolean }): FunnelState {
   return {
+    flowId: "mock-flow",
     step: "gate",
+    furthestStep: 3,
+    results: null,
+    template: "classic",
+    downloadedCv: false,
+    downloadedReport: false,
     profile: {
       contact: {
         fullName: "Dana Levi",

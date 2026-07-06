@@ -268,5 +268,23 @@ export type TierId = keyof typeof TIERS;
 /** Minimum cosine similarity between original and updated JD on revision */
 export const JD_SIMILARITY_THRESHOLD = 0.85;
 
-export const CV_TEMPLATES = ["classic", "modern", "compact"] as const;
+/**
+ * The CV design gallery. All templates share one structured model (see
+ * TailoredCv) and print to a single A4 page; they differ in typeface,
+ * spacing and color. `onyx`, `midnight` and `slate` are dark-background
+ * designs. Visual definitions live in src/components/cv-renderer.tsx.
+ */
+export const CV_TEMPLATES = [
+  "classic",
+  "modern",
+  "compact",
+  "executive",
+  "elegant",
+  "technical",
+  "contemporary",
+  "minimal",
+  "onyx",
+  "midnight",
+  "slate",
+] as const;
 export type CvTemplate = (typeof CV_TEMPLATES)[number];

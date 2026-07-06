@@ -1,5 +1,5 @@
 import { GenerationResult } from "@/lib/types";
-import { InterviewScene, TONE_META } from "@/components/interview-faces";
+import { TONE_META } from "@/components/interview-faces";
 
 /** SVG donut gauge for the match score — prints in full color. */
 function ScoreGauge({ score }: { score: number }) {
@@ -38,7 +38,8 @@ function PanelTitle({ color, children }: { color: string; children: React.ReactN
   return (
     <h2
       className="text-[13px] font-extrabold uppercase tracking-wide"
-      style={{ color }}
+      // Never leave a heading orphaned at the foot of a page.
+      style={{ color, breakAfter: "avoid" }}
     >
       {children}
     </h2>
@@ -78,7 +79,10 @@ export function ReportPage({
 
       <div className="px-[14mm] py-6">
         {/* Score + verdict row */}
-        <div className="flex items-center gap-6 rounded-2xl bg-[#F1F6EE] p-4">
+        <div
+          className="flex items-center gap-6 rounded-2xl bg-[#F1F6EE] p-4"
+          style={{ breakInside: "avoid" }}
+        >
           <ScoreGauge score={gap.matchScore} />
           <div>
             <p className="text-[15px] font-extrabold text-[#1E2B24]">
@@ -94,21 +98,31 @@ export function ReportPage({
         {/* Strengths / gaps side by side */}
         <div className="mt-5 grid grid-cols-2 gap-4">
           {gap.strengths.length > 0 && (
-            <div className="rounded-2xl border-2 border-[#C9DFC4] bg-[#E4F0DF] p-4">
+            <div
+              className="rounded-2xl border-2 border-[#C9DFC4] bg-[#E4F0DF] p-4"
+              style={{ breakInside: "avoid" }}
+            >
               <PanelTitle color="#1F4A36">✓ Your strengths</PanelTitle>
               <ul className="mt-1.5 list-disc pl-4 text-[11.5px]">
                 {gap.strengths.map((s, i) => (
-                  <li key={i}>{s}</li>
+                  <li key={i} style={{ breakInside: "avoid" }}>
+                    {s}
+                  </li>
                 ))}
               </ul>
             </div>
           )}
           {gap.gaps.length > 0 && (
-            <div className="rounded-2xl border-2 border-[#F3DCD7] bg-[#FBEFEC] p-4">
+            <div
+              className="rounded-2xl border-2 border-[#F3DCD7] bg-[#FBEFEC] p-4"
+              style={{ breakInside: "avoid" }}
+            >
               <PanelTitle color="#B04A3A">! Gaps to prepare for</PanelTitle>
               <ul className="mt-1.5 list-disc pl-4 text-[11.5px]">
                 {gap.gaps.map((g, i) => (
-                  <li key={i}>{g}</li>
+                  <li key={i} style={{ breakInside: "avoid" }}>
+                    {g}
+                  </li>
                 ))}
               </ul>
             </div>
@@ -116,11 +130,16 @@ export function ReportPage({
         </div>
 
         {gap.recommendations.length > 0 && (
-          <div className="mt-4 rounded-2xl border-2 border-[#E9EDE2] bg-[#F8FAF5] p-4">
+          <div
+            className="mt-4 rounded-2xl border-2 border-[#E9EDE2] bg-[#F8FAF5] p-4"
+            style={{ breakInside: "avoid" }}
+          >
             <PanelTitle color="#2F6B4F">→ Recommendations</PanelTitle>
             <ul className="mt-1.5 list-disc pl-4 text-[11.5px]">
               {gap.recommendations.map((r, i) => (
-                <li key={i}>{r}</li>
+                <li key={i} style={{ breakInside: "avoid" }}>
+                  {r}
+                </li>
               ))}
             </ul>
           </div>
@@ -128,7 +147,7 @@ export function ReportPage({
 
         {/* Pitch as a speech bubble */}
         {results.simulation.pitch && (
-          <div className="mt-6">
+          <div className="mt-6" style={{ breakInside: "avoid" }}>
             <PanelTitle color="#1E2B24">Your 30-second pitch</PanelTitle>
             <div className="relative mt-2 rounded-2xl bg-[#2F6B4F] p-4 text-[12.5px] italic leading-relaxed text-white">
               “{results.simulation.pitch}”
@@ -149,10 +168,9 @@ export function ReportPage({
                 return (
                   <div
                     key={i}
-                    className="flex gap-3 rounded-2xl border-[1.5px] border-[#E3E9DC] p-3"
+                    className="rounded-2xl border-[1.5px] border-[#E3E9DC] p-3"
                     style={{ breakInside: "avoid" }}
                   >
-                    <InterviewScene tone={q.tone} />
                     <div className="min-w-0 flex-1">
                       <span
                         className="rounded-full px-2 py-0.5 text-[9.5px] font-extrabold uppercase tracking-wide text-white"

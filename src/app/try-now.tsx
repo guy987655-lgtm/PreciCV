@@ -27,9 +27,9 @@ import { simMeta, useSimUser } from "@/lib/sim-user";
 import { Badge, Button, Card, Spinner, Textarea } from "@/components/ui";
 import { Paywall } from "@/components/paywall";
 import { McqOptions } from "@/components/mcq-options";
-import { CvRenderer } from "@/components/cv-renderer";
+import { CvRenderer, CV_TEMPLATE_META } from "@/components/cv-renderer";
 import { ReportPage } from "@/components/report-page";
-import { InterviewScene, TONE_META } from "@/components/interview-faces";
+import { TONE_META } from "@/components/interview-faces";
 
 const STEP_LABELS: Record<FunnelStep, string> = {
   upload: "CV + Job",
@@ -37,6 +37,15 @@ const STEP_LABELS: Record<FunnelStep, string> = {
   open: "Sharpen",
   gate: "Results",
 };
+
+/** Numbered step marker (1 → 2 → 3) that guides the upload funnel. */
+function StepNum({ n }: { n: number }) {
+  return (
+    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-[15px] font-extrabold text-white shadow-[0_2px_0_#1F4A36]">
+      {n}
+    </span>
+  );
+}
 
 /** Small accent circle with a white ✓ — the recurring success motif. */
 function CheckCircle({ size = 26 }: { size?: number }) {
@@ -64,6 +73,7 @@ export function TryNow() {
   const [state, setState] = useState<FunnelState>(EMPTY_FUNNEL);
   const [hydrated, setHydrated] = useState(false);
   const [file, setFile] = useState<File | null>(null);
+  const [dragOver, setDragOver] = useState(false);
   const [busy, setBusy] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [leaving, setLeaving] = useState(false);
@@ -142,6 +152,17 @@ export function TryNow() {
   }
   function answerOpen(qId: string, text: string) {
     setState((s) => ({ ...s, answers: { ...s.answers, [qId]: text } }));
+  }
+
+  /** Accept a file from the OS picker or a drag-and-drop, guarding the type. */
+  function acceptFile(f: File | null | undefined) {
+    if (!f) return;
+    if (!/\.(pdf|docx)$/i.test(f.name)) {
+      setError("Please upload a PDF or DOCX file.");
+      return;
+    }
+    setError("");
+    setFile(f);
   }
 
   async function analyze() {
@@ -368,6 +389,10 @@ export function TryNow() {
     Math.max(mcqQuestions.length - 1, 0)
   );
   const currentQ = mcqQuestions[qIndex];
+  const atLastMcq = qIndex >= mcqQuestions.length - 1;
+  // At the end of the current pool, "Next" fetches more role questions.
+  const canExpandPool =
+    atLastMcq && !state.roleQuestionsLoaded && mcqQuestions.length > 0;
 
   /* ---------------- state-aware banner (§3) ---------------- */
   const banner = (() => {
@@ -499,65 +524,112 @@ export function TryNow() {
   function uploadFields(cta: "dark" | "primary") {
     return (
       <>
-        <div className="grid gap-3.5 sm:grid-cols-2">
-          <label
-            className={`flex min-h-40 cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed p-6 text-center transition-colors ${
-              file
-                ? "border-accent-soft bg-selected-bg"
-                : "border-dropzone-border bg-dropzone-bg hover:border-accent-soft"
-            }`}
-          >
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".pdf,.docx"
-              className="hidden"
-              disabled={busy}
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-            />
-            {file ? (
-              <CheckCircle size={46} />
-            ) : (
-              <span className="flex h-[46px] w-[46px] items-center justify-center rounded-full bg-green-100 text-xl font-extrabold text-accent-deep">
-                ↑
+        <div className="grid gap-5 sm:grid-cols-2">
+          {/* 1 — CV upload (large, highlighted, drag-and-drop) */}
+          <div className="flex flex-col gap-2.5">
+            <div className="flex items-center gap-2">
+              <StepNum n={1} />
+              <span className="text-[15px] font-bold text-ink">
+                Upload your CV
               </span>
-            )}
-            <span className="text-[15px] font-bold text-ink">
-              {file ? file.name : "Upload your CV"}
-            </span>
-            <span className="text-[13px] text-ink-faint">
-              {file ? "Click to replace" : "PDF or DOCX"}
-            </span>
-          </label>
+            </div>
+            <label
+              onDragEnter={(e) => {
+                e.preventDefault();
+                if (!busy) setDragOver(true);
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                if (!busy) setDragOver(true);
+              }}
+              onDragLeave={(e) => {
+                e.preventDefault();
+                setDragOver(false);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOver(false);
+                if (!busy) acceptFile(e.dataTransfer.files?.[0]);
+              }}
+              className={`flex min-h-56 flex-1 cursor-pointer flex-col items-center justify-center gap-2.5 rounded-2xl border-[2.5px] border-dashed p-6 text-center transition-all ${
+                dragOver
+                  ? "scale-[1.01] border-accent bg-selected-bg ring-4 ring-accent/15"
+                  : file
+                    ? "border-accent bg-selected-bg"
+                    : "border-dropzone-border bg-dropzone-bg hover:border-accent-soft hover:bg-selected-bg/60"
+              }`}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".pdf,.docx"
+                className="hidden"
+                disabled={busy}
+                onChange={(e) => acceptFile(e.target.files?.[0])}
+              />
+              {file ? (
+                <CheckCircle size={54} />
+              ) : (
+                <span className="flex h-[54px] w-[54px] items-center justify-center rounded-full bg-green-100 text-2xl font-extrabold text-accent-deep">
+                  ↑
+                </span>
+              )}
+              <span className="text-[16px] font-bold text-ink">
+                {file
+                  ? file.name
+                  : dragOver
+                    ? "Drop your file to upload"
+                    : "Drag & drop your CV here"}
+              </span>
+              <span className="text-[13px] text-ink-faint">
+                {file ? "Click or drop to replace" : "or click to browse · PDF or DOCX"}
+              </span>
+            </label>
+          </div>
 
-          <Textarea
-            rows={6}
-            className="flex-1 resize-none rounded-2xl"
-            placeholder={
-              "--- Copied from LinkedIn ---\nSenior Product Manager, Growth\nTel Aviv · Hybrid\nWe're looking for a PM to own our activation funnel end-to-end…"
-            }
-            value={state.jdText}
-            onChange={(e) => patch({ jdText: e.target.value })}
-          />
+          {/* 2 — Job description (large rectangular text box) */}
+          <div className="flex flex-col gap-2.5">
+            <div className="flex items-center gap-2">
+              <StepNum n={2} />
+              <span className="text-[15px] font-bold text-ink">
+                Paste the job description
+              </span>
+            </div>
+            <Textarea
+              rows={10}
+              className="min-h-56 flex-1 resize-none rounded-lg border-2 leading-relaxed"
+              placeholder={
+                "--- Copied from LinkedIn ---\nSenior Product Manager, Growth\nTel Aviv · Hybrid\nWe're looking for a PM to own our activation funnel end-to-end…"
+              }
+              value={state.jdText}
+              onChange={(e) => patch({ jdText: e.target.value })}
+            />
+          </div>
         </div>
         {file && state.jdText.trim().length > 0 && !hasJob && (
           <p className="text-center text-[13px] text-ink-faint">
             Paste a bit more of the job posting (min. 100 characters)
           </p>
         )}
-        <Button
-          variant={cta === "dark" ? "dark" : "primary"}
-          size="lg"
-          className="w-full"
-          disabled={!file || !hasJob || busy}
-          onClick={analyze}
-        >
-          {busy ? (
-            <Spinner label="Analyzing your CV… (up to a minute)" />
-          ) : (
-            "Analyze my CV — free"
-          )}
-        </Button>
+        {/* 3 — Analyze */}
+        <div className="flex items-stretch gap-3">
+          <div className="flex items-center">
+            <StepNum n={3} />
+          </div>
+          <Button
+            variant={cta === "dark" ? "dark" : "primary"}
+            size="lg"
+            className="flex-1"
+            disabled={!file || !hasJob || busy}
+            onClick={analyze}
+          >
+            {busy ? (
+              <Spinner label="Analyzing your CV… (up to a minute)" />
+            ) : (
+              "Analyze my CV — free"
+            )}
+          </Button>
+        </div>
         {state.profile && (
           <p className="text-center text-[13px] text-ink-faint">
             You have an analysis in progress
@@ -815,45 +887,54 @@ export function TryNow() {
                   Skip
                 </button>
               )}
-              <Button
-                disabled={qIndex >= mcqQuestions.length - 1}
-                onClick={nextQuestion}
-              >
-                Next →
-              </Button>
+              {canExpandPool ? (
+                <Button disabled={loadingMore} onClick={loadRoleQuestions}>
+                  {loadingMore ? (
+                    <Spinner label="Adding role questions…" />
+                  ) : (
+                    "＋ More questions"
+                  )}
+                </Button>
+              ) : (
+                <Button disabled={atLastMcq} onClick={nextQuestion}>
+                  Next →
+                </Button>
+              )}
             </div>
           </div>
 
-          {/* Question-pool top-up (up to MAX_MCQ_POOL role questions) */}
-          {(loadingMore || !state.roleQuestionsLoaded) && (
-            <div className="rounded-2xl border-2 border-dashed border-dropzone-border bg-dropzone-bg p-3.5 text-center">
-              {loadingMore ? (
-                <Spinner label="Scanning standard role requirements to grow your question pool…" />
-              ) : (
-                <>
-                  <p className="text-[13px] text-ink-soft">
-                    Grow your pool (up to {MAX_MCQ_POOL} role-specific
-                    questions) — we&apos;ll scan the standard requirements
-                    employers list for your role.
-                  </p>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    className="mt-2"
-                    onClick={loadRoleQuestions}
-                  >
-                    Generate more role questions
-                  </Button>
-                </>
-              )}
-            </div>
+          {/* Reaching the last card unlocks a bigger, role-specific pool */}
+          {canExpandPool && !loadingMore && (
+            <p className="text-center text-[12.5px] text-ink-faint">
+              That&apos;s the last one for now. Press{" "}
+              <strong className="text-accent">＋ More questions</strong> to pull
+              up to {MAX_MCQ_POOL} role-specific questions employers expect for
+              your role.
+            </p>
           )}
 
-          {/* Step footer */}
-          <div className="flex items-center justify-between">
+          {/* Step footer — the Continue CTA becomes prominent once the
+              required questions are all answered (mandatory part complete). */}
+          {mcqUnlocked && (
+            <div className="flex items-center justify-center gap-2 rounded-2xl border-2 border-accent bg-selected-bg px-4 py-3 text-center">
+              <CheckCircle size={24} />
+              <p className="text-[14px] font-bold text-accent-deep">
+                Required questions done — you can continue. Add more to sharpen
+                your match, or move on.
+              </p>
+            </div>
+          )}
+          <div className="flex items-center justify-between gap-3">
             <BackButton to="upload" />
-            <Button disabled={!mcqUnlocked} onClick={() => goTo("open")}>
-              Continue →
+            <Button
+              size={mcqUnlocked ? "lg" : "md"}
+              disabled={!mcqUnlocked}
+              onClick={() => goTo("open")}
+              className={
+                mcqUnlocked ? "ring-2 ring-accent/30 ring-offset-2" : ""
+              }
+            >
+              Continue to Sharpen →
             </Button>
           </div>
         </div>
@@ -867,14 +948,21 @@ export function TryNow() {
             sub="Real material recruiters look for. Any language — we'll polish the wording."
           />
 
-          {/* Prominent skip — this whole step is optional */}
-          <div className="-mt-2 text-center">
-            <button
-              className="cursor-pointer rounded-full border-[1.5px] border-border-strong px-5 py-2 text-sm font-bold text-accent transition-colors hover:bg-card"
-              onClick={finishQuestions}
-            >
+          {/* This whole step is optional — make skipping the obvious path,
+              and tell users they can finish it later from the My Card tab. */}
+          <div className="-mt-1 flex flex-col items-center gap-3 rounded-2xl border-2 border-accent bg-selected-bg px-5 py-4 text-center">
+            <p className="text-[14px] leading-relaxed text-ink-soft">
+              This step is <strong className="text-ink">completely optional</strong>.
+              You can answer now — or come back and finish these anytime from
+              the{" "}
+              <Link href="/card" className="font-bold text-accent underline">
+                My Card
+              </Link>{" "}
+              tab. Your results are ready either way.
+            </p>
+            <Button size="lg" onClick={finishQuestions}>
               Skip this step — take me to my results →
-            </button>
+            </Button>
           </div>
 
           <Card className="flex flex-col gap-[22px] p-7">
@@ -976,56 +1064,73 @@ export function TryNow() {
                 )}
               </h2>
             </div>
-            <div className="mb-2 mt-3 flex flex-wrap items-center justify-between gap-2 print:hidden">
-              <p className="text-xs text-ink-faint">
-                ✏️ Click any text to edit — changes stay in this session only.
-              </p>
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="flex rounded-full border border-border bg-card p-0.5">
-                  {CV_TEMPLATES.map((t) => (
-                    <button
-                      key={t}
-                      onClick={() => patch({ template: t })}
-                      className={`cursor-pointer rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${
-                        template === t
-                          ? "bg-ink text-bg"
-                          : "text-ink-soft hover:bg-chip"
-                      }`}
-                    >
-                      {t}
-                    </button>
-                  ))}
+            <div className="mb-3 mt-3 flex flex-col gap-3 print:hidden">
+              {/* Design gallery — 11 templates incl. dark-background designs */}
+              <div>
+                <p className="mb-1.5 text-xs font-semibold text-ink-faint">
+                  Choose a design
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {CV_TEMPLATES.map((t) => {
+                    const m = CV_TEMPLATE_META[t];
+                    const active = template === t;
+                    return (
+                      <button
+                        key={t}
+                        onClick={() => patch({ template: t })}
+                        className={`inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition-colors ${
+                          active
+                            ? "border-ink bg-ink text-bg"
+                            : "border-border bg-card text-ink-soft hover:bg-chip"
+                        }`}
+                      >
+                        <span
+                          aria-hidden
+                          className={`h-2.5 w-2.5 rounded-full border ${
+                            m.dark
+                              ? "border-black/30 bg-ink"
+                              : "border-border bg-white"
+                          }`}
+                        />
+                        {m.label}
+                        {m.dark && (
+                          <span
+                            className={`text-[9px] font-bold uppercase tracking-wide ${
+                              active ? "text-bg/70" : "text-ink-faint"
+                            }`}
+                          >
+                            dark
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
-                <button
-                  onClick={() => setSplitView((v) => !v)}
-                  className={`cursor-pointer rounded-full border px-3 py-1 text-xs font-semibold ${
-                    splitView
-                      ? "border-accent bg-selected-bg text-accent"
-                      : "border-border bg-card text-ink-soft hover:bg-chip"
-                  }`}
-                >
-                  ⿻ Split view
-                </button>
-                <Button size="sm" onClick={exportBoth}>
-                  Download my files (2 PDFs)
-                </Button>
+              </div>
+              {/* Controls */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs text-ink-faint">
+                  Preview your one-page CV, then download.
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => setSplitView((v) => !v)}
+                    className={`cursor-pointer rounded-full border px-3 py-1 text-xs font-semibold ${
+                      splitView
+                        ? "border-accent bg-selected-bg text-accent"
+                        : "border-border bg-card text-ink-soft hover:bg-chip"
+                    }`}
+                  >
+                    ⿻ Split view
+                  </button>
+                  <Button size="sm" onClick={exportBoth}>
+                    Download my files (2 PDFs)
+                  </Button>
+                </div>
               </div>
             </div>
-            <div
-              className={`overflow-auto rounded-2xl border border-border bg-chip p-4 print:border-0 print:bg-white print:p-0 ${
-                splitView ? "cv-split" : ""
-              }`}
-            >
-              <CvRenderer
-                cv={results.cv}
-                template={template}
-                editable
-                onChange={(next) =>
-                  setState((s) =>
-                    s.results ? { ...s, results: { ...s.results, cv: next } } : s
-                  )
-                }
-              />
+            <div className="overflow-auto rounded-2xl border border-border bg-chip p-4 print:border-0 print:bg-white print:p-0">
+              <CvRenderer cv={results.cv} template={template} split={splitView} />
             </div>
             <p className="mt-3 text-center text-xs text-ink-faint print:hidden">
               {remaining !== null
@@ -1092,7 +1197,7 @@ export function TryNow() {
             )}
           </Card>
 
-          {/* ---- 3. Interview simulation (comic scenes per tone) ---- */}
+          {/* ---- 3. Interview simulation (clean, text-only) ---- */}
           {(results.simulation.pitch ||
             results.simulation.questions.length > 0) && (
             <Card className="p-6 print:hidden">
@@ -1109,9 +1214,8 @@ export function TryNow() {
                   return (
                     <div
                       key={i}
-                      className="flex gap-3 rounded-[14px] border border-border p-3 text-sm"
+                      className="rounded-[14px] border border-border p-3 text-sm"
                     >
-                      <InterviewScene tone={q.tone} />
                       <div className="min-w-0 flex-1">
                         <span
                           className="rounded-full px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide text-white"

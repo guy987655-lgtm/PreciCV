@@ -68,6 +68,13 @@ body {
   border-radius: 3px;
   padding: 0 3px;
 }
+/* Reordered / unchanged item — shown once, neutral (no red+green duplicate). */
+.diff-moved {
+  background-color: #eef2f7;
+  color: #475569;
+  border-radius: 3px;
+  padding: 0 3px;
+}
 
 /* The simulation report exists only as a print target (second file). */
 .report-page {

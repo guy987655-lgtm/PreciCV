@@ -1,6 +1,6 @@
 "use client";
 
-import { CSSProperties } from "react";
+import { CSSProperties, ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { CvTemplate, TailoredCv } from "@/lib/types";
 
 /**
@@ -86,7 +86,11 @@ type TemplateDef = {
   sectionVariant: SectionVariant;
   /** For "plain" titles that read as muted labels (Minimal). */
   sectionUsesSubtle?: boolean;
-  /** Page-level typography extras (font family, base size). */
+  /** Base body font size in px (default 11) — scaled up by dynamic fill. */
+  baseSize?: number;
+  /** Base line-height multiple (default 1.5). */
+  baseLeading?: number;
+  /** Page-level typography extras (font family). */
   page: string;
   /** Structural name classes — size/weight/tracking (no color, no centering). */
   name: string;
@@ -129,7 +133,9 @@ const TEMPLATES: Record<CvTemplate, TemplateDef> = {
     label: "Compact",
     accent: { light: "#475569", dark: "#b4bdca" },
     sectionVariant: "underline",
-    page: `${FONT.inter} text-[10.5px] leading-snug`,
+    baseSize: 10.5,
+    baseLeading: 1.375,
+    page: `${FONT.inter}`,
     name: "text-[21px] font-bold tracking-tight",
     headline: "text-[11px] mt-0",
     sectionTitle:
@@ -265,21 +271,19 @@ export function CvRenderer({
     cv.contact.website,
   ].filter(Boolean);
 
-  // Defensive de-dupe: never render a section that merely repeats the
-  // top-level summary, or one left with no content (guards older cached
-  // generations too — the engine already strips these on new runs).
-  const sections = cv.sections.filter((section) => {
-    const title = section.title.trim().toLowerCase();
-    if (cv.summary && (title === "summary" || title === "profile")) return false;
-    const hasContent = section.items.some(
-      (it) => it.primary || it.secondary || it.meta || it.bullets.length > 0
-    );
-    return hasContent;
-  });
-
-  // Each section stays whole in split view so a column can only begin with a
-  // section heading, never a paragraph continued from the previous column.
-  const blockCls = split ? "break-inside-avoid" : "";
+  // Defensive de-dupe: drop any section that merely repeats the top-level
+  // summary, or one left with no content (guards older cached generations
+  // too). We keep each survivor's ORIGINAL index so inline edits still write
+  // back to the right cv.sections entry.
+  const sections = cv.sections
+    .map((section, si) => ({ section, si }))
+    .filter(({ section }) => {
+      const title = section.title.trim().toLowerCase();
+      if (cv.summary && (title === "summary" || title === "profile")) return false;
+      return section.items.some(
+        (it) => it.primary || it.secondary || it.meta || it.bullets.length > 0
+      );
+    });
 
   const sectionTitleStyle: CSSProperties =
     t.sectionVariant === "chip"
@@ -288,169 +292,265 @@ export function CvRenderer({
         ? { borderColor: pal.rule, color: accent }
         : { color: t.sectionUsesSubtle ? pal.subtle : accent };
 
+  /* ---------------- dynamic page-fill (single column, read-only) ----------
+     If the generated CV leaves more than 25% of the page blank, gently grow
+     the body font and line spacing so the text fills the sheet naturally
+     instead of stranding a large empty strip at the foot. Disabled in split
+     view and while editing (the editor stays WYSIWYG). */
+  const baseSize = t.baseSize ?? 11;
+  const baseLeading = t.baseLeading ?? 1.5;
+  const pageRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [fill, setFill] = useState(1);
+  const measuredSig = useRef("");
+  const sig = `${template}|${theme}|${split}|${editable}|${JSON.stringify(cv)}`;
+
+  useLayoutEffect(() => {
+    if (split || editable) {
+      if (fill !== 1) setFill(1);
+      return;
+    }
+    if (measuredSig.current === sig) return;
+    if (fill !== 1) {
+      setFill(1); // measure at natural size first
+      return;
+    }
+    measuredSig.current = sig;
+    const page = pageRef.current;
+    const content = contentRef.current;
+    if (!page || !content) return;
+    const cs = getComputedStyle(page);
+    const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    const pageInner = page.clientHeight - padY;
+    const contentH = content.scrollHeight;
+    if (contentH > 0 && pageInner > 0) {
+      const ratio = contentH / pageInner;
+      if (ratio < 0.75) setFill(Math.min(0.94 / ratio, 1.35));
+    }
+  }, [sig, fill, split, editable]);
+
+  // Font grows up to 15%; the rest of the fill goes into line spacing.
+  const fontFactor = Math.min(fill, 1.15);
   const pageStyle = {
     width: "210mm",
     minHeight: "297mm",
     background: pal.bg,
     color: pal.text,
+    fontSize: `${baseSize * fontFactor}px`,
+    lineHeight: baseLeading * (fill / fontFactor),
     "--cv-accent": accent,
   } as CSSProperties;
+
+  /* ---------------- block renderers (shared by both layouts) ---------------- */
+  const renderSection = ({
+    section,
+    si,
+  }: {
+    section: TailoredCv["sections"][number];
+    si: number;
+  }): ReactNode => (
+    <div key={section.id}>
+      <Editable
+        as="h2"
+        className={t.sectionTitle}
+        style={sectionTitleStyle}
+        value={section.title}
+        editable={editable}
+        onCommit={(v) => commit((d) => void (d.sections[si].title = v))}
+      />
+      {section.items.map((item, ii) => (
+        <div key={item.id} className="mb-1.5">
+          <div className="flex items-baseline justify-between gap-2">
+            <div>
+              <Editable
+                className="font-semibold"
+                value={item.primary}
+                editable={editable}
+                onCommit={(v) =>
+                  commit((d) => void (d.sections[si].items[ii].primary = v))
+                }
+              />
+              {item.secondary && (
+                <>
+                  {" · "}
+                  <Editable
+                    style={{ color: pal.subtle }}
+                    value={item.secondary}
+                    editable={editable}
+                    onCommit={(v) =>
+                      commit((d) => void (d.sections[si].items[ii].secondary = v))
+                    }
+                  />
+                </>
+              )}
+            </div>
+            {item.meta && (
+              <Editable
+                className="shrink-0 text-[10px]"
+                style={{ color: pal.subtle }}
+                value={item.meta}
+                editable={editable}
+                onCommit={(v) =>
+                  commit((d) => void (d.sections[si].items[ii].meta = v))
+                }
+              />
+            )}
+          </div>
+          {item.bullets.length > 0 && (
+            <ul
+              className={`ml-4 mt-0.5 space-y-0.5 marker:[color:var(--cv-accent)] ${t.bullet}`}
+            >
+              {item.bullets.map((bullet, bi) => (
+                <Editable
+                  key={bi}
+                  as="li"
+                  value={bullet}
+                  editable={editable}
+                  onCommit={(v) =>
+                    commit((d) => {
+                      if (v === "") {
+                        d.sections[si].items[ii].bullets.splice(bi, 1);
+                      } else {
+                        d.sections[si].items[ii].bullets[bi] = v;
+                      }
+                    })
+                  }
+                />
+              ))}
+            </ul>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+
+  const renderSkills = (): ReactNode => (
+    <div key="__skills">
+      <h2 className={t.sectionTitle} style={sectionTitleStyle}>
+        Skills
+      </h2>
+      <Editable
+        as="p"
+        value={cv.skills.join(" · ")}
+        editable={editable}
+        onCommit={(v) =>
+          commit(
+            (d) =>
+              void (d.skills = v
+                .split(/[·,]/)
+                .map((x) => x.trim())
+                .filter(Boolean))
+          )
+        }
+      />
+    </div>
+  );
+
+  /* ---------------- split layout: two balanced, top-aligned columns --------
+     Sections are distributed contiguously by estimated height so the two
+     columns are roughly even, and each column's first heading has its top
+     margin zeroed so the left and right top headers sit on the same line. */
+  const splitBody = (() => {
+    type Block = { node: ReactNode; weight: number };
+    const blocks: Block[] = sections.map((s) => ({
+      node: renderSection(s),
+      weight:
+        2.5 +
+        s.section.items.reduce((a, it) => a + 1.5 + it.bullets.length, 0),
+    }));
+    if (cv.skills.length > 0) {
+      blocks.push({
+        node: renderSkills(),
+        weight: 2 + Math.ceil(cv.skills.join(" · ").length / 70),
+      });
+    }
+    const total = blocks.reduce((a, b) => a + b.weight, 0);
+    const left: ReactNode[] = [];
+    const right: ReactNode[] = [];
+    let acc = 0;
+    for (const b of blocks) {
+      if (acc < total / 2) {
+        left.push(b.node);
+        acc += b.weight;
+      } else {
+        right.push(b.node);
+      }
+    }
+    // Never leave the right column empty when there's more than one block.
+    if (right.length === 0 && left.length > 1) right.unshift(left.pop());
+
+    const colCls = "flex-1 min-w-0 [&>div:first-child>h2]:mt-0";
+    return (
+      <div className="mt-2 flex">
+        <div className={`${colCls} pr-6`}>{left}</div>
+        <div
+          className={`${colCls} pl-6`}
+          style={{ borderLeft: `1px solid ${pal.rule}` }}
+        >
+          {right}
+        </div>
+      </div>
+    );
+  })();
 
   return (
     <div
       {...(domId ? { id: domId } : {})}
-      className={`cv-page mx-auto flex flex-col px-12 py-10 text-[11px] leading-normal shadow-sm ${t.page}`}
+      ref={pageRef}
+      className={`cv-page mx-auto flex flex-col px-12 py-10 shadow-sm ${t.page}`}
       style={pageStyle}
     >
-      {/* Full-width header — spans the page even in split view */}
-      <Editable
-        as="h1"
-        className={`${t.name}${t.center ? " text-center" : ""}`}
-        style={{ color: t.nameUsesAccent ? accent : pal.text }}
-        value={cv.contact.fullName}
-        editable={editable}
-        onCommit={(v) => commit((d) => void (d.contact.fullName = v))}
-      />
-      {cv.headline && (
+      <div ref={contentRef} className="flex flex-col">
+        {/* Full-width header — spans the page even in split view */}
         <Editable
-          as="p"
-          className={`${t.headline}${t.center ? " text-center" : ""}`}
-          style={{ color: t.headlineUsesAccent ? accent : pal.subtle }}
-          value={cv.headline}
+          as="h1"
+          className={`${t.name}${t.center ? " text-center" : ""}`}
+          style={{ color: t.nameUsesAccent ? accent : pal.text }}
+          value={cv.contact.fullName}
           editable={editable}
-          onCommit={(v) => commit((d) => void (d.headline = v))}
+          onCommit={(v) => commit((d) => void (d.contact.fullName = v))}
         />
-      )}
-      <div
-        className={`mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] ${t.contactExtra ?? ""} ${
-          t.center ? "justify-center" : "justify-start"
-        }`}
-        style={{ color: pal.subtle }}
-      >
-        {contactBits.map((bit, i) => (
-          <span key={i}>{bit}</span>
-        ))}
-      </div>
-
-      {cv.summary && (
-        <div className="mt-1">
-          <h2 className={t.sectionTitle} style={sectionTitleStyle}>
-            Summary
-          </h2>
+        {cv.headline && (
           <Editable
             as="p"
-            value={cv.summary}
+            className={`${t.headline}${t.center ? " text-center" : ""}`}
+            style={{ color: t.headlineUsesAccent ? accent : pal.subtle }}
+            value={cv.headline}
             editable={editable}
-            onCommit={(v) => commit((d) => void (d.summary = v))}
+            onCommit={(v) => commit((d) => void (d.headline = v))}
           />
+        )}
+        <div
+          className={`mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] ${t.contactExtra ?? ""} ${
+            t.center ? "justify-center" : "justify-start"
+          }`}
+          style={{ color: pal.subtle }}
+        >
+          {contactBits.map((bit, i) => (
+            <span key={i}>{bit}</span>
+          ))}
         </div>
-      )}
 
-      {/* Body — in split view two balanced columns, kept in the exported PDF
-          too. Otherwise a single natural top-to-bottom flow with tight,
-          consistent spacing (no page-fill stretching, which left big gaps
-          between paragraphs). */}
-      <div
-        className={split ? "mt-1 gap-x-10 [column-count:2]" : "mt-2 flex flex-col"}
-        style={split ? { columnRule: `1px solid ${pal.rule}` } : undefined}
-      >
-        {sections.map((section, si) => (
-          <div key={section.id} className={blockCls}>
-            <Editable
-              as="h2"
-              className={t.sectionTitle}
-              style={sectionTitleStyle}
-              value={section.title}
-              editable={editable}
-              onCommit={(v) => commit((d) => void (d.sections[si].title = v))}
-            />
-            {section.items.map((item, ii) => (
-              <div key={item.id} className="mb-1.5">
-                <div className="flex items-baseline justify-between gap-2">
-                  <div>
-                    <Editable
-                      className="font-semibold"
-                      value={item.primary}
-                      editable={editable}
-                      onCommit={(v) =>
-                        commit((d) => void (d.sections[si].items[ii].primary = v))
-                      }
-                    />
-                    {item.secondary && (
-                      <>
-                        {" · "}
-                        <Editable
-                          style={{ color: pal.subtle }}
-                          value={item.secondary}
-                          editable={editable}
-                          onCommit={(v) =>
-                            commit(
-                              (d) => void (d.sections[si].items[ii].secondary = v)
-                            )
-                          }
-                        />
-                      </>
-                    )}
-                  </div>
-                  {item.meta && (
-                    <Editable
-                      className="shrink-0 text-[10px]"
-                      style={{ color: pal.subtle }}
-                      value={item.meta}
-                      editable={editable}
-                      onCommit={(v) =>
-                        commit((d) => void (d.sections[si].items[ii].meta = v))
-                      }
-                    />
-                  )}
-                </div>
-                {item.bullets.length > 0 && (
-                  <ul
-                    className={`ml-4 mt-0.5 space-y-0.5 marker:[color:var(--cv-accent)] ${t.bullet}`}
-                  >
-                    {item.bullets.map((bullet, bi) => (
-                      <Editable
-                        key={bi}
-                        as="li"
-                        value={bullet}
-                        editable={editable}
-                        onCommit={(v) =>
-                          commit((d) => {
-                            if (v === "") {
-                              d.sections[si].items[ii].bullets.splice(bi, 1);
-                            } else {
-                              d.sections[si].items[ii].bullets[bi] = v;
-                            }
-                          })
-                        }
-                      />
-                    ))}
-                  </ul>
-                )}
-              </div>
-            ))}
-          </div>
-        ))}
-
-        {cv.skills.length > 0 && (
-          <div className={blockCls}>
+        {cv.summary && (
+          <div className="mt-1">
             <h2 className={t.sectionTitle} style={sectionTitleStyle}>
-              Skills
+              Summary
             </h2>
             <Editable
               as="p"
-              value={cv.skills.join(" · ")}
+              value={cv.summary}
               editable={editable}
-              onCommit={(v) =>
-                commit(
-                  (d) =>
-                    void (d.skills = v
-                      .split(/[·,]/)
-                      .map((x) => x.trim())
-                      .filter(Boolean))
-                )
-              }
+              onCommit={(v) => commit((d) => void (d.summary = v))}
             />
+          </div>
+        )}
+
+        {split ? (
+          splitBody
+        ) : (
+          <div className="mt-2 flex flex-col">
+            {sections.map((s) => renderSection(s))}
+            {cv.skills.length > 0 && renderSkills()}
           </div>
         )}
       </div>

@@ -34,6 +34,7 @@ import { Badge, Button, Card, Modal, Spinner, Textarea } from "@/components/ui";
 import { Paywall } from "@/components/paywall";
 import { McqOptions } from "@/components/mcq-options";
 import { CvRenderer, CV_TEMPLATE_META } from "@/components/cv-renderer";
+import { DiffChangeLines } from "@/components/diff-change";
 import { ReportPage } from "@/components/report-page";
 import { TONE_META } from "@/components/interview-faces";
 
@@ -74,11 +75,13 @@ function FullScreenCv({
   cv,
   template,
   theme,
+  split,
   onClose,
 }: {
   cv: TailoredCv;
   template: CvTemplate;
   theme: "light" | "dark";
+  split: boolean;
   onClose: () => void;
 }) {
   // A4 at 96dpi ≈ 794 × 1123px — scale so the whole sheet fits on screen.
@@ -127,7 +130,13 @@ function FullScreenCv({
             transformOrigin: "top left",
           }}
         >
-          <CvRenderer cv={cv} template={template} theme={theme} domId={null} />
+          <CvRenderer
+            cv={cv}
+            template={template}
+            theme={theme}
+            split={split}
+            domId={null}
+          />
         </div>
       </div>
     </div>
@@ -665,7 +674,7 @@ export function TryNow() {
                 setDragOver(false);
                 if (!busy) acceptFile(e.dataTransfer.files?.[0]);
               }}
-              className={`flex min-h-[300px] flex-1 cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-[2.5px] border-dashed p-7 text-center transition-all ${
+              className={`flex min-h-[210px] flex-1 cursor-pointer flex-col items-center justify-center gap-2.5 rounded-2xl border-[2.5px] border-dashed p-6 text-center transition-all ${
                 dragOver
                   ? "scale-[1.01] border-accent bg-selected-bg ring-4 ring-accent/15"
                   : file
@@ -682,13 +691,13 @@ export function TryNow() {
                 onChange={(e) => acceptFile(e.target.files?.[0])}
               />
               {file ? (
-                <CheckCircle size={64} />
+                <CheckCircle size={54} />
               ) : (
-                <span className="flex h-16 w-16 items-center justify-center rounded-full bg-green-100 text-[28px] font-extrabold text-accent-deep">
+                <span className="flex h-[54px] w-[54px] items-center justify-center rounded-full bg-green-100 text-2xl font-extrabold text-accent-deep">
                   ↑
                 </span>
               )}
-              <span className="text-[18px] font-bold text-ink">
+              <span className="text-[17px] font-bold text-ink">
                 {file
                   ? file.name
                   : dragOver
@@ -710,8 +719,8 @@ export function TryNow() {
               </span>
             </div>
             <Textarea
-              rows={13}
-              className="min-h-[300px] flex-1 resize-none rounded-lg border-2 text-[15px] leading-relaxed"
+              rows={9}
+              className="min-h-[210px] flex-1 resize-none rounded-lg border-2 text-[15px] leading-relaxed"
               placeholder={
                 "--- Copied from LinkedIn ---\nSenior Product Manager, Growth\nTel Aviv · Hybrid\nWe're looking for a PM to own our activation funnel end-to-end…"
               }
@@ -733,8 +742,8 @@ export function TryNow() {
           <Button
             variant={cta === "dark" ? "dark" : "primary"}
             size="lg"
-            className="flex-1 text-[17px]"
-            style={{ paddingTop: 17, paddingBottom: 17 }}
+            className="flex-1 text-[16px]"
+            style={{ paddingTop: 14, paddingBottom: 14 }}
             disabled={!file || !hasJob || busy}
             onClick={analyze}
           >
@@ -777,7 +786,7 @@ export function TryNow() {
   /* ================= HERO layout (landing, mock 2c) ================= */
   if (heroMode) {
     return (
-      <section className="mx-auto grid max-w-[1320px] items-center gap-10 px-6 pb-4 pt-10 sm:px-14 lg:grid-cols-[1fr_540px] lg:gap-14 lg:pt-16">
+      <section className="mx-auto grid max-w-[1320px] items-center gap-8 px-6 pb-4 pt-8 sm:px-14 lg:min-h-[calc(100vh-88px)] lg:grid-cols-[1fr_600px] lg:gap-14 lg:pt-4">
         <div className="flex flex-col gap-[22px]">
           {bannerEl}
           <h1 className="font-display text-[42px] font-extrabold leading-[1.05] tracking-[-0.02em] text-ink [text-wrap:balance] sm:text-[60px]">
@@ -833,8 +842,8 @@ export function TryNow() {
         </div>
 
         <div ref={uploadCardRef}>
-          <Card className="flex flex-col gap-4 p-8">
-            <div className="text-[18px] font-bold text-ink">
+          <Card className="flex flex-col gap-3.5 p-7">
+            <div className="text-[17px] font-bold text-ink">
               Start here — no account needed
             </div>
             {uploadFields("dark")}
@@ -1394,8 +1403,7 @@ export function TryNow() {
                   <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">
                     {c.section} · {c.type}
                   </p>
-                  {c.original && <p className="diff-removed mt-1">{c.original}</p>}
-                  {c.updated && <p className="diff-added mt-1">{c.updated}</p>}
+                  <DiffChangeLines change={c} />
                   {c.reason && (
                     <p className="mt-1.5 text-xs italic text-ink-faint">{c.reason}</p>
                   )}
@@ -1495,6 +1503,7 @@ export function TryNow() {
           cv={results.cv}
           template={template}
           theme={cvTheme}
+          split={splitView}
           onClose={() => setFullScreen(false)}
         />
       )}

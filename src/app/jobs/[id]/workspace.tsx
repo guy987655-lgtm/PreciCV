@@ -16,6 +16,7 @@ import {
 } from "@/lib/types";
 import { Badge, Button, Card, Modal, Spinner, Textarea } from "@/components/ui";
 import { CvRenderer } from "@/components/cv-renderer";
+import { DiffChangeLines } from "@/components/diff-change";
 import { Paywall } from "@/components/paywall";
 
 type Props = {
@@ -526,16 +527,7 @@ export function JobWorkspace({
                     <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
                       {c.section} · {c.type}
                     </p>
-                    {c.original && (
-                      <p className="mt-1">
-                        <span className="diff-removed">{c.original}</span>
-                      </p>
-                    )}
-                    {c.updated && (
-                      <p className="mt-1">
-                        <span className="diff-added">{c.updated}</span>
-                      </p>
-                    )}
+                    <DiffChangeLines change={c} />
                     {c.reason && (
                       <p className="mt-1.5 text-xs italic text-slate-500">{c.reason}</p>
                     )}

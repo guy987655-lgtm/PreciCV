@@ -1,5 +1,6 @@
 import { GenerationResult } from "@/lib/types";
 import { TONE_META } from "@/components/interview-faces";
+import { DiffChangeLines } from "@/components/diff-change";
 
 /** SVG donut gauge for the match score — prints in full color. */
 function ScoreGauge({ score }: { score: number }) {
@@ -214,12 +215,7 @@ export function ReportPage({
                   <p className="text-[10px] font-bold uppercase text-slate-400">
                     {c.section} · {c.type}
                   </p>
-                  {c.original && (
-                    <p className="diff-removed inline-block">{c.original}</p>
-                  )}
-                  {c.updated && (
-                    <p className="diff-added mt-0.5 inline-block">{c.updated}</p>
-                  )}
+                  <DiffChangeLines change={c} />
                   {c.reason && (
                     <p className="text-[11px] italic text-slate-500">{c.reason}</p>
                   )}

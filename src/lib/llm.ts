@@ -411,7 +411,9 @@ const TAILORING_SYSTEM =
   "it exists — this replicates the structure of the user's own document.\n" +
   "5. In the diff report, log every meaningful change with type " +
   "added/removed/modified/reordered, the original and updated text, and a " +
-  "one-sentence reason tied to the JD.\n" +
+  "one-sentence reason tied to the JD. For a 'reordered' entry, put the item " +
+  "text in 'updated' only and leave 'original' empty — never repeat the exact " +
+  "same text in both fields.\n" +
   "6. In gapAnalysis, be honest: matchScore 0-100, real strengths, real " +
   "gaps, and concrete recommendations (courses, framing, talking points).\n" +
   "7. Give every section and item a short stable id (e.g. 'exp-1').\n" +

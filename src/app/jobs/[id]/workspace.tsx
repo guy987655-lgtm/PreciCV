@@ -15,7 +15,7 @@ import {
   TierId,
 } from "@/lib/types";
 import { Badge, Button, Card, Modal, Spinner, Textarea } from "@/components/ui";
-import { CvRenderer } from "@/components/cv-renderer";
+import { CvRenderer, CV_TEMPLATE_META } from "@/components/cv-renderer";
 import { DiffChangeLines } from "@/components/diff-change";
 import { Paywall } from "@/components/paywall";
 
@@ -304,18 +304,18 @@ export function JobWorkspace({
                 {saveState === "saving" ? "Saving…" : "Saved ✓"}
               </span>
             )}
-            <div className="flex rounded-lg border border-slate-200 bg-white p-0.5">
+            <div className="flex max-w-xl flex-wrap justify-end gap-0.5 rounded-lg border border-slate-200 bg-white p-0.5">
               {CV_TEMPLATES.map((t) => (
                 <button
                   key={t}
                   onClick={() => setTemplate(t)}
-                  className={`rounded-md px-2.5 py-1 text-xs font-medium capitalize cursor-pointer ${
+                  className={`rounded-md px-2.5 py-1 text-xs font-medium cursor-pointer ${
                     generation.template === t
                       ? "bg-indigo-600 text-white"
                       : "text-slate-500 hover:bg-slate-100"
                   }`}
                 >
-                  {t}
+                  {CV_TEMPLATE_META[t].label}
                 </button>
               ))}
             </div>

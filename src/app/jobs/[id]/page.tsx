@@ -3,6 +3,9 @@ import { createClient } from "@/lib/supabase/server";
 import {
   DealbreakerHit,
   DiffReportSchema,
+  InterviewSimulationSchema,
+  MAX_REWRITES,
+  MAX_REPORT_REGENS,
   TailoredCvSchema,
   TIERS,
 } from "@/lib/types";
@@ -31,14 +34,16 @@ export default async function JobPage({
 
   const { data: purchase } = await supabase
     .from("purchases")
-    .select("tier, status, revisions_used")
+    .select("tier, status, revisions_used, rewrites_used, report_regens_used")
     .eq("job_id", id)
     .eq("status", "paid")
     .maybeSingle();
 
   const { data: generation } = await supabase
     .from("generations")
-    .select("id, cv, diff, template, revision_number, is_sample")
+    .select(
+      "id, cv, diff, simulation, template, revision_number, is_sample, report_stale"
+    )
     .eq("job_id", id)
     .order("revision_number", { ascending: false })
     .limit(1)
@@ -66,6 +71,10 @@ export default async function JobPage({
               tier: tier!,
               revisionsUsed: purchase.revisions_used ?? 0,
               maxRevisions: tier ? TIERS[tier].maxRevisions : 0,
+              rewritesUsed: purchase.rewrites_used ?? 0,
+              maxRewrites: MAX_REWRITES,
+              regensUsed: purchase.report_regens_used ?? 0,
+              maxRegens: MAX_REPORT_REGENS,
             }
           : null
       }
@@ -75,9 +84,13 @@ export default async function JobPage({
               id: generation.id,
               cv: TailoredCvSchema.parse(generation.cv),
               diff: DiffReportSchema.parse(generation.diff),
+              simulation: InterviewSimulationSchema.parse(
+                generation.simulation ?? {}
+              ),
               template: generation.template ?? "classic",
               revisionNumber: generation.revision_number ?? 0,
               isSample: generation.is_sample ?? false,
+              reportStale: generation.report_stale ?? false,
             }
           : null
       }

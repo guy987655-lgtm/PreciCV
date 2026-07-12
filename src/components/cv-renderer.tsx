@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import { CvTemplate, TailoredCv } from "@/lib/types";
+import { Editable, requestEditorFocus } from "@/components/cv-editor";
 
 /**
  * Renders a TailoredCv in one of 10 print-ready designs. Every design shares
@@ -26,45 +27,8 @@ import { CvTemplate, TailoredCv } from "@/lib/types";
  * the public Results tab renders read-only.
  */
 
-function Editable({
-  value,
-  children,
-  onCommit,
-  editable,
-  className,
-  style,
-  as: Tag = "span",
-}: {
-  value: string;
-  /** Optional rich rendering of `value` (e.g. metric emphasis). Read-only:
-   *  editing always falls back to the plain string so the caret stays sane. */
-  children?: ReactNode;
-  onCommit?: (v: string) => void;
-  editable: boolean;
-  className?: string;
-  style?: CSSProperties;
-  as?: "span" | "p" | "h1" | "h2" | "h3" | "li" | "div";
-}) {
-  return (
-    <Tag
-      className={
-        (className ?? "") +
-        (editable
-          ? " outline-none hover:bg-indigo-50/60 focus:bg-indigo-50 focus:ring-1 focus:ring-indigo-300 rounded-sm transition-colors cursor-text"
-          : "")
-      }
-      style={style}
-      contentEditable={editable}
-      suppressContentEditableWarning
-      onBlur={(e) => {
-        const next = (e.currentTarget.textContent ?? "").trim();
-        if (editable && onCommit && next !== value) onCommit(next);
-      }}
-    >
-      {children ?? value}
-    </Tag>
-  );
-}
+// Inline editing is TipTap-backed (PRD v2): see cv-editor.tsx. The Editable
+// API is unchanged, so every template call-site below works as before.
 
 /**
  * View-layer metric emphasis: wraps numeric tokens (32%, $4M, 18%, 4, 3x…) in
@@ -103,7 +67,7 @@ const FONT = {
   figtree: "font-[family-name:var(--font-figtree)]",
 } as const;
 
-type CvTheme = "light" | "dark";
+export type CvTheme = "light" | "dark";
 
 /** Background + neutral text tones, shared by every template. */
 const PALETTE: Record<CvTheme, { bg: string; text: string; subtle: string; rule: string }> = {
@@ -468,6 +432,24 @@ export function CvRenderer({
     onChange(draft);
   };
 
+  /** Smart-bullet editing (§3.3): Enter mid-bullet splits into a new sibling
+   *  bullet (which claims focus on mount); Enter on an empty bullet deletes
+   *  it and exits the list. Spread onto every bullet Editable. */
+  const bulletEditProps = (si: number, ii: number, bi: number) => ({
+    focusKey: `b-${si}-${ii}-${bi}`,
+    onSplit: (before: string, after: string) => {
+      requestEditorFocus(`b-${si}-${ii}-${bi + 1}`);
+      commit((d) => {
+        d.sections[si].items[ii].bullets.splice(bi, 1, before, after);
+      });
+    },
+    onExitEmpty: () => {
+      commit((d) => {
+        d.sections[si].items[ii].bullets.splice(bi, 1);
+      });
+    },
+  });
+
   const contactBits = [
     cv.contact.email,
     cv.contact.phone,
@@ -479,10 +461,13 @@ export function CvRenderer({
   // Defensive de-dupe: drop any section that merely repeats the top-level
   // summary, or one left with no content (guards older cached generations
   // too). We keep each survivor's ORIGINAL index so inline edits still write
-  // back to the right cv.sections entry.
+  // back to the right cv.sections entry. User-hidden sections (§6 toggle,
+  // e.g. "AI & Automation Expertise") are filtered but stay in the model.
+  const hiddenIds = new Set(cv.hiddenSectionIds ?? []);
   const sections = cv.sections
     .map((section, si) => ({ section, si }))
     .filter(({ section }) => {
+      if (hiddenIds.has(section.id)) return false;
       const title = section.title.trim().toLowerCase();
       if (cv.summary && (title === "summary" || title === "profile")) return false;
       return section.items.some(
@@ -611,6 +596,7 @@ export function CvRenderer({
                   as="li"
                   value={bullet}
                   editable={editable}
+                  {...bulletEditProps(si, ii, bi)}
                   onCommit={(v) =>
                     commit((d) => {
                       if (v === "") {
@@ -737,6 +723,7 @@ export function CvRenderer({
             as="li"
             value={bullet}
             editable={editable}
+            {...bulletEditProps(si, ii, bi)}
             onCommit={(v) =>
               commit((d) => {
                 if (v === "") d.sections[si].items[ii].bullets.splice(bi, 1);
@@ -1069,6 +1056,7 @@ export function CvRenderer({
             as="li"
             value={bullet}
             editable={editable}
+            {...bulletEditProps(si, ii, bi)}
             onCommit={(v) =>
               commit((d) => {
                 if (v === "") d.sections[si].items[ii].bullets.splice(bi, 1);
@@ -1940,6 +1928,7 @@ export function CvRenderer({
                 className={`${FONT.inter} text-[9.5px] leading-[1.55]`}
                 value={bullet}
                 editable={editable}
+                {...bulletEditProps(si, ii, bi)}
                 onCommit={(v) =>
                   commit((d) => {
                     if (v === "") d.sections[si].items[ii].bullets.splice(bi, 1);

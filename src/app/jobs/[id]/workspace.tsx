@@ -2,22 +2,43 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { readJson } from "@/lib/fetch-json";
 import { trackButtonClick } from "@/lib/analytics";
 import {
   CvTemplate,
-  CV_TEMPLATES,
   DealbreakerHit,
   DiffReport,
+  InterviewSimulation,
+  MAX_REPORT_REGENS,
+  MAX_REWRITES,
+  RewriteLength,
   TailoredCv,
   TIERS,
   TierId,
 } from "@/lib/types";
+import {
+  CvVersion,
+  VersionKind,
+  appendVersion,
+  makeVersion,
+} from "@/lib/cv-session";
+import { effectiveSplit } from "@/lib/templates";
+import { printBoth } from "@/lib/download";
 import { Badge, Button, Card, Modal, Spinner, Textarea } from "@/components/ui";
-import { CvRenderer, CV_TEMPLATE_META } from "@/components/cv-renderer";
+import { CvRenderer, CvTheme } from "@/components/cv-renderer";
 import { DiffChangeLines } from "@/components/diff-change";
 import { Paywall } from "@/components/paywall";
+import { ReportPage } from "@/components/report-page";
+import { TemplateCatalog } from "@/components/template-catalog";
+import {
+  AiSectionToggle,
+  SplitToggle,
+  ThemeToggle,
+  EditToolbar,
+} from "@/components/cv-controls";
+import { RewriteTooltip } from "@/components/rewrite-tooltip";
+import { VersionStrip } from "@/components/version-strip";
 
 type Props = {
   job: {
@@ -30,14 +51,20 @@ type Props = {
     tier: TierId;
     revisionsUsed: number;
     maxRevisions: number;
+    rewritesUsed?: number;
+    maxRewrites?: number;
+    regensUsed?: number;
+    maxRegens?: number;
   } | null;
   generation: {
     id: string;
     cv: TailoredCv;
     diff: DiffReport;
+    simulation?: InterviewSimulation;
     template: string;
     revisionNumber: number;
     isSample?: boolean;
+    reportStale?: boolean;
   } | null;
   freeSampleAvailable?: boolean;
 };
@@ -110,6 +137,54 @@ export function JobWorkspace({
   // The user reviews + edits first; files (PDF export) unlock on approval.
   const [approved, setApproved] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Shared Results UX (mirrors the anonymous funnel): design catalog, split /
+  // theme preview, inline edit + AI rewrite, report regen, milestone versions.
+  const [cvTheme, setCvTheme] = useState<CvTheme>("light");
+  const [splitView, setSplitView] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [reportBusy, setReportBusy] = useState(false);
+  const [printRequest, setPrintRequest] = useState(false);
+  const [reportStale, setReportStale] = useState(
+    Boolean(initialGen?.reportStale)
+  );
+  const [rewritesUsed, setRewritesUsed] = useState(purchase?.rewritesUsed ?? 0);
+  const [regensUsed, setRegensUsed] = useState(purchase?.regensUsed ?? 0);
+  const cvPreviewRef = useRef<HTMLDivElement>(null);
+  // §2.2 — lastSavedState snapshot taken on entering Edit Mode; isDirty
+  // compares against it and Reset restores it exactly.
+  const [editSnapshot, setEditSnapshot] = useState<{
+    json: string;
+    cv: TailoredCv;
+    reportStale: boolean;
+  } | null>(null);
+  // The latest inline edit not yet flushed to the server (debounced save).
+  const pendingSave = useRef<{ cv: TailoredCv; template?: string } | null>(
+    null
+  );
+  // In-session milestone versions, seeded with the CV as loaded (the reset
+  // baseline). Server persists each revision as its own generations row.
+  const [versions, setVersions] = useState<CvVersion[]>(() =>
+    initialGen && !initialGen.isSample
+      ? [
+          makeVersion("original", {
+            cv: initialGen.cv,
+            diff: initialGen.diff,
+            simulation: initialGen.simulation,
+            template: (initialGen.template as CvTemplate) ?? "classic",
+          }),
+        ]
+      : []
+  );
+  const maxRewrites = purchase?.maxRewrites ?? MAX_REWRITES;
+  const maxRegens = purchase?.maxRegens ?? MAX_REPORT_REGENS;
+
+  // §2.2 isDirty — true from the first change relative to lastSavedState.
+  const isDirty =
+    editing &&
+    editSnapshot !== null &&
+    generation !== null &&
+    JSON.stringify(generation.cv) !== editSnapshot.json;
 
   const hits = job.dealbreakerHits;
   const isSample = Boolean(generation?.isSample);
@@ -242,9 +317,12 @@ export function JobWorkspace({
     (next: TailoredCv, template?: string) => {
       if (!generation || isSample) return;
       setGeneration((g) => (g ? { ...g, cv: next, template: template ?? g.template } : g));
+      setReportStale(true); // inline edits desync the stored report
       setSaveState("saving");
+      pendingSave.current = { cv: next, template };
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(async () => {
+        pendingSave.current = null;
         await fetch(`/api/generations/${generation.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -257,6 +335,68 @@ export function JobWorkspace({
     [generation, isSample]
   );
 
+  /** §3.1 — Done must PERSIST before external actions unlock: flush any
+   *  pending debounced save immediately (also the §2.4 staleness guard —
+   *  a report refresh right after Done always sees the edited CV). */
+  const flushSave = useCallback(async () => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    const pending = pendingSave.current;
+    if (!pending || !generation) return;
+    pendingSave.current = null;
+    await fetch(`/api/generations/${generation.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cv: pending.cv,
+        ...(pending.template ? { template: pending.template } : {}),
+      }),
+    });
+    setSaveState("saved");
+    setTimeout(() => setSaveState("idle"), 1500);
+  }, [generation]);
+
+  /** §2.2 — Edit Mode enter/exit. Entering snapshots lastSavedState; Done
+   *  flushes the pending save and exits. */
+  function toggleEdit(next: boolean) {
+    if (next && generation) {
+      setEditSnapshot({
+        json: JSON.stringify(generation.cv),
+        cv: JSON.parse(JSON.stringify(generation.cv)) as TailoredCv,
+        reportStale,
+      });
+    }
+    if (!next) {
+      void flushSave();
+      setEditSnapshot(null);
+    }
+    setEditing(next);
+  }
+
+  // Deferred print: fire only once any smart-download report refresh has
+  // finished AND rendered, so the printed report reflects the latest CV.
+  useEffect(() => {
+    if (!printRequest || reportBusy) return;
+    if (generation && !isSample) {
+      setVersions((vs) =>
+        appendVersion(
+          vs,
+          makeVersion("download", {
+            cv: generation.cv,
+            diff: generation.diff,
+            simulation: generation.simulation,
+            template: (generation.template as CvTemplate) ?? "classic",
+          })
+        )
+      );
+    }
+    printBoth({ name: undefined, company: job.company });
+    setPrintRequest(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [printRequest, reportBusy]);
+
   async function setTemplate(t: CvTemplate) {
     if (!generation || isSample) return;
     setGeneration({ ...generation, template: t });
@@ -267,7 +407,102 @@ export function JobWorkspace({
     });
   }
 
-  function exportPdf() {
+  /* ---------------- AI snippet rewrite (job-scoped quota) ---------- */
+  async function handleRewrite(
+    text: string,
+    length: RewriteLength
+  ): Promise<string> {
+    if (rewritesUsed >= maxRewrites) throw new Error("Rewrite limit reached");
+    const res = await fetch("/api/rewrite", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jobId: job.id, text, length }),
+    });
+    const data = await readJson(res);
+    if (!res.ok) throw new Error(data.error ?? "Rewrite failed");
+    setRewritesUsed(
+      typeof data.rewritesUsed === "number" ? data.rewritesUsed : rewritesUsed + 1
+    );
+    return data.text as string;
+  }
+
+  /**
+   * Rebuilds the report (diff + interview simulation) around the edited CV and
+   * persists it server-side; records a milestone version. Returns true on
+   * success. Bounded by maxRegens per job.
+   */
+  async function regenerateReportNow(
+    kind: VersionKind = "regenerate"
+  ): Promise<boolean> {
+    if (!generation || isSample) return false;
+    if (regensUsed >= maxRegens) {
+      setError(`You've used all ${maxRegens} report refreshes for this job.`);
+      return false;
+    }
+    setReportBusy(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/generations/${generation.id}/report`, {
+        method: "POST",
+      });
+      const data = await readJson(res);
+      if (!res.ok) throw new Error(data.error ?? "Report refresh failed");
+      setGeneration((g) =>
+        g ? { ...g, diff: data.diff, simulation: data.simulation } : g
+      );
+      setRegensUsed(
+        typeof data.regensUsed === "number" ? data.regensUsed : regensUsed + 1
+      );
+      setReportStale(false);
+      setVersions((vs) => {
+        if (!generation) return vs;
+        return appendVersion(
+          vs,
+          makeVersion(kind, {
+            cv: generation.cv,
+            diff: data.diff,
+            simulation: data.simulation,
+            template: (generation.template as CvTemplate) ?? "classic",
+          })
+        );
+      });
+      return true;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Report refresh failed");
+      return false;
+    } finally {
+      setReportBusy(false);
+    }
+  }
+
+  /** §2.2 — Reset rolls back to the exact lastSavedState snapshot taken on
+   *  entering Edit Mode, staying IN edit mode (§3.1 flow). */
+  function resetCv() {
+    if (!editSnapshot || !generation || isSample) return;
+    if (!confirm("Discard the edits you made in this editing session?")) return;
+    saveCv(editSnapshot.cv);
+    // saveCv marks the report stale; a byte-for-byte rollback restores the
+    // staleness the snapshot was taken with.
+    setReportStale(editSnapshot.reportStale);
+  }
+
+  function restoreVersion(v: CvVersion) {
+    if (!generation || isSample) return;
+    saveCv(v.cv, v.template);
+    setGeneration((g) =>
+      g
+        ? { ...g, cv: v.cv, diff: v.diff, simulation: v.simulation ?? g.simulation }
+        : g
+    );
+    setReportStale(false);
+  }
+
+  /**
+   * Smart download: if the CV was edited since the last report build, refresh
+   * the report FIRST so both files match, then print (CV + report bundle). The
+   * print fires from an effect once the fresh report has rendered.
+   */
+  async function exportPdf() {
     trackButtonClick({
       button_name: "export_pdf",
       action: "export",
@@ -275,7 +510,10 @@ export function JobWorkspace({
       click_source: "job_workspace",
       job_id: job.id,
     });
-    window.print();
+    if (reportStale && regensUsed < maxRegens && !isSample) {
+      await regenerateReportNow();
+    }
+    setPrintRequest(true);
   }
 
   // The workspace always has a job attached, so all three tiers are open.
@@ -304,22 +542,15 @@ export function JobWorkspace({
                 {saveState === "saving" ? "Saving…" : "Saved ✓"}
               </span>
             )}
-            <div className="flex max-w-xl flex-wrap justify-end gap-0.5 rounded-lg border border-slate-200 bg-white p-0.5">
-              {CV_TEMPLATES.map((t) => (
-                <button
-                  key={t}
-                  onClick={() => setTemplate(t)}
-                  className={`rounded-md px-2.5 py-1 text-xs font-medium cursor-pointer ${
-                    generation.template === t
-                      ? "bg-indigo-600 text-white"
-                      : "text-slate-500 hover:bg-slate-100"
-                  }`}
-                >
-                  {CV_TEMPLATE_META[t].label}
-                </button>
-              ))}
-            </div>
-            {approved && <Button onClick={exportPdf}>Export PDF</Button>}
+            {approved && (
+              <Button
+                disabled={reportBusy || editing}
+                title={editing ? "Finish editing (Done) to export" : undefined}
+                onClick={exportPdf}
+              >
+                {reportBusy ? "Syncing report…" : "Export PDF"}
+              </Button>
+            )}
           </div>
         )}
         {generation && isSample && <Badge tone="amber">Free sample — preview only</Badge>}
@@ -566,19 +797,85 @@ export function JobWorkspace({
 
           {/* Right pane: the CV — editable when owned, watermarked when sample */}
           <div>
-            {isSample ? (
+            {/* Design catalog + preview controls (owned CVs only) */}
+            {!isSample && (
+              <div className="mb-3 flex flex-col gap-3 print:hidden">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold text-ink-faint">
+                    Choose a design
+                  </p>
+                  <ThemeToggle theme={cvTheme} onChange={setCvTheme} />
+                </div>
+                <TemplateCatalog
+                  template={generation.template as CvTemplate}
+                  onSelect={setTemplate}
+                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <EditToolbar
+                    editing={editing}
+                    onToggleEdit={toggleEdit}
+                    onReset={resetCv}
+                    canReset={isDirty}
+                  />
+                  <SplitToggle
+                    template={generation.template as CvTemplate}
+                    split={splitView}
+                    onToggle={setSplitView}
+                  />
+                  <AiSectionToggle
+                    cv={generation.cv}
+                    onChange={(next) => saveCv(next)}
+                  />
+                  {/* §3.1 — locked during Edit Mode; meaningful once stale. */}
+                  <button
+                    onClick={() => regenerateReportNow()}
+                    disabled={
+                      editing ||
+                      reportBusy ||
+                      !reportStale ||
+                      regensUsed >= maxRegens
+                    }
+                    className="cursor-pointer rounded-full border border-accent bg-selected-bg px-3 py-1 text-xs font-semibold text-accent transition-opacity duration-200 hover:bg-chip disabled:pointer-events-none disabled:opacity-50"
+                    title={
+                      editing
+                        ? "Finish editing (Done) to refresh the report"
+                        : !reportStale
+                          ? "Report is up to date"
+                          : "Rebuild the interview report to match your edits"
+                    }
+                  >
+                    {reportBusy ? "Refreshing…" : "↻ Refresh report"}
+                  </button>
+                </div>
+                {reportStale && !editing && (
+                  <p className="text-[11px] text-ink-faint">
+                    You edited your CV — the report refreshes automatically on
+                    export, or refresh it now.
+                  </p>
+                )}
+                {editing && (
+                  <p className="text-[11px] font-semibold text-accent">
+                    ✎ Edit Mode — click any text to edit; highlight a phrase for
+                    an AI rewrite ({Math.max(0, maxRewrites - rewritesUsed)}{" "}
+                    left). Done saves and exits.
+                  </p>
+                )}
+              </div>
+            )}
+            {isSample && (
               <p className="mb-2 text-xs text-amber-700 print:hidden">
                 🔒 Limited watermarked preview — the free sample shows your
                 education, skills and one role only. Purchase this job to see
                 the complete CV, edit it and download.
               </p>
-            ) : (
-              <p className="mb-2 text-xs text-slate-400 print:hidden">
-                Click any text on the CV to edit it directly — free, no credits used.
-              </p>
             )}
             <div
-              className={`overflow-auto rounded-xl border border-slate-200 bg-slate-100 p-4 ${
+              ref={cvPreviewRef}
+              className={`overflow-auto rounded-xl border bg-slate-100 p-4 transition-all duration-200 ${
+                editing && !isSample
+                  ? "border-accent ring-2 ring-accent/30"
+                  : "border-slate-200"
+              } ${
                 isSample
                   ? "print:hidden select-none"
                   : "print:border-0 print:bg-white print:p-0"
@@ -590,16 +887,37 @@ export function JobWorkspace({
                   <CvRenderer
                     cv={sampleView ? sampleView.cv : generation.cv}
                     template={generation.template as CvTemplate}
-                    editable={!isSample}
+                    theme={cvTheme}
+                    split={effectiveSplit(
+                      generation.template as CvTemplate,
+                      splitView
+                    )}
+                    editable={!isSample && editing}
                     onChange={(next) => saveCv(next)}
                   />
                 </div>
               </div>
             </div>
+            {!isSample && (
+              <RewriteTooltip
+                containerRef={cvPreviewRef}
+                enabled={editing}
+                rewritesUsed={rewritesUsed}
+                maxRewrites={maxRewrites}
+                onRewrite={handleRewrite}
+              />
+            )}
             {sampleView && sampleView.hidden.length > 0 && (
               <p className="mt-2 text-xs text-amber-700 print:hidden">
                 🔒 Hidden in the free sample: {sampleView.hidden.join(", ")}.
               </p>
+            )}
+
+            {/* Version history (milestone snapshots) */}
+            {!isSample && versions.length > 1 && (
+              <Card className="mt-4 p-5 print:hidden">
+                <VersionStrip versions={versions} onRestore={restoreVersion} />
+              </Card>
             )}
 
             {/* Sample → conversion CTA */}
@@ -613,6 +931,20 @@ export function JobWorkspace({
             )}
           </div>
         </div>
+      )}
+
+      {/* Hidden interview-report print target (second download file) */}
+      {generation && !isSample && generation.simulation && (
+        <ReportPage
+          results={{
+            cv: generation.cv,
+            diff: generation.diff,
+            simulation: generation.simulation,
+            jobTitle: job.title,
+            company: job.company,
+          }}
+          candidateName={job.title || ""}
+        />
       )}
 
       {error && <p className="mt-4 text-center text-sm text-red-600 print:hidden">{error}</p>}

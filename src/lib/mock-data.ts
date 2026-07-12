@@ -18,7 +18,15 @@ function q(
   options: string[] = EXP_OPTS,
   selectType: "single" | "ranked" = "single"
 ): MockQ {
-  return { id, topic, question, options, selectType, required: false };
+  return {
+    id,
+    topic,
+    question,
+    options,
+    selectType,
+    required: false,
+    placeholderText: "",
+  };
 }
 
 const MOCK_POOL: MockQ[] = [
@@ -92,6 +100,11 @@ export function mockFunnelState(opts?: { withJob?: boolean }): FunnelState {
     template: "classic",
     downloadedCv: false,
     downloadedReport: false,
+    versions: [],
+    rewritesUsed: 0,
+    regensUsed: 0,
+    reportStale: false,
+    sharpenSuggestions: {},
     profile: {
       contact: {
         fullName: "Dana Levi",

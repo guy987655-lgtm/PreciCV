@@ -76,6 +76,39 @@ body {
   padding: 0 3px;
 }
 
+/* Inline CV rich-text editor (TipTap): the editor host must flow exactly
+   like the text node it replaces, inheriting the template's typography.
+   The high-contrast surface + caret color are set inline per §2.1. */
+.cv-rte,
+.cv-rte .ProseMirror,
+.cv-rte .ProseMirror p {
+  display: inline;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+}
+.cv-rte .ProseMirror {
+  outline: none;
+  min-width: 1ch;
+  white-space: pre-wrap;
+}
+.cv-rte-host {
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* §5 micro-animations: tooltip/menu pop-in. */
+@keyframes cv-pop {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -100%) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -100%) scale(1);
+  }
+}
+
 /* The simulation report exists only as a print target (second file). */
 .report-page {
   display: none;

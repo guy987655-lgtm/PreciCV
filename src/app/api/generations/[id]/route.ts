@@ -44,6 +44,8 @@ export async function PATCH(
       return NextResponse.json({ error: "Invalid CV payload" }, { status: 400 });
     }
     updates.cv = parsed.data;
+    // Editing the CV desyncs the stored report until it is regenerated.
+    updates.report_stale = true;
   }
   if (body.template !== undefined) {
     if (!CV_TEMPLATES.includes(body.template)) {

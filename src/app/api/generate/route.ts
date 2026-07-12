@@ -126,6 +126,7 @@ export async function POST(request: Request) {
       user_id: user.id,
       cv: result.cv,
       diff: result.diff,
+      simulation: result.simulation,
       revision_number: 0,
       template: "classic",
       is_sample: asSample,

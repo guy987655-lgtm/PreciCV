@@ -4,6 +4,7 @@ import {
   Dealbreaker,
   DealbreakerScan,
   DealbreakerScanSchema,
+  DiffChangeSchema,
   GenerationResult,
   GenerationResultSchema,
   MasterProfile,
@@ -12,8 +13,12 @@ import {
   McqQuestionnaireSchema,
   Questionnaire,
   QuestionnaireSchema,
+  ReportResult,
+  ReportResultSchema,
+  RewriteLength,
   TailoredCv,
 } from "./types";
+import { norm, looseMatch } from "./text";
 
 /**
  * Provider-agnostic LLM engine.
@@ -245,6 +250,18 @@ export async function extractProfileFromCv(
       `the whole set (e.g. "SQL & Data", "Visualization", "Leadership"), ` +
       `each shared by several questions. Do NOT add an "Other" option — the ` +
       `UI appends one automatically.\n\n` +
+      `COMPLETENESS CHECK (critical): scan the extracted profile for entries ` +
+      `that would render as bare headers — an education entry with no ` +
+      `coursework/honors/notes, an experience role with no bullets, a project ` +
+      `with no description. For EACH such entry ADD one more question to ` +
+      `"mcq" with "required": true and topic "Details", asking what to ` +
+      `highlight about that specific entry (options: plausible concrete ` +
+      `directions like "Relevant coursework", "Final project", "Honors", ` +
+      `"Key responsibilities"). On THESE questions ALSO set ` +
+      `"placeholderText" to ONE generic-but-professional sentence describing ` +
+      `the entry from its header alone (e.g. "Completed comprehensive ` +
+      `coursework and projects aligned with core degree requirements."). ` +
+      `Leave "placeholderText" as an empty string on every other question.\n\n` +
       `2. "questionnaire" — 4-7 targeted OPEN questions that uncover UNSTATED ` +
       `information that would strengthen tailored CVs: missing metrics ` +
       `(team sizes, revenue impact, performance numbers), unclear scope, ` +
@@ -278,7 +295,8 @@ export async function extractProfileFromCv(
 
 export async function generateRoleQuestions(
   profile: MasterProfile,
-  existingTopics: string[]
+  existingTopics: string[],
+  existingQuestions: string[] = []
 ): Promise<McqQuestionnaire> {
   const roleSummary =
     `Headline: ${profile.headline}\n` +
@@ -317,9 +335,11 @@ export async function generateRoleQuestions(
       `"Leadership"), each covering several questions; reuse the existing ` +
       `category names below when they fit. Do NOT add an "Other" option — ` +
       `the UI appends one automatically.\n\n` +
-      `Existing categories/questions already covered (do not repeat the ` +
-      `questions; do reuse fitting category names):\n` +
-      `${existingTopics.join("; ") || "(none)"}`,
+      `Existing categories already covered (reuse fitting category names):\n` +
+      `${existingTopics.join("; ") || "(none)"}\n\n` +
+      `Questions the candidate has ALREADY been asked — do NOT repeat these or ` +
+      `ask a reworded/near-duplicate of any of them:\n` +
+      `${existingQuestions.map((q) => `- ${q}`).join("\n") || "(none)"}`,
     schema: McqQuestionnaireSchema,
     toolName: "save_role_questions",
     toolDescription:
@@ -424,18 +444,21 @@ const TAILORING_SYSTEM =
   "concrete guidance grounded ONLY in the candidate's real background — " +
   "and 'tone': how the interviewer will ask it ('friendly' = warm " +
   "rapport-building, 'curious' = genuinely probing for detail, " +
-  "'challenging' = skeptical, pressure-testing a gap).";
-
-/** Loose match: same company/title ignoring case, spacing and punctuation. */
-function norm(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
-function looseMatch(a: string, b: string): boolean {
-  const x = norm(a);
-  const y = norm(b);
-  if (!x || !y) return false;
-  return x === y || x.includes(y) || y.includes(x);
-}
+  "'challenging' = skeptical, pressure-testing a gap).\n" +
+  "9. AI & AUTOMATION SECTION: IF the candidate's profile shows real " +
+  "AI/automation signals (LLM tools, prompt engineering, ML/predictive " +
+  "analytics, workflow automation, data pipelines) OR the job description " +
+  "values such skills AND the profile supports at least some of them, add " +
+  "a section with id 'ai-automation' titled 'AI & Automation Expertise'. " +
+  "STRICTLY non-narrative and scannable: each item is one category — " +
+  "item.primary = a category label adapted to the candidate's real stack " +
+  "(defaults: 'LLMs / Prompting', 'Predictive Analytics', 'Data " +
+  "Automation', 'Frameworks'), item.bullets = ONE line listing the " +
+  "concrete tools/skills, comma-separated. OMIT any category with no real " +
+  "content — never render an empty bucket. AGGREGATE: any AI tool already " +
+  "mentioned inside a work entry must ALSO be listed here for keyword " +
+  "scanners. Never invent proficiency the profile doesn't support; when " +
+  "there are no genuine signals, do NOT add the section at all.";
 
 /**
  * Safety net for the "blank role" bug: the model must never leave a kept
@@ -447,6 +470,15 @@ function looseMatch(a: string, b: string): boolean {
  */
 function repairCv(cv: TailoredCv, profile: MasterProfile): TailoredCv {
   for (const section of cv.sections) {
+    const kind = norm(section.title);
+    // Sections whose entries must carry a description (§4.1 Content
+    // Completeness Rule). Short-list sections (languages, certifications,
+    // "AI & Automation Expertise"…) legitimately render as bare lines —
+    // whole words only, so e.g. "expertise" ≠ "experience".
+    const needsDescription =
+      /\b(experience|work|employment|career|education|academic|studies|projects?)\b/.test(
+        kind
+      );
     for (const item of section.items) {
       if (item.bullets.length > 0) continue;
       const match = profile.experience.find(
@@ -456,6 +488,25 @@ function repairCv(cv: TailoredCv, profile: MasterProfile): TailoredCv {
       );
       if (match && match.bullets.length > 0) {
         item.bullets = [match.bullets[0]];
+      } else if (
+        needsDescription &&
+        (item.primary.trim() || item.secondary.trim())
+      ) {
+        // §4.1 backstop — never emit a title-only entry: synthesize a
+        // generic professional line from the entry's own header.
+        item.bullets = [
+          /educ|stud/.test(kind)
+            ? `Completed comprehensive coursework and projects aligned with core ${
+                item.primary.trim() || "degree"
+              } requirements.`
+            : /project/.test(kind)
+              ? `Designed and delivered ${
+                  item.primary.trim() || "the project"
+                } end-to-end, covering its core goals and implementation.`
+              : `Delivered the role's core responsibilities and day-to-day contributions${
+                  item.secondary.trim() ? ` at ${item.secondary.trim()}` : ""
+                }.`,
+        ];
       }
     }
   }
@@ -527,4 +578,219 @@ export async function generateTailoredCv(
 
   result.cv = repairCv(result.cv, profile);
   return result;
+}
+
+/* ------------------------------------------------------------------ */
+/* 4. Report regeneration — rebuild diff + simulation around an        */
+/*    already-edited CV WITHOUT re-tailoring the CV itself             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * §2.4 root cause: GenerationResultSchema's defaulted fields are OPTIONAL in
+ * the derived JSON schema, so the model may legally omit gapAnalysis/changes
+ * and zod silently backfills empty shapes — the "empty Match Analysis /
+ * Change Report" bug. This strict variant makes them required and non-empty,
+ * so omission becomes a parse failure that triggers a corrective retry.
+ */
+const StrictReportSchema = z.object({
+  diff: z.object({
+    changes: z.array(DiffChangeSchema).min(1),
+    gapAnalysis: z.object({
+      matchScore: z.number().min(0).max(100),
+      strengths: z.array(z.string()).min(1),
+      gaps: z.array(z.string()).min(1),
+      recommendations: z.array(z.string()).min(1),
+    }),
+  }),
+  simulation: z.object({
+    pitch: z.string().min(1),
+    questions: z
+      .array(
+        z.object({
+          question: z.string(),
+          whyTheyAsk: z.string().default(""),
+          howToAnswer: z.string().default(""),
+          tone: z.enum(["friendly", "curious", "challenging"]).default("curious"),
+        })
+      )
+      .min(3),
+  }),
+  jobTitle: z.string().default(""),
+  company: z.string().default(""),
+});
+
+/**
+ * The user edited their CV inline; this rebuilds the change report and
+ * interview simulation so the deliverables stay in sync — the CV text is
+ * treated as final and is never modified.
+ *
+ * §2.4 definitions: the Change Report diffs the ORIGINAL resume data
+ * (`profile` — the uploaded CV's extraction — falling back to `baseCv`, the
+ * first AI draft) against the FINAL edited CV; the Match Analysis re-scores
+ * the FINAL CV against the JD. Both are explicitly required to be non-empty,
+ * with one corrective retry if the model under-fills either.
+ */
+export async function regenerateReport(
+  finalCv: TailoredCv,
+  jdText: string,
+  opts?: { baseCv?: TailoredCv; profile?: MasterProfile }
+): Promise<ReportResult> {
+  const prompt =
+    `The candidate's FINAL, user-approved tailored CV is below. It is fixed — ` +
+    `do NOT rewrite, shorten or change it. Produce ONLY (a) the change/diff ` +
+    `report and (b) the interview simulation for THIS exact CV against the ` +
+    `target job.\n\n` +
+    `FINAL TAILORED CV:\n${JSON.stringify(finalCv, null, 1)}\n\n` +
+    (opts?.profile
+      ? `ORIGINAL RESUME DATA (as uploaded — the Change Report compares the ` +
+        `FINAL CV against this):\n${JSON.stringify(opts.profile, null, 1)}\n\n`
+      : "") +
+    (opts?.baseCv
+      ? `PREVIOUS AI-GENERATED CV (interim reference for what changed):\n` +
+        `${JSON.stringify(opts.baseCv, null, 1)}\n\n`
+      : "") +
+    `TARGET JOB DESCRIPTION:\n---\n${jdText.slice(0, 30000)}\n---\n\n` +
+    `Also extract jobTitle and company from the JD.\n\n` +
+    `YOU MUST RETURN ALL OF THE FOLLOWING — none may be empty:\n` +
+    `1. "changes" (the Change Report): every meaningful difference between ` +
+    `the original resume data and the FINAL CV — rephrasings, additions, ` +
+    `removals, reordering. There is always at least one entry unless the two ` +
+    `are literally identical.\n` +
+    `2. "gapAnalysis" (the Match Analysis): matchScore 0-100 scoring THIS ` +
+    `final CV against the job, plus non-empty strengths, gaps and concrete ` +
+    `recommendations.\n` +
+    `3. "simulation": the pitch and 6-8 interview questions grounded ONLY in ` +
+    `the CV's real content.`;
+
+  const call = (extra = "") =>
+    structuredCall({
+      tier: "quality",
+      system: TAILORING_SYSTEM,
+      prompt: prompt + extra,
+      schema: StrictReportSchema,
+      toolName: "save_report",
+      toolDescription:
+        "Save the change report (diff.changes), match analysis " +
+        "(diff.gapAnalysis) and interview simulation for the final CV. " +
+        "ALL fields are required and must be non-empty.",
+      maxTokens: 8000,
+    });
+
+  // The strict schema turns an omitted section into a parse failure; the
+  // provider layers already re-prompt once on that. One more outer retry
+  // covers a model that parses but still under-delivers semantically.
+  let result: ReportResult;
+  try {
+    result = ReportResultSchema.parse(await call());
+  } catch (e) {
+    console.warn("[report-regen] strict parse failed — corrective retry:", e);
+    result = ReportResultSchema.parse(
+      await call(
+        `\n\nYOUR PREVIOUS ATTEMPT OMITTED OR LEFT EMPTY one of "changes", ` +
+          `"gapAnalysis" or "simulation". Every field listed above is ` +
+          `MANDATORY and must be fully populated.`
+      )
+    );
+  }
+  return result;
+}
+
+/* ------------------------------------------------------------------ */
+/* 5. Snippet rewrite — reword a highlighted piece of CV text          */
+/* ------------------------------------------------------------------ */
+
+const RewriteSchema = z.object({ text: z.string() });
+
+/**
+ * Rewrites a highlighted CV snippet (a bullet, a headline, a summary line).
+ * `length` nudges the structure: "short" = tighter/one line, "long" = a fuller
+ * version with more concrete detail. Never invents facts — rephrases only.
+ */
+export async function rewriteSnippet(
+  text: string,
+  opts?: { length?: RewriteLength; context?: string; jdText?: string }
+): Promise<string> {
+  const lengthRule =
+    opts?.length === "short"
+      ? "Make it noticeably SHORTER and punchier — one tight line, lead with impact."
+      : opts?.length === "long"
+        ? "Make it FULLER — add concrete specificity (scope, action, result) but stay to at most two lines and never fabricate."
+        : "Keep roughly the same length; sharpen the wording.";
+
+  const result = await structuredCall({
+    tier: "fast",
+    system:
+      "You are a resume line editor. You rewrite a single snippet of a CV to " +
+      "be crisper and more impactful. NEVER invent facts, metrics, employers " +
+      "or dates — only rephrase what is given. Keep the candidate's voice. " +
+      "Return plain text with no surrounding quotes, labels or markdown.",
+    prompt:
+      `Rewrite this CV snippet.\n${lengthRule}\n\n` +
+      (opts?.context ? `Where it appears: ${opts.context}\n` : "") +
+      (opts?.jdText
+        ? `Target job (mirror its terminology only where the snippet already ` +
+          `supports it):\n---\n${opts.jdText.slice(0, 4000)}\n---\n`
+        : "") +
+      `\nSNIPPET:\n${text.slice(0, 2000)}`,
+    schema: RewriteSchema,
+    toolName: "save_rewrite",
+    toolDescription: "Save the rewritten snippet text.",
+    maxTokens: 1000,
+  });
+  return result.text.trim();
+}
+
+/* ------------------------------------------------------------------ */
+/* 6. Sharpen-step smart placeholders — example answers per open       */
+/*    question, grounded in the candidate's own CV                     */
+/* ------------------------------------------------------------------ */
+
+const SuggestionsSchema = z.object({
+  suggestions: z.array(z.object({ id: z.string(), answer: z.string() })),
+});
+
+/**
+ * Generates a realistic EXAMPLE answer for each open question, grounded in the
+ * candidate's profile, to seed the Sharpen-step inputs as inspiration
+ * placeholders. These are illustrative — the user overwrites them.
+ */
+export async function suggestOpenAnswers(
+  profile: MasterProfile,
+  questions: { id: string; question: string; why?: string }[]
+): Promise<Record<string, string>> {
+  if (questions.length === 0) return {};
+  const profileSummary =
+    `Headline: ${profile.headline}\n` +
+    `Summary: ${profile.summary}\n` +
+    `Recent experience: ${profile.experience
+      .slice(0, 4)
+      .map((e) => `${e.title} at ${e.company} — ${e.bullets.slice(0, 2).join("; ")}`)
+      .join(" | ")}\n` +
+    `Skills: ${profile.skills.join(", ")}`;
+
+  const result = await structuredCall({
+    tier: "fast",
+    system:
+      "You help a candidate answer gap-filling questions about their own CV. " +
+      "For each question you draft a SHORT, plausible example answer written " +
+      "in the first person, grounded in the candidate's real background. It " +
+      "is a suggestion the user will edit — keep it to one concise sentence, " +
+      "concrete but not fabricated beyond what the profile implies.",
+    prompt:
+      `Candidate profile:\n${profileSummary}\n\n` +
+      `For EACH question below, return an example first-person answer keyed ` +
+      `by the question id. Questions:\n` +
+      questions
+        .map((q) => `- [${q.id}] ${q.question}${q.why ? ` (why: ${q.why})` : ""}`)
+        .join("\n"),
+    schema: SuggestionsSchema,
+    toolName: "save_suggestions",
+    toolDescription: "Save one example answer per question id.",
+    maxTokens: 2000,
+  });
+  const out: Record<string, string> = {};
+  for (const s of result.suggestions) {
+    if (s.answer.trim()) out[s.id] = s.answer.trim();
+  }
+  return out;
 }

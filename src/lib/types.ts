@@ -105,6 +105,10 @@ export const McqQuestionSchema = z.object({
   selectType: z.enum(["single", "ranked"]).default("single"),
   /** Essential to bridge this CV to THIS job — must be answered. */
   required: z.boolean().default(false),
+  /** §4.1 — completeness questions only: a generic-but-professional
+   *  description of the bare entry, offered as "Use AI Placeholder" so the
+   *  funnel never hard-blocks. Empty on regular questions. */
+  placeholderText: z.string().default(""),
 });
 export const McqQuestionnaireSchema = z.object({
   questions: z.array(McqQuestionSchema).default([]),
@@ -159,8 +163,15 @@ export const TailoredCvSchema = z.object({
   summary: z.string().default(""),
   sections: z.array(CvSectionSchema).default([]),
   skills: z.array(z.string()).default([]),
+  /** §6 — sections the user chose to hide (e.g. "ai-automation"). The
+   *  content stays in `sections` so the toggle can re-show it; persisted
+   *  with the CV on both storage backends. */
+  hiddenSectionIds: z.array(z.string()).default([]),
 });
 export type TailoredCv = z.infer<typeof TailoredCvSchema>;
+
+/** §6 — the stable id of the dedicated AI & Automation section. */
+export const AI_SECTION_ID = "ai-automation";
 
 /* ------------------------------------------------------------------ */
 /* Diff / Insights report                                              */
@@ -215,6 +226,19 @@ export const GenerationResultSchema = z.object({
 });
 export type GenerationResult = z.infer<typeof GenerationResultSchema>;
 
+/**
+ * Report-only regeneration payload: the change report + interview simulation
+ * rebuilt around an already-edited CV. The CV itself is preserved verbatim and
+ * is NOT part of this shape (see regenerateReport in llm.ts).
+ */
+export const ReportResultSchema = z.object({
+  diff: DiffReportSchema,
+  simulation: InterviewSimulationSchema.prefault({}),
+  jobTitle: z.string().default(""),
+  company: z.string().default(""),
+});
+export type ReportResult = z.infer<typeof ReportResultSchema>;
+
 /* ------------------------------------------------------------------ */
 /* Monetization                                                        */
 /* ------------------------------------------------------------------ */
@@ -267,6 +291,20 @@ export type TierId = keyof typeof TIERS;
 
 /** Minimum cosine similarity between original and updated JD on revision */
 export const JD_SIMILARITY_THRESHOLD = 0.85;
+
+/* ------------------------------------------------------------------ */
+/* Per-flow AI-action quotas (shared by both surfaces)                 */
+/* ------------------------------------------------------------------ */
+
+/** Max AI snippet rewrites per flow (browsing prior rewrites is free). */
+export const MAX_REWRITES = 20;
+/** Max interview-report regenerations per flow. */
+export const MAX_REPORT_REGENS = 10;
+/** Max stored versions per flow: 1 original draft + up to 10 edits/downloads. */
+export const MAX_VERSIONS = 11;
+
+/** Structural nudge for an AI snippet rewrite. */
+export type RewriteLength = "short" | "long" | "default";
 
 /**
  * The CV design gallery. All templates share one structured model (see

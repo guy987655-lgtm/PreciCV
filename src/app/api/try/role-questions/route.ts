@@ -12,6 +12,7 @@ export const maxDuration = 60;
 const BodySchema = z.object({
   profile: MasterProfileSchema,
   existingTopics: z.array(z.string()).default([]),
+  existingQuestions: z.array(z.string()).default([]),
 });
 
 /**
@@ -32,7 +33,8 @@ export async function POST(request: Request) {
   try {
     const mcq = await generateRoleQuestions(
       parsed.data.profile,
-      parsed.data.existingTopics
+      parsed.data.existingTopics,
+      parsed.data.existingQuestions
     );
     return NextResponse.json({ mcq });
   } catch (e) {

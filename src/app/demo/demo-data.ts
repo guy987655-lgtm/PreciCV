@@ -3,6 +3,7 @@ import { DealbreakerHit, DiffReport, TailoredCv } from "@/lib/types";
 /** Shared mock data for the /demo pages. */
 
 export const demoCv: TailoredCv = {
+  hiddenSectionIds: [],
   contact: {
     fullName: "Dana Cohen",
     email: "dana.cohen@email.com",

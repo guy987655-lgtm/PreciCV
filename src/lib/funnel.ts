@@ -6,6 +6,7 @@ import {
   McqQuestionnaire,
   Questionnaire,
 } from "./types";
+import type { CvVersion } from "./cv-session";
 
 type McqQuestion = McqQuestionnaire["questions"][number];
 
@@ -149,6 +150,16 @@ export type FunnelState = {
   downloadedCv: boolean;
   downloadedReport: boolean;
   savedAt: number;
+  /** milestone snapshots (initial gen / regenerate / download); max 11 */
+  versions: CvVersion[];
+  /** AI snippet rewrites used this flow (cap MAX_REWRITES) */
+  rewritesUsed: number;
+  /** report regenerations used this flow (cap MAX_REPORT_REGENS) */
+  regensUsed: number;
+  /** the persisted report is out of sync with the CV after inline edits */
+  reportStale: boolean;
+  /** AI-suggested example answers for the Sharpen step, keyed by question id */
+  sharpenSuggestions: Record<string, string>;
 };
 
 export const EMPTY_FUNNEL: FunnelState = {
@@ -169,6 +180,11 @@ export const EMPTY_FUNNEL: FunnelState = {
   downloadedCv: false,
   downloadedReport: false,
   savedAt: 0,
+  versions: [],
+  rewritesUsed: 0,
+  regensUsed: 0,
+  reportStale: false,
+  sharpenSuggestions: {},
 };
 
 /** True when the question was genuinely answered (not skipped/empty). */

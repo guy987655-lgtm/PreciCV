@@ -6,18 +6,29 @@ import { useEffect, useRef, useState } from "react";
 import { readJson } from "@/lib/fetch-json";
 import { trackButtonClick } from "@/lib/analytics";
 import {
-  CV_TEMPLATES,
   CvTemplate,
   MAX_MCQ_POOL,
+  MAX_REPORT_REGENS,
+  MAX_REWRITES,
   McqQuestionnaire,
+  RewriteLength,
   TailoredCv,
 } from "@/lib/types";
+import {
+  CvVersion,
+  VersionKind,
+  appendVersion,
+  makeVersion,
+} from "@/lib/cv-session";
+import { effectiveSplit } from "@/lib/templates";
+import { isSimilarQuestion } from "@/lib/text";
 import {
   EMPTY_FUNNEL,
   FunnelState,
   FunnelStep,
   HOME_EVENT,
   McqAnswer,
+  OTHER_OPTION,
   STEP_ORDER,
   clearFunnel,
   isMcqAnswered,
@@ -33,10 +44,19 @@ import { simMeta, useSimUser } from "@/lib/sim-user";
 import { Badge, Button, Card, Modal, Spinner, Textarea } from "@/components/ui";
 import { Paywall } from "@/components/paywall";
 import { McqOptions } from "@/components/mcq-options";
-import { CvRenderer, CV_TEMPLATE_META } from "@/components/cv-renderer";
+import { CvRenderer } from "@/components/cv-renderer";
 import { DiffChangeLines } from "@/components/diff-change";
 import { ReportPage } from "@/components/report-page";
 import { TONE_META } from "@/components/interview-faces";
+import { TemplateCatalog } from "@/components/template-catalog";
+import {
+  AiSectionToggle,
+  SplitToggle,
+  ThemeToggle,
+  EditToolbar,
+} from "@/components/cv-controls";
+import { RewriteTooltip } from "@/components/rewrite-tooltip";
+import { VersionStrip } from "@/components/version-strip";
 
 const STEP_LABELS: Record<FunnelStep, string> = {
   upload: "CV + Job",
@@ -88,6 +108,10 @@ function FullScreenCv({
   const A4_W = 794;
   const A4_H = 1123;
   const [scale, setScale] = useState(0.5);
+  // §3.2 — user zoom on top of the fit-to-screen scale: 100% = fits the
+  // viewport; range 50%–150%; adjustable via the control or trackpad pinch.
+  const [zoom, setZoom] = useState(1);
+  const clampZoom = (z: number) => Math.min(1.5, Math.max(0.5, z));
   useEffect(() => {
     const recalc = () => {
       const availW = window.innerWidth - 48;
@@ -100,11 +124,20 @@ function FullScreenCv({
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
+    // Trackpad pinch arrives as a ctrl+wheel gesture on desktop browsers.
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      setZoom((z) => clampZoom(z - e.deltaY * 0.01));
+    };
+    window.addEventListener("wheel", onWheel, { passive: false });
     return () => {
       window.removeEventListener("resize", recalc);
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("wheel", onWheel);
     };
   }, [onClose]);
+  const effScale = scale * zoom;
 
   return (
     <div
@@ -119,25 +152,57 @@ function FullScreenCv({
         ×
       </button>
       <div
+        className="max-h-full max-w-full overflow-auto"
         onClick={(e) => e.stopPropagation()}
-        style={{ width: A4_W * scale, height: A4_H * scale }}
       >
-        <div
-          style={{
-            width: A4_W,
-            height: A4_H,
-            transform: `scale(${scale})`,
-            transformOrigin: "top left",
-          }}
-        >
-          <CvRenderer
-            cv={cv}
-            template={template}
-            theme={theme}
-            split={split}
-            domId={null}
-          />
+        <div style={{ width: A4_W * effScale, height: A4_H * effScale }}>
+          <div
+            style={{
+              width: A4_W,
+              height: A4_H,
+              transform: `scale(${effScale})`,
+              transformOrigin: "top left",
+              transition: "transform 0.2s ease",
+            }}
+          >
+            <CvRenderer
+              cv={cv}
+              template={template}
+              theme={theme}
+              split={split}
+              domId={null}
+            />
+          </div>
         </div>
+      </div>
+      {/* §3.2 — floating zoom control, Display Review mode only */}
+      <div
+        className="absolute bottom-5 right-5 flex items-center gap-0.5 rounded-full bg-white/90 px-1.5 py-1 shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          aria-label="Zoom out"
+          onClick={() => setZoom((z) => clampZoom(z - 0.1))}
+          disabled={zoom <= 0.5}
+          className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full text-lg font-bold text-ink transition-opacity duration-150 hover:bg-chip disabled:pointer-events-none disabled:opacity-40"
+        >
+          −
+        </button>
+        <button
+          onClick={() => setZoom(1)}
+          className="w-14 cursor-pointer text-center text-sm font-semibold tabular-nums text-ink"
+          title="Reset zoom"
+        >
+          {Math.round(zoom * 100)}%
+        </button>
+        <button
+          aria-label="Zoom in"
+          onClick={() => setZoom((z) => clampZoom(z + 0.1))}
+          disabled={zoom >= 1.5}
+          className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full text-lg font-bold text-ink transition-opacity duration-150 hover:bg-chip disabled:pointer-events-none disabled:opacity-40"
+        >
+          ＋
+        </button>
       </div>
     </div>
   );
@@ -177,9 +242,36 @@ export function TryNow() {
   const [fullScreen, setFullScreen] = useState(false);
   // Re-editing a finished flow → confirm before generating a fresh report.
   const [showRegenConfirm, setShowRegenConfirm] = useState(false);
+  // Inline-editing the tailored CV directly on the Results page.
+  const [editing, setEditing] = useState(false);
+  // §2.2 — lastSavedState: the CV exactly as it was when Edit Mode was
+  // entered. isDirty compares the live CV against it; Reset restores it.
+  const [editSnapshot, setEditSnapshot] = useState<{
+    json: string;
+    cv: TailoredCv;
+    reportStale: boolean;
+  } | null>(null);
+  // Fetching AI example answers for the Sharpen-step placeholders.
+  const [sharpenBusy, setSharpenBusy] = useState(false);
+  // Rebuilding the interview report around the edited CV.
+  const [reportBusy, setReportBusy] = useState(false);
+  // Deferred print request — fired after a smart-download report refresh so the
+  // printed DOM reflects the freshly regenerated report (see effect below).
+  const [printRequest, setPrintRequest] = useState(false);
+  // The CV preview wrapper — the RewriteTooltip watches selections inside it.
+  const cvPreviewRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const results = state.results;
   const template = state.template;
+  // Split view honoring per-template constraints (mono/timeline/grid = never;
+  // columnrule = always) regardless of the user's toggle.
+  const shownSplit = effectiveSplit(template, splitView);
+  // §2.2 isDirty — true from the first change relative to lastSavedState.
+  const isDirty =
+    editing &&
+    editSnapshot !== null &&
+    results !== null &&
+    JSON.stringify(results.cv) !== editSnapshot.json;
 
   // Restore any in-progress funnel (logo click / refresh must not lose data).
   useEffect(() => {
@@ -197,6 +289,30 @@ export function TryNow() {
     if (hydrated) window.scrollTo({ top: 0 });
   }, [state.step, hydrated]);
 
+  // Deferred print: only once any smart-download report refresh has finished
+  // AND its result has rendered do we print, so the printed report file always
+  // reflects the latest CV. Records the "download" milestone version.
+  useEffect(() => {
+    if (!printRequest || reportBusy) return;
+    setState((s) => {
+      const flags = { downloadedCv: true, downloadedReport: true };
+      if (!s.results) return { ...s, ...flags };
+      const version = makeVersion("download", {
+        cv: s.results.cv,
+        diff: s.results.diff,
+        simulation: s.results.simulation,
+        template: s.template,
+      });
+      return { ...s, ...flags, versions: appendVersion(s.versions, version) };
+    });
+    printBoth({
+      name: state.profile?.contact.fullName,
+      company: state.results?.company,
+    });
+    setPrintRequest(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [printRequest, reportBusy]);
+
   // Home button while the funnel is mounted → swap back to the hero
   // (the flow itself is untouched; "Continue progress" resumes it).
   useEffect(() => {
@@ -204,6 +320,12 @@ export function TryNow() {
     window.addEventListener(HOME_EVENT, onHome);
     return () => window.removeEventListener(HOME_EVENT, onHome);
   }, []);
+
+  // Reaching the Sharpen step lazily fetches AI example-answer placeholders.
+  useEffect(() => {
+    if (hydrated && state.step === "open") loadSharpenSuggestions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated, state.step]);
 
   function patch(p: Partial<FunnelState>) {
     setState((s) => ({ ...s, ...p }));
@@ -298,6 +420,11 @@ export function TryNow() {
         results: null,
         downloadedCv: false,
         downloadedReport: false,
+        versions: [],
+        rewritesUsed: 0,
+        regensUsed: 0,
+        reportStale: false,
+        sharpenSuggestions: {},
         step: nextStep,
         furthestStep: STEP_ORDER.indexOf(nextStep),
       }));
@@ -320,14 +447,15 @@ export function TryNow() {
       click_source: "landing_try_now",
     });
     try {
+      const existingQuestions = (state.mcq?.questions ?? []);
       const res = await fetch("/api/try/role-questions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           profile: state.profile,
-          existingTopics: (state.mcq?.questions ?? []).map(
-            (q) => q.topic || q.question
-          ),
+          existingTopics: existingQuestions.map((q) => q.topic || q.question),
+          // Send the full question texts so the model avoids repeating them.
+          existingQuestions: existingQuestions.map((q) => q.question),
         }),
       });
       const data = await readJson(res);
@@ -335,10 +463,29 @@ export function TryNow() {
       const incoming: McqQuestionnaire = data.mcq ?? { questions: [] };
       setState((s) => {
         const existing = s.mcq?.questions ?? [];
-        const seenText = new Set(existing.map((q) => q.question.toLowerCase()));
-        const fresh = incoming.questions
-          .filter((q) => !seenText.has(q.question.toLowerCase()))
-          .map((q, i) => ({ ...q, id: `role_${i}_${q.id || i}` }));
+        // Strict de-dup: drop any incoming question that is similar to one the
+        // user already has — and especially one they already ANSWERED — using
+        // fuzzy matching (not exact text) so reworded near-duplicates are
+        // caught and never re-render as fresh unanswered questions.
+        const answeredTexts = existing
+          .filter((q) => isMcqAnswered(s.mcqAnswers[q.id]))
+          .map((q) => q.question);
+        const existingTexts = existing.map((q) => q.question);
+        const kept: typeof incoming.questions = [];
+        for (const q of incoming.questions) {
+          const dupExisting = existingTexts.some((t) =>
+            isSimilarQuestion(t, q.question)
+          );
+          const dupAnswered = answeredTexts.some((t) =>
+            isSimilarQuestion(t, q.question)
+          );
+          const dupWithinBatch = kept.some((k) =>
+            isSimilarQuestion(k.question, q.question)
+          );
+          if (dupExisting || dupAnswered || dupWithinBatch) continue;
+          kept.push(q);
+        }
+        const fresh = kept.map((q, i) => ({ ...q, id: `role_${i}_${q.id || i}` }));
         // Re-group so every category stays a contiguous carousel run.
         const merged = normalizeMcqPool([...existing, ...fresh]);
         // Auto-advance straight to the first newly generated question so the
@@ -358,6 +505,43 @@ export function TryNow() {
       setError(e instanceof Error ? e.message : "Something went wrong");
     } finally {
       setLoadingMore(false);
+    }
+  }
+
+  /**
+   * Lazily fetches an AI example answer per open question (grounded in the CV)
+   * to seed the Sharpen inputs as inspiration placeholders. Runs once per flow;
+   * failures are non-fatal (the inputs fall back to a generic placeholder).
+   */
+  async function loadSharpenSuggestions() {
+    const qs = state.questionnaire?.questions ?? [];
+    if (
+      !state.profile ||
+      qs.length === 0 ||
+      sharpenBusy ||
+      Object.keys(state.sharpenSuggestions).length > 0
+    ) {
+      return;
+    }
+    setSharpenBusy(true);
+    try {
+      const res = await fetch("/api/try/sharpen-suggestions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profile: state.profile,
+          questions: qs.map((q) => ({ id: q.id, question: q.question, why: q.why })),
+        }),
+      });
+      const data = await readJson(res);
+      const suggestions = (data?.suggestions ?? {}) as Record<string, string>;
+      if (Object.keys(suggestions).length > 0) {
+        setState((s) => ({ ...s, sharpenSuggestions: suggestions }));
+      }
+    } catch {
+      // Non-fatal — the generic placeholder remains.
+    } finally {
+      setSharpenBusy(false);
     }
   }
 
@@ -396,14 +580,27 @@ export function TryNow() {
         return;
       }
       if (!res.ok) throw new Error(data.error ?? "Generation failed");
-      patch({
-        results: {
-          cv: data.cv,
+      setState((s) => {
+        const results = {
+          cv: data.cv as TailoredCv,
           diff: data.diff,
           simulation: data.simulation ?? { pitch: "", questions: [] },
           jobTitle: data.jobTitle,
           company: data.company,
-        },
+        };
+        // Milestone 1: the initial AI generation becomes the "original" version.
+        const version = makeVersion("original", {
+          cv: results.cv,
+          diff: results.diff,
+          simulation: results.simulation,
+          template: s.template,
+        });
+        return {
+          ...s,
+          results,
+          reportStale: false,
+          versions: appendVersion(s.versions, version),
+        };
       });
       setRemaining(data.remaining ?? null);
     } catch (e) {
@@ -436,25 +633,177 @@ export function TryNow() {
       results: null,
       downloadedCv: false,
       downloadedReport: false,
+      // A brand-new flow starts its versioning + quotas from scratch.
+      versions: [],
+      rewritesUsed: 0,
+      regensUsed: 0,
+      reportStale: false,
       step: "gate",
       furthestStep: Math.max(s.furthestStep ?? 0, STEP_ORDER.indexOf("gate")),
     }));
+    setEditing(false);
+    setEditSnapshot(null);
     if (!meta.registered) generateNow();
   }
 
-  /** One click → both files (CV, then the report as the dialog closes). */
-  function exportBoth() {
+  /* ---------------- inline editing + AI rewrite (Results page) -------- */
+
+  /** Realtime inline-edit persist: edits desync the report until regenerated. */
+  function editCv(next: TailoredCv) {
+    setState((s) =>
+      s.results
+        ? { ...s, results: { ...s.results, cv: next }, reportStale: true }
+        : s
+    );
+  }
+
+  /** §2.2 — Edit Mode enter/exit. Entering snapshots lastSavedState (the CV
+   *  as it was when editing began); Done simply exits (saving is realtime). */
+  function toggleEdit(next: boolean) {
+    if (next && results) {
+      setEditSnapshot({
+        json: JSON.stringify(results.cv),
+        cv: JSON.parse(JSON.stringify(results.cv)) as TailoredCv,
+        reportStale: state.reportStale,
+      });
+    }
+    if (!next) setEditSnapshot(null);
+    setEditing(next);
+  }
+
+  /** §2.2 — Reset rolls back to the exact lastSavedState snapshot taken on
+   *  entering Edit Mode, staying IN edit mode (§3.1 flow). */
+  function resetCv() {
+    if (!editSnapshot || !results) return;
+    if (!confirm("Discard the edits you made in this editing session?")) return;
+    setState((s) =>
+      s.results
+        ? {
+            ...s,
+            results: { ...s.results, cv: editSnapshot.cv },
+            reportStale: editSnapshot.reportStale,
+          }
+        : s
+    );
+  }
+
+  /** Rewrite a highlighted snippet — spends one rewrite from the flow quota. */
+  async function handleRewrite(
+    text: string,
+    length: RewriteLength
+  ): Promise<string> {
+    if (state.rewritesUsed >= MAX_REWRITES) {
+      throw new Error("Rewrite limit reached");
+    }
+    const res = await fetch("/api/try/rewrite", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, length, jdText: state.jdText }),
+    });
+    const data = await readJson(res);
+    if (!res.ok) throw new Error(data.error ?? "Rewrite failed");
+    setState((s) => ({ ...s, rewritesUsed: s.rewritesUsed + 1 }));
+    return data.text as string;
+  }
+
+  /**
+   * Rebuilds the interview report + change analysis around the EDITED CV
+   * (never re-tailoring the CV). Records a "regenerate" milestone version.
+   * Returns true on success. Bounded by MAX_REPORT_REGENS per flow.
+   */
+  async function regenerateReportNow(kind: VersionKind = "regenerate"): Promise<boolean> {
+    if (!results || !state.profile) return false;
+    if (state.regensUsed >= MAX_REPORT_REGENS) {
+      setError(`You've used all ${MAX_REPORT_REGENS} report refreshes for this flow.`);
+      return false;
+    }
+    setReportBusy(true);
+    setError("");
+    try {
+      // §2.4 trace — the payload is the LATEST edited CV, not a stale copy.
+      console.log(
+        `[report-regen] sending edited CV: chars=${JSON.stringify(results.cv).length}`
+      );
+      const res = await fetch("/api/try/report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cv: results.cv,
+          jdText: state.jdText,
+          baseCv: state.versions[0]?.cv,
+          // Original uploaded-resume data — the Change Report's diff base.
+          profile: profileWithAnswers(state) ?? undefined,
+        }),
+      });
+      const data = await readJson(res);
+      if (!res.ok) throw new Error(data.error ?? "Report refresh failed");
+      setState((s) => {
+        if (!s.results) return s;
+        const nextResults = {
+          ...s.results,
+          diff: data.diff,
+          simulation: data.simulation ?? s.results.simulation,
+          jobTitle: data.jobTitle || s.results.jobTitle,
+          company: data.company || s.results.company,
+        };
+        const version = makeVersion(kind, {
+          cv: nextResults.cv,
+          diff: nextResults.diff,
+          simulation: nextResults.simulation,
+          template: s.template,
+        });
+        return {
+          ...s,
+          results: nextResults,
+          regensUsed: s.regensUsed + 1,
+          reportStale: false,
+          versions: appendVersion(s.versions, version),
+        };
+      });
+      return true;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Report refresh failed");
+      return false;
+    } finally {
+      setReportBusy(false);
+    }
+  }
+
+  /** Restore a stored milestone version as the working CV + report. */
+  function restoreVersion(v: CvVersion) {
+    setState((s) =>
+      s.results
+        ? {
+            ...s,
+            template: v.template,
+            results: {
+              ...s.results,
+              cv: v.cv,
+              diff: v.diff,
+              simulation: v.simulation ?? s.results.simulation,
+            },
+            reportStale: false,
+          }
+        : s
+    );
+  }
+
+  /**
+   * Smart download: if the CV was edited after the last report build, refresh
+   * the report FIRST so the two files always match, then print. The actual
+   * print fires from an effect once the regenerated report has rendered.
+   */
+  async function exportBoth() {
     trackButtonClick({
       button_name: "anon_export_bundle",
       action: "export",
       button_text: "Download my files",
       click_source: "landing_try_now",
     });
-    printBoth({
-      name: state.profile?.contact.fullName,
-      company: results?.company,
-    });
-    patch({ downloadedCv: true, downloadedReport: true });
+    if (state.reportStale && state.regensUsed < MAX_REPORT_REGENS) {
+      await regenerateReportNow();
+    }
+    setPrintRequest(true);
   }
 
   function goToSignup(source: string) {
@@ -995,6 +1344,26 @@ export function TryNow() {
                   onChange={(next) => updateMcqAnswer(currentQ.id, next)}
                 />
               </div>
+              {/* §4.1 — completeness questions carry an AI-placeholder escape
+                  hatch: accept a generic professional description instead of
+                  elaborating, so the funnel never hard-blocks. */}
+              {currentQ.placeholderText && (
+                <button
+                  onClick={() => {
+                    updateMcqAnswer(currentQ.id, {
+                      selected: [OTHER_OPTION],
+                      other: currentQ.placeholderText,
+                    });
+                    setTimeout(nextQuestion, 150);
+                  }}
+                  className="mt-3 w-full cursor-pointer rounded-xl border-[1.5px] border-dashed border-accent/60 bg-selected-bg/50 px-4 py-2.5 text-left text-[13px] text-ink-soft transition-colors hover:bg-selected-bg"
+                >
+                  <span className="font-bold text-accent">
+                    ✨ Use AI placeholder
+                  </span>{" "}
+                  — &ldquo;{currentQ.placeholderText}&rdquo;
+                </button>
+              )}
             </Card>
           )}
 
@@ -1104,21 +1473,35 @@ export function TryNow() {
           </div>
 
           <Card className="flex flex-col gap-[22px] p-7">
-            {state.questionnaire.questions.map((q) => (
-              <div key={q.id}>
-                <div className="text-[15.5px] font-bold text-ink">
-                  {q.question}
+            {sharpenBusy && (
+              <Spinner label="Drafting example answers from your CV…" />
+            )}
+            {state.questionnaire.questions.map((q) => {
+              const suggestion = state.sharpenSuggestions[q.id];
+              return (
+                <div key={q.id}>
+                  <div className="text-[15.5px] font-bold text-ink">
+                    {q.question}
+                  </div>
+                  <div className="mt-0.5 text-[13px] text-ink-faint">{q.why}</div>
+                  <Textarea
+                    rows={2}
+                    className="mt-2.5"
+                    // A CV-grounded example answer seeds the field as inspiration;
+                    // falls back to a generic prompt while (or if) none loads.
+                    placeholder={
+                      suggestion
+                        ? `e.g. ${suggestion}`
+                        : sharpenBusy
+                          ? "Drafting a suggestion…"
+                          : "Share the details in your own words…"
+                    }
+                    value={state.answers[q.id] ?? ""}
+                    onChange={(e) => answerOpen(q.id, e.target.value)}
+                  />
                 </div>
-                <div className="mt-0.5 text-[13px] text-ink-faint">{q.why}</div>
-                <Textarea
-                  rows={2}
-                  className="mt-2.5"
-                  placeholder="Type your answer…"
-                  value={state.answers[q.id] ?? ""}
-                  onChange={(e) => answerOpen(q.id, e.target.value)}
-                />
-              </div>
-            ))}
+              );
+            })}
           </Card>
 
           <div className="flex items-center justify-between gap-3">
@@ -1202,85 +1585,122 @@ export function TryNow() {
               </h2>
             </div>
             <div className="mb-3 mt-3 flex flex-col gap-3 print:hidden">
-              {/* Design gallery — 10 designs, each viewable on a light or a
-                  dark background via the global theme toggle. */}
+              {/* Design catalog — 3 rows (Recommended / Classic / Modern),
+                  each design viewable on a light or dark background. */}
               <div>
                 <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
                   <p className="text-xs font-semibold text-ink-faint">
                     Choose a design
                   </p>
-                  {/* Background theme toggle — previews any design light/dark */}
-                  <div className="inline-flex overflow-hidden rounded-full border border-border">
-                    {(["light", "dark"] as const).map((th) => (
-                      <button
-                        key={th}
-                        onClick={() => setCvTheme(th)}
-                        className={`cursor-pointer px-3 py-1 text-xs font-semibold transition-colors ${
-                          cvTheme === th
-                            ? "bg-ink text-bg"
-                            : "bg-card text-ink-soft hover:bg-chip"
-                        }`}
-                      >
-                        {th === "light" ? "☀ Light" : "☾ Dark"}
-                      </button>
-                    ))}
-                  </div>
+                  <ThemeToggle theme={cvTheme} onChange={setCvTheme} />
                 </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {CV_TEMPLATES.map((t) => {
-                    const active = template === t;
-                    return (
-                      <button
-                        key={t}
-                        onClick={() => patch({ template: t })}
-                        className={`inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition-colors ${
-                          active
-                            ? "border-ink bg-ink text-bg"
-                            : "border-border bg-card text-ink-soft hover:bg-chip"
-                        }`}
-                      >
-                        {CV_TEMPLATE_META[t].label}
-                      </button>
-                    );
-                  })}
-                </div>
+                <TemplateCatalog
+                  template={template}
+                  onSelect={(t) => patch({ template: t })}
+                  jdText={state.jdText}
+                />
               </div>
               {/* Controls */}
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-xs text-ink-faint">
-                  Preview your one-page CV, then download.
-                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <EditToolbar
+                    editing={editing}
+                    onToggleEdit={toggleEdit}
+                    onReset={resetCv}
+                    canReset={isDirty}
+                  />
+                  <AiSectionToggle cv={results.cv} onChange={editCv} />
+                  {/* §3.1 — Refresh Report is locked during Edit Mode and only
+                      meaningful once edits desynced the report. */}
+                  <button
+                    onClick={() => regenerateReportNow()}
+                    disabled={
+                      editing ||
+                      reportBusy ||
+                      !state.reportStale ||
+                      state.regensUsed >= MAX_REPORT_REGENS
+                    }
+                    className="cursor-pointer rounded-full border border-accent bg-selected-bg px-3 py-1 text-xs font-semibold text-accent transition-opacity duration-200 hover:bg-chip disabled:pointer-events-none disabled:opacity-50"
+                    title={
+                      editing
+                        ? "Finish editing (Done) to refresh the report"
+                        : !state.reportStale
+                          ? "Report is up to date"
+                          : "Rebuild the interview report to match your edits"
+                    }
+                  >
+                    {reportBusy ? "Refreshing…" : "↻ Refresh report"}
+                  </button>
+                </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     onClick={() => setFullScreen(true)}
-                    className="cursor-pointer rounded-full border border-border bg-card px-3 py-1 text-xs font-semibold text-ink-soft hover:bg-chip"
+                    disabled={editing}
+                    className="cursor-pointer rounded-full border border-border bg-card px-3 py-1 text-xs font-semibold text-ink-soft transition-opacity duration-200 hover:bg-chip disabled:pointer-events-none disabled:opacity-50"
+                    title={
+                      editing
+                        ? "Finish editing (Done) to open Display Review"
+                        : "Full-screen review with zoom"
+                    }
                   >
                     ⛶ Display review
                   </button>
-                  <button
-                    onClick={() => setSplitView((v) => !v)}
-                    className={`cursor-pointer rounded-full border px-3 py-1 text-xs font-semibold ${
-                      splitView
-                        ? "border-accent bg-selected-bg text-accent"
-                        : "border-border bg-card text-ink-soft hover:bg-chip"
-                    }`}
+                  <SplitToggle
+                    template={template}
+                    split={splitView}
+                    onToggle={setSplitView}
+                  />
+                  <Button
+                    size="sm"
+                    disabled={reportBusy || editing}
+                    title={
+                      editing
+                        ? "Finish editing (Done) to download"
+                        : undefined
+                    }
+                    onClick={exportBoth}
                   >
-                    ⿻ Split view
-                  </button>
-                  <Button size="sm" onClick={exportBoth}>
-                    Download my files (2 PDFs)
+                    {reportBusy ? "Syncing report…" : "Download my files (2 PDFs)"}
                   </Button>
                 </div>
               </div>
+              {state.reportStale && !editing && (
+                <p className="text-[11px] text-ink-faint">
+                  You edited your CV — the interview report will refresh
+                  automatically when you download, or refresh it now.
+                </p>
+              )}
             </div>
-            <div className="overflow-auto rounded-2xl border border-border bg-chip p-4 print:border-0 print:bg-white print:p-0">
+            {editing && (
+              <p className="mb-2 text-center text-xs font-semibold text-accent print:hidden">
+                ✎ Edit Mode — click any text to edit it, highlight a phrase for
+                an AI rewrite. Realtime-saved; Done exits.
+              </p>
+            )}
+            <div
+              ref={cvPreviewRef}
+              className={`overflow-auto rounded-2xl border bg-chip p-4 transition-all duration-200 print:border-0 print:bg-white print:p-0 ${
+                editing
+                  ? "border-accent ring-2 ring-accent/30"
+                  : "border-border"
+              }`}
+            >
               <CvRenderer
                 cv={results.cv}
                 template={template}
                 theme={cvTheme}
-                split={splitView}
+                split={shownSplit}
+                editable={editing}
+                onChange={editCv}
               />
             </div>
+            <RewriteTooltip
+              containerRef={cvPreviewRef}
+              enabled={editing}
+              rewritesUsed={state.rewritesUsed}
+              maxRewrites={MAX_REWRITES}
+              onRewrite={handleRewrite}
+            />
             <p className="mt-3 text-center text-xs text-ink-faint print:hidden">
               {remaining !== null
                 ? `${remaining} free CV${remaining === 1 ? "" : "s"} left today.`
@@ -1412,6 +1832,16 @@ export function TryNow() {
             </div>
           </Card>
 
+          {/* ---- 5. Version history (milestone snapshots) ---- */}
+          {state.versions.length > 1 && (
+            <Card className="p-6 print:hidden">
+              <VersionStrip
+                versions={state.versions}
+                onRestore={restoreVersion}
+              />
+            </Card>
+          )}
+
           {/* Printable simulation report — hidden on screen, becomes the
               second deliverable file of the download bundle */}
           <ReportPage
@@ -1503,7 +1933,7 @@ export function TryNow() {
           cv={results.cv}
           template={template}
           theme={cvTheme}
-          split={splitView}
+          split={shownSplit}
           onClose={() => setFullScreen(false)}
         />
       )}

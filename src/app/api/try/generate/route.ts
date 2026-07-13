@@ -18,6 +18,13 @@ export const maxDuration = 300;
  */
 const DAILY_LIMIT = 1;
 
+/**
+ * Temporarily disables the daily quota — generation is unlimited while this
+ * is true. Flip back to `false` (or delete this flag) to re-enable the
+ * per-day cap; the rate-limit machinery below is left intact for that.
+ */
+const QUOTA_DISABLED = true;
+
 const BodySchema = z.object({
   profile: MasterProfileSchema,
   jdText: z.string().min(100),
@@ -34,8 +41,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: LLM_NOT_CONFIGURED_MSG }, { status: 503 });
   }
 
-  const quota = checkDailyQuota(request, DAILY_LIMIT);
-  if (!quota.allowed) {
+  const quota = QUOTA_DISABLED ? null : checkDailyQuota(request, DAILY_LIMIT);
+  if (quota && !quota.allowed) {
     const res = NextResponse.json(
       {
         error: "quota_exceeded",
@@ -58,9 +65,12 @@ export async function POST(request: Request) {
   try {
     const result = await generateTailoredCv(parsed.data.profile, parsed.data.jdText);
     // Quota is consumed only on success — a failed run costs the user nothing.
-    const setCookie = quota.commit();
-    const res = NextResponse.json({ ...result, remaining: quota.remaining });
-    res.headers.set("Set-Cookie", setCookie);
+    const setCookie = quota?.commit();
+    const res = NextResponse.json({
+      ...result,
+      remaining: quota?.remaining ?? null,
+    });
+    if (setCookie) res.headers.set("Set-Cookie", setCookie);
     return res;
   } catch (e) {
     console.error("try/generate failed:", e);

@@ -67,7 +67,18 @@ async function structuredCall<T>(opts: StructuredCallOpts<T>): Promise<T> {
 /* ------------------------------------------------------------------ */
 
 async function anthropicCall<T>(opts: StructuredCallOpts<T>): Promise<T> {
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const client = new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+    // Cold starts and brief model overload are the #1 cause of first-attempt
+    // generation failures. Retry transient errors (429/5xx/529/network) more
+    // aggressively than the SDK default of 2, with the SDK's built-in
+    // exponential backoff + Retry-After handling.
+    maxRetries: 5,
+    // Cap a single hung request so it fails fast and gets retried, instead of
+    // hanging up to the 10-minute default and blowing the function's
+    // maxDuration budget (300s). 110s leaves room for a couple of retries.
+    timeout: 110_000,
+  });
   const jsonSchema = z.toJSONSchema(opts.schema, { target: "draft-7" });
 
   const response = await client.messages.create({

@@ -38,6 +38,7 @@ import {
   stashForSignup,
 } from "@/lib/funnel";
 import { findCachedAnswers } from "@/lib/answer-cache";
+import { generateWithRetry } from "@/lib/generate-client";
 import { printBoth } from "@/lib/download";
 import { simMeta, useSimUser } from "@/lib/sim-user";
 import { Badge, Button, Card, Modal, Spinner, Textarea } from "@/components/ui";
@@ -577,19 +578,18 @@ export function TryNow() {
       click_source: "landing_try_now",
     });
     try {
-      const res = await fetch("/api/try/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile, jdText: state.jdText }),
-      });
-      const data = await readJson(res);
-      if (res.status === 429) {
+      // Topic 1: generation cold starts (LLM overload / serverless warm-up)
+      // make the first attempt fail intermittently. Silently retry transient
+      // failures so the user never sees an error mid-loading — the spinner
+      // ("Preparing your two files…") stays up across retries. Only a hard
+      // failure after the whole budget is exhausted surfaces an error.
+      const data = await generateWithRetry(profile, state.jdText);
+      if (data.quota) {
         setQuotaMessage(
-          data.message ?? "Daily free limit reached. Please come back tomorrow."
+          data.quota ?? "Daily free limit reached. Please come back tomorrow."
         );
         return;
       }
-      if (!res.ok) throw new Error(data.error ?? "Generation failed");
       setState((s) => {
         const results = {
           cv: data.cv as TailoredCv,

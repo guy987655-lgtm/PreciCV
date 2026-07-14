@@ -258,7 +258,9 @@ export async function extractProfileFromCv(
       `level, yes/no, team size, recency); use "ranked" ONLY when picking ` +
       `several and prioritizing them makes sense (e.g. tools used). For ` +
       `questions listing concrete tools/technologies, the LAST option must ` +
-      `be "None of these". CRITICAL — "topic" is a CATEGORY, not a ` +
+      `be "None of these". Any question about AI/LLM tool usage MUST ` +
+      `include "ChatGPT", "Claude" and "Grok" among its options (plus any ` +
+      `other tools you find relevant). CRITICAL — "topic" is a CATEGORY, not a ` +
       `per-question label: use AT MOST 4 distinct broad topic values across ` +
       `the whole set (e.g. "SQL & Data", "Visualization", "Leadership"), ` +
       `each shared by several questions. Do NOT add an "Other" option — the ` +
@@ -386,7 +388,9 @@ export async function generateRoleQuestions(
       `when exactly one answer is logical (levels, yes/no, amounts); use ` +
       `"ranked" ONLY when picking several and prioritizing makes sense. For ` +
       `questions listing concrete tools, the LAST option must be "None of ` +
-      `these". CRITICAL — "topic" is a CATEGORY, not a per-question label: ` +
+      `these". Any question about AI/LLM tool usage MUST include "ChatGPT", ` +
+      `"Claude" and "Grok" among its options. CRITICAL — "topic" is a ` +
+      `CATEGORY, not a per-question label: ` +
       `group ALL questions under at most 5 broad topic values (e.g. "Data & ` +
       `SQL", "BI & Visualization", "Cloud & Tooling", "Statistics", ` +
       `"Leadership"), each covering several questions; reuse the existing ` +

@@ -53,6 +53,19 @@ export async function PATCH(
     }
     updates.template = body.template;
   }
+  // View preferences persist with the generation, like template (Topic 3).
+  if (body.cvTheme !== undefined) {
+    if (!["light", "dark"].includes(body.cvTheme)) {
+      return NextResponse.json({ error: "Unknown theme" }, { status: 400 });
+    }
+    updates.cv_theme = body.cvTheme;
+  }
+  if (body.splitView !== undefined) {
+    if (typeof body.splitView !== "boolean") {
+      return NextResponse.json({ error: "Invalid splitView" }, { status: 400 });
+    }
+    updates.split_view = body.splitView;
+  }
   if (Object.keys(updates).length === 0) {
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
   }

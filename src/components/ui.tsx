@@ -142,6 +142,34 @@ export function Modal({
   );
 }
 
+/**
+ * Transient bottom-center notice with an optional action (e.g. "Undo").
+ * The parent owns visibility and the auto-dismiss timer — this is pure UI.
+ */
+export function Toast({
+  message,
+  actionLabel,
+  onAction,
+}: {
+  message: string;
+  actionLabel?: string;
+  onAction?: () => void;
+}) {
+  return (
+    <div className="fixed bottom-6 left-1/2 z-[80] flex -translate-x-1/2 items-center gap-3 rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-bg shadow-[0_12px_40px_rgba(30,43,36,0.3)] print:hidden">
+      <span>{message}</span>
+      {actionLabel && (
+        <button
+          onClick={onAction}
+          className="cursor-pointer rounded-full bg-white/15 px-3 py-1 text-[13px] font-bold text-bg transition-colors hover:bg-white/25"
+        >
+          {actionLabel}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function Spinner({ label }: { label?: string }) {
   return (
     <span className="inline-flex items-center gap-2 text-sm text-ink-faint">

@@ -242,19 +242,20 @@ export function GreetingBlock({
   const currentTitle =
     profile?.experience?.[0]?.title || profile?.headline || "";
 
-  const messages: ReactNode[] =
-    info?.targetJobTitle && currentTitle
-      ? [
-          `Hi ${first}, I see you are a ${currentTitle} and you're interested in the ${info.targetJobTitle} position.`,
-          info.sameField
-            ? info.field
-              ? `Makes sense, looking to stay in the ${info.field} field, huh?`
-              : "Makes sense, staying on the same path, huh?"
-            : "I see you're looking to step outside your original role. How about we make some adjustments?",
-        ]
-      : [
-          `Hi ${first}! I've read your CV and the job you're targeting — let's tailor your CV together.`,
-        ];
+  // The two-message variant ends on a closed question — offer one-tap replies.
+  const closedQuestion = Boolean(info?.targetJobTitle && currentTitle);
+  const messages: ReactNode[] = closedQuestion
+    ? [
+        `Hi ${first}, I see you are a ${currentTitle} and you're interested in the ${info!.targetJobTitle} position.`,
+        info!.sameField
+          ? info!.field
+            ? `Makes sense, looking to stay in the ${info!.field} field, huh?`
+            : "Makes sense, staying on the same path, huh?"
+          : "I see you're looking to step outside your original role. How about we make some adjustments?",
+      ]
+    : [
+        `Hi ${first}! I've read your CV and the job you're targeting — let's tailor your CV together.`,
+      ];
 
   return (
     <>
@@ -267,6 +268,21 @@ export function GreetingBlock({
       {/* One-time free-text reply (PRD: "await user input to proceed") */}
       {scriptDone && !state.greetingDone && (
         <div className="chat-pop-in rounded-[18px] border-[1.5px] border-border bg-card p-4">
+          {/* Quick replies for the closed greeting question — one tap submits
+              through the same handler as typing + Send (PRD v2 Topic 1). */}
+          {closedQuestion && (
+            <div className="mb-3 flex flex-wrap gap-2">
+              {["Yep", "Not necessarily", "Definitely no"].map((r) => (
+                <button
+                  key={r}
+                  onClick={() => onReply(r)}
+                  className="cursor-pointer rounded-full border-[1.5px] border-border bg-card px-3.5 py-1.5 text-[13px] font-semibold text-ink-soft transition-colors hover:border-accent-soft hover:bg-selected-bg hover:text-ink"
+                >
+                  {r}
+                </button>
+              ))}
+            </div>
+          )}
           <Textarea
             autoFocus
             rows={2}

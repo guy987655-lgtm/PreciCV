@@ -142,6 +142,9 @@ export type FunnelState = {
   mcqAnswers: Record<string, McqAnswer>;
   /** open-question answers, keyed by question id */
   answers: Record<string, string>;
+  /** when each question was FIRST answered (ms), keyed by question id —
+   *  powers the My Card progress chart (PRD v2 Topic 10) */
+  answerTimes: Record<string, number>;
   /** the role-standard question bank was already fetched */
   roleQuestionsLoaded: boolean;
   /** carousel position within the quick-check question pool */
@@ -150,6 +153,10 @@ export type FunnelState = {
   /** the generated deliverables — persisted so History can re-download */
   results: GenerationResult | null;
   template: CvTemplate;
+  /** CV preview background theme — persists with the rest of the view state. */
+  cvTheme: "light" | "dark";
+  /** Split-view layout preference (per-template splitMode still overrides). */
+  splitView: boolean;
   downloadedCv: boolean;
   downloadedReport: boolean;
   savedAt: number;
@@ -189,11 +196,14 @@ export const EMPTY_FUNNEL: FunnelState = {
   mcq: null,
   mcqAnswers: {},
   answers: {},
+  answerTimes: {},
   roleQuestionsLoaded: false,
   mcqIndex: 0,
   jdText: "",
   results: null,
   template: "classic",
+  cvTheme: "light",
+  splitView: false,
   downloadedCv: false,
   downloadedReport: false,
   savedAt: 0,
@@ -210,6 +220,17 @@ export const EMPTY_FUNNEL: FunnelState = {
   branchChoice: "",
   branchStarted: false,
 };
+
+/** Topic 10 — records when a question was FIRST genuinely answered. */
+export function stampAnswerTime(
+  s: FunnelState,
+  qId: string,
+  answered: boolean
+): Record<string, number> {
+  return answered && !s.answerTimes[qId]
+    ? { ...s.answerTimes, [qId]: Date.now() }
+    : s.answerTimes;
+}
 
 /** True when the question was genuinely answered (not skipped/empty). */
 export function isMcqAnswered(a?: McqAnswer): boolean {
@@ -279,6 +300,17 @@ export function loadFunnel(): FunnelState | null {
     if (state.mcq?.questions?.length) {
       state.mcq = { questions: normalizeMcqPool(state.mcq.questions) };
     }
+    // Topic 10 backfill: answers saved before per-answer timestamps existed
+    // get the flow's last-saved time as their (best-known) answer time.
+    const times = { ...state.answerTimes };
+    const backfill = state.savedAt || Date.now();
+    for (const [qid, a] of Object.entries(state.mcqAnswers)) {
+      if (isMcqAnswered(a) && !times[qid]) times[qid] = backfill;
+    }
+    for (const [qid, v] of Object.entries(state.answers ?? {})) {
+      if ((v ?? "").trim() && !times[qid]) times[qid] = backfill;
+    }
+    state.answerTimes = times;
     return state;
   } catch {
     return null;
@@ -373,15 +405,15 @@ export function activateFlow(flow: FunnelState) {
 }
 
 /**
- * Default display name for a flow (Topic 4): "[Job Title] - [Company]", or the
- * job title alone, falling back to "New Application - [date]". Used until the
- * user renames the flow on the History dashboard.
+ * Default display name for a flow: "[Company] - [Job Title]", with "General"
+ * standing in when the JD named no company, falling back to
+ * "New Application - [date]" for flows that haven't generated yet. Used until
+ * the user renames the flow on the History dashboard.
  */
 export function defaultProcessName(state: FunnelState): string {
   const job = state.results?.jobTitle?.trim();
   const company = state.results?.company?.trim();
-  if (job && company) return `${job} - ${company}`;
-  if (job) return job;
+  if (job) return `${company || "General"} - ${job}`;
   const date = new Date(state.savedAt || Date.now()).toLocaleDateString("en-GB", {
     day: "numeric",
     month: "short",

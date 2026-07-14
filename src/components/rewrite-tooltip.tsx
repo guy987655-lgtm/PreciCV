@@ -143,11 +143,12 @@ export function RewriteTooltip({
     setTimeout(() => (mutatingRef.current = false), 0);
   }, []);
 
-  // §2.3 — click-outside dismissal: a click anywhere outside the tooltip
-  // closes it WITHOUT applying changes. If an unapplied AI candidate is
-  // showing, the original text is restored first (capture phase runs before
-  // the field's blur-commit, so the discard always wins). Clicks inside the
-  // tooltip never dismiss it.
+  // PRD v2 Topic 7 — click-outside APPLIES the displayed candidate (same code
+  // path as "Use"): the text the user sees stays in the CV, matching the
+  // app's auto-save mental model. If the ORIGINAL text is showing (no
+  // candidate generated, or the user undid back to it), there is nothing to
+  // apply — the tooltip simply closes. Clicks inside the tooltip never
+  // dismiss it.
   const historyRef = useRef(history);
   useEffect(() => {
     historyRef.current = history;
@@ -158,13 +159,15 @@ export function RewriteTooltip({
       const tip = tooltipRef.current;
       if (tip && e.target instanceof Node && tip.contains(e.target)) return;
       const h = historyRef.current;
-      if (h.count > 1 && h.index > 0) replaceRange(h.original);
+      // A candidate is displayed → commit it exactly like the "Use" button
+      // (blur triggers CvRenderer's commit with the candidate in place).
+      if (h.count > 1 && h.index > 0) elRef.current?.blur();
       close();
     }
     document.addEventListener("mousedown", onDocMouseDown, true);
     return () =>
       document.removeEventListener("mousedown", onDocMouseDown, true);
-  }, [pos, close, replaceRange]);
+  }, [pos, close]);
 
   async function generate(length: RewriteLength) {
     if (busy || remaining <= 0) return;

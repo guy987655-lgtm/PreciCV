@@ -25,7 +25,7 @@ import {
 } from "@/lib/cv-session";
 import { effectiveSplit } from "@/lib/templates";
 import { printBoth } from "@/lib/download";
-import { Badge, Button, Card, Modal, Spinner, Textarea } from "@/components/ui";
+import { Badge, Button, Card, Modal, Spinner, Textarea, Toast } from "@/components/ui";
 import { CvRenderer, CvTheme } from "@/components/cv-renderer";
 import { DiffChangeLines } from "@/components/diff-change";
 import { Paywall } from "@/components/paywall";
@@ -68,6 +68,8 @@ type Props = {
     revisionNumber: number;
     isSample?: boolean;
     reportStale?: boolean;
+    cvTheme?: CvTheme;
+    splitView?: boolean;
   } | null;
   freeSampleAvailable?: boolean;
 };
@@ -143,8 +145,14 @@ export function JobWorkspace({
 
   // Shared Results UX (mirrors the anonymous funnel): design catalog, split /
   // theme preview, inline edit + AI rewrite, report regen, milestone versions.
-  const [cvTheme, setCvTheme] = useState<CvTheme>("light");
-  const [splitView, setSplitView] = useState(false);
+  // Theme + split hydrate from the generation row and persist on change, so
+  // the view restores exactly across visits (PRD v2 Topic 3).
+  const [cvTheme, setCvThemeState] = useState<CvTheme>(
+    initialGen?.cvTheme ?? "light"
+  );
+  const [splitView, setSplitViewState] = useState(
+    initialGen?.splitView ?? false
+  );
   const [editing, setEditing] = useState(false);
   const [reportBusy, setReportBusy] = useState(false);
   const [printRequest, setPrintRequest] = useState(false);
@@ -154,6 +162,8 @@ export function JobWorkspace({
   const [rewritesUsed, setRewritesUsed] = useState(purchase?.rewritesUsed ?? 0);
   const [regensUsed, setRegensUsed] = useState(purchase?.regensUsed ?? 0);
   const cvPreviewRef = useRef<HTMLDivElement>(null);
+  // "Refresh report" scrolls here and fades it while rebuilding (Topic 8).
+  const reportSectionsRef = useRef<HTMLDivElement>(null);
   // §2.2 — lastSavedState snapshot taken on entering Edit Mode; isDirty
   // compares against it and Reset restores it exactly.
   const [editSnapshot, setEditSnapshot] = useState<{
@@ -161,6 +171,12 @@ export function JobWorkspace({
     cv: TailoredCv;
     reportStale: boolean;
   } | null>(null);
+  // Undo window for the (now instant) Reset (PRD v2 Topic 6).
+  const [resetUndo, setResetUndo] = useState<{
+    cv: TailoredCv;
+    reportStale: boolean;
+  } | null>(null);
+  const resetToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The latest inline edit not yet flushed to the server (debounced save).
   const pendingSave = useRef<{ cv: TailoredCv; template?: string } | null>(
     null
@@ -410,6 +426,24 @@ export function JobWorkspace({
     });
   }
 
+  /** Persist a view preference on the generation row (like template). */
+  function persistViewPref(pref: { cvTheme?: CvTheme; splitView?: boolean }) {
+    if (!generation || isSample) return;
+    void fetch(`/api/generations/${generation.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(pref),
+    });
+  }
+  function setCvTheme(t: CvTheme) {
+    setCvThemeState(t);
+    persistViewPref({ cvTheme: t });
+  }
+  function setSplitView(next: boolean) {
+    setSplitViewState(next);
+    persistViewPref({ splitView: next });
+  }
+
   /* ---------------- AI snippet rewrite (job-scoped quota) ---------- */
   async function handleRewrite(
     text: string,
@@ -444,6 +478,11 @@ export function JobWorkspace({
     }
     setReportBusy(true);
     setError("");
+    // Guide the eye to what is being rebuilt (PRD v2 Topic 8).
+    reportSectionsRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
     try {
       const res = await fetch(`/api/generations/${generation.id}/report`, {
         method: "POST",
@@ -479,14 +518,27 @@ export function JobWorkspace({
   }
 
   /** §2.2 — Reset rolls back to the exact lastSavedState snapshot taken on
-   *  entering Edit Mode, staying IN edit mode (§3.1 flow). */
+   *  entering Edit Mode, staying IN edit mode (§3.1 flow). Instant — no
+   *  confirmation; the Undo toast is the safety net (PRD v2 Topic 6). */
   function resetCv() {
     if (!editSnapshot || !generation || isSample) return;
-    if (!confirm("Discard the edits you made in this editing session?")) return;
+    const undo = { cv: generation.cv, reportStale };
     saveCv(editSnapshot.cv);
     // saveCv marks the report stale; a byte-for-byte rollback restores the
     // staleness the snapshot was taken with.
     setReportStale(editSnapshot.reportStale);
+    setResetUndo(undo);
+    if (resetToastTimer.current) clearTimeout(resetToastTimer.current);
+    resetToastTimer.current = setTimeout(() => setResetUndo(null), 5000);
+  }
+
+  /** Reapply the state discarded by the last Reset (toast "Undo"). */
+  function undoReset() {
+    if (!resetUndo) return;
+    saveCv(resetUndo.cv);
+    setReportStale(resetUndo.reportStale);
+    if (resetToastTimer.current) clearTimeout(resetToastTimer.current);
+    setResetUndo(null);
   }
 
   function restoreVersion(v: CvVersion) {
@@ -691,8 +743,14 @@ export function JobWorkspace({
       {/* State 3: the Side-by-Side Review Workspace (PRD §5) */}
       {generation && (
         <div className="grid gap-6 lg:grid-cols-[minmax(320px,2fr)_3fr]">
-          {/* Left pane: Diff Report */}
-          <div className="space-y-4 print:hidden">
+          {/* Left pane: Diff Report — faded + inert while refreshing (Topic 8) */}
+          <div
+            ref={reportSectionsRef}
+            className={`scroll-mt-20 space-y-4 transition-opacity duration-300 print:hidden ${
+              reportBusy ? "pointer-events-none select-none opacity-25" : ""
+            }`}
+            aria-busy={reportBusy}
+          >
             <Card className="p-5">
               <div className="flex items-center justify-between">
                 <h2 className="font-semibold text-slate-900">Match analysis</h2>
@@ -803,12 +861,9 @@ export function JobWorkspace({
             {/* Design catalog + preview controls (owned CVs only) */}
             {!isSample && (
               <div className="mb-3 flex flex-col gap-3 print:hidden">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-xs font-semibold text-ink-faint">
-                    Choose a design
-                  </p>
-                  <ThemeToggle theme={cvTheme} onChange={setCvTheme} />
-                </div>
+                <p className="text-xs font-semibold text-ink-faint">
+                  Choose a design
+                </p>
                 <TemplateCatalog
                   template={generation.template as CvTemplate}
                   onSelect={setTemplate}
@@ -873,6 +928,8 @@ export function JobWorkspace({
                     split={splitView}
                     onToggle={setSplitView}
                   />
+                  {/* View settings grouped together (PRD v2 Topic 5). */}
+                  <ThemeToggle theme={cvTheme} onChange={setCvTheme} />
                 </CvToolbar>
               )}
               <div
@@ -946,6 +1003,10 @@ export function JobWorkspace({
           }}
           candidateName={job.title || ""}
         />
+      )}
+
+      {resetUndo && (
+        <Toast message="Edits discarded" actionLabel="Undo" onAction={undoReset} />
       )}
 
       {error && <p className="mt-4 text-center text-sm text-red-600 print:hidden">{error}</p>}

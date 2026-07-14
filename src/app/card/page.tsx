@@ -8,9 +8,13 @@ import {
   OTHER_OPTION,
   isMcqAnswered,
   loadFunnel,
+  loadHistory,
   saveFunnel,
+  stampAnswerTime,
 } from "@/lib/funnel";
+import { MonthBucket, cumulativeUniqueAnswered } from "@/lib/answer-stats";
 import { McqQuestionnaire, Questionnaire } from "@/lib/types";
+import { AnswersChart } from "@/components/answers-chart";
 import { useSimUser } from "@/lib/sim-user";
 import { Badge, Button, Card, Input, Textarea } from "@/components/ui";
 import { UserCard } from "@/components/user-card";
@@ -122,9 +126,19 @@ export default function CardPage() {
   const [draftMcq, setDraftMcq] = useState<McqAnswer | null>(null);
   const [draftText, setDraftText] = useState("");
 
+  // Progress chart data — unique questions answered across the active flow
+  // and every archived one (PRD v2 Topic 10). Seeded on hydrate, refreshed
+  // by update() after each edit.
+  const [chartData, setChartData] = useState<MonthBucket[]>([]);
+  const computeChart = (s: FunnelState | null) =>
+    cumulativeUniqueAnswered([...(s ? [s] : []), ...loadHistory()]);
+
   useEffect(() => {
-    setState(loadFunnel());
+    const s = loadFunnel();
+    setState(s);
+    setChartData(computeChart(s));
     setHydrated(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Simulated states: "registered — no profile" forces the empty state;
@@ -137,14 +151,23 @@ export default function CardPage() {
   function update(next: FunnelState) {
     setState(next);
     saveFunnel(next);
+    setChartData(computeChart(next));
   }
   function updateMcq(qId: string, a: McqAnswer) {
     if (!state) return;
-    update({ ...state, mcqAnswers: { ...state.mcqAnswers, [qId]: a } });
+    update({
+      ...state,
+      mcqAnswers: { ...state.mcqAnswers, [qId]: a },
+      answerTimes: stampAnswerTime(state, qId, isMcqAnswered(a)),
+    });
   }
   function updateOpen(qId: string, text: string) {
     if (!state) return;
-    update({ ...state, answers: { ...state.answers, [qId]: text } });
+    update({
+      ...state,
+      answers: { ...state.answers, [qId]: text },
+      answerTimes: stampAnswerTime(state, qId, text.trim().length > 0),
+    });
   }
 
   /* ------------- search + answered/unanswered partitions ------------- */
@@ -368,6 +391,22 @@ export default function CardPage() {
             <div className="mt-5">
               <UserCard state={state} compact />
             </div>
+
+            {/* Progress chart — unique questions answered, cumulative/month */}
+            {chartData.length > 0 && (
+              <Card className="mt-6 p-5">
+                <h2 className="text-[16px] font-bold text-ink">
+                  Your progress
+                </h2>
+                <p className="text-[12.5px] text-ink-faint">
+                  Unique questions answered over time — every answer enriches
+                  your profile and sharpens future CVs.
+                </p>
+                <div className="mt-3">
+                  <AnswersChart data={chartData} />
+                </div>
+              </Card>
+            )}
 
             {/* Keyword search across every question and answer */}
             <div className="mt-6">

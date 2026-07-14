@@ -230,7 +230,6 @@ export default function HistoryPage() {
                     year: "numeric",
                   })
                 : ""}
-              {flow.results?.company ? ` · ${flow.results.company}` : ""}
               {completed && bothDownloaded && " · files downloaded"}
             </button>
           </div>

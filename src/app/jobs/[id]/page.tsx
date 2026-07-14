@@ -42,7 +42,7 @@ export default async function JobPage({
   const { data: generation } = await supabase
     .from("generations")
     .select(
-      "id, cv, diff, simulation, template, revision_number, is_sample, report_stale"
+      "id, cv, diff, simulation, template, revision_number, is_sample, report_stale, cv_theme, split_view"
     )
     .eq("job_id", id)
     .order("revision_number", { ascending: false })
@@ -91,6 +91,8 @@ export default async function JobPage({
               revisionNumber: generation.revision_number ?? 0,
               isSample: generation.is_sample ?? false,
               reportStale: generation.report_stale ?? false,
+              cvTheme: generation.cv_theme === "dark" ? ("dark" as const) : ("light" as const),
+              splitView: generation.split_view ?? false,
             }
           : null
       }

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { readJson } from "@/lib/fetch-json";
 import { trackButtonClick } from "@/lib/analytics";
 import {
@@ -35,13 +35,14 @@ import {
   profileWithAnswers,
   pushToHistory,
   saveFunnel,
+  stampAnswerTime,
   stashForSignup,
 } from "@/lib/funnel";
 import { findCachedAnswers } from "@/lib/answer-cache";
 import { generateWithRetry } from "@/lib/generate-client";
 import { printBoth } from "@/lib/download";
 import { simMeta, useSimUser } from "@/lib/sim-user";
-import { Badge, Button, Card, Modal, Spinner, Textarea } from "@/components/ui";
+import { Badge, Button, Card, Modal, Spinner, Textarea, Toast } from "@/components/ui";
 import { Paywall } from "@/components/paywall";
 import { ChatFlow } from "@/components/chat-flow";
 import { CvRenderer } from "@/components/cv-renderer";
@@ -60,6 +61,11 @@ import {
   EditToolbar,
 } from "@/components/cv-controls";
 import { RewriteTooltip } from "@/components/rewrite-tooltip";
+import {
+  RESULTS_TOUR_KEY,
+  RESULTS_TOUR_STEPS,
+  ResultsTour,
+} from "@/components/results-tour";
 import { VersionStrip } from "@/components/version-strip";
 
 const STEP_LABELS: Record<FunnelStep, string> = {
@@ -238,9 +244,12 @@ export function TryNow() {
   const [generateBusy, setGenerateBusy] = useState(false);
   const [quotaMessage, setQuotaMessage] = useState("");
   const [remaining, setRemaining] = useState<number | null>(null);
-  const [splitView, setSplitView] = useState(false);
-  // Global background theme for the CV preview — any design on light or dark.
-  const [cvTheme, setCvTheme] = useState<"light" | "dark">("light");
+  // Split view + CV background theme live in the persisted funnel state so
+  // the whole Results view restores exactly across refreshes (PRD v2 Topic 3).
+  const splitView = state.splitView;
+  const cvTheme = state.cvTheme;
+  const setSplitView = (next: boolean) => patch({ splitView: next });
+  const setCvTheme = (t: "light" | "dark") => patch({ cvTheme: t });
   // Full-screen preview: the whole CV shown at once, scaled to fit.
   const [fullScreen, setFullScreen] = useState(false);
   // Re-editing a finished flow → confirm before generating a fresh report.
@@ -261,6 +270,20 @@ export function TryNow() {
   // Deferred print request — fired after a smart-download report refresh so the
   // printed DOM reflects the freshly regenerated report (see effect below).
   const [printRequest, setPrintRequest] = useState(false);
+  // Undo window for the (now instant) Reset — holds the discarded edits for
+  // a few seconds so a misclick is recoverable (PRD v2 Topic 6).
+  const [resetUndo, setResetUndo] = useState<{
+    cv: TailoredCv;
+    reportStale: boolean;
+  } | null>(null);
+  const resetToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The report sections wrapper — "Refresh report" scrolls here and fades it
+  // while the new report builds (PRD v2 Topic 8).
+  const reportSectionsRef = useRef<HTMLDivElement>(null);
+  // Original Download button anchor — when it scrolls out of view a floating
+  // copy appears fixed top-right (PRD v2 Topic 9).
+  const downloadAnchorRef = useRef<HTMLDivElement>(null);
+  const [downloadFloating, setDownloadFloating] = useState(false);
   // The CV preview wrapper — the RewriteTooltip watches selections inside it.
   const cvPreviewRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -316,6 +339,47 @@ export function TryNow() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [printRequest, reportBusy]);
 
+  // Topic 9 — watch the in-flow Download button; the floating copy shows only
+  // while the original is scrolled out of the viewport.
+  const resultsShown = state.step === "gate" && !meta.registered && results !== null;
+
+  // Topic 4 — first-ever arrival at the Results view auto-starts the guided
+  // tour; completing or dismissing it sets the flag so it never re-runs.
+  const [showTour, setShowTour] = useState(false);
+  useEffect(() => {
+    if (!resultsShown || !hydrated) return;
+    // Small delay so the freshly-rendered Results view settles (layout,
+    // catalog images) before the spotlight measures its targets.
+    const t = setTimeout(() => {
+      try {
+        if (!localStorage.getItem(RESULTS_TOUR_KEY)) setShowTour(true);
+      } catch {
+        // Private mode — no tour flag, no tour.
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [resultsShown, hydrated]);
+  const endTour = useCallback(() => {
+    setShowTour(false);
+    try {
+      localStorage.setItem(RESULTS_TOUR_KEY, "1");
+    } catch {
+      /* private mode */
+    }
+  }, []);
+  useEffect(() => {
+    const el = downloadAnchorRef.current;
+    if (!resultsShown || !el) {
+      setDownloadFloating(false);
+      return;
+    }
+    const obs = new IntersectionObserver(([entry]) =>
+      setDownloadFloating(!entry.isIntersecting)
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [resultsShown]);
+
   // Home button while the funnel is mounted → swap back to the hero
   // (the flow itself is untouched; "Continue progress" resumes it).
   useEffect(() => {
@@ -348,6 +412,7 @@ export function TryNow() {
     setState((s) => ({
       ...s,
       mcqAnswers: { ...s.mcqAnswers, [qId]: next },
+      answerTimes: stampAnswerTime(s, qId, isMcqAnswered(next)),
     }));
   }
   function setMcqSkipped(qId: string, skipped: boolean) {
@@ -360,7 +425,11 @@ export function TryNow() {
     });
   }
   function answerOpen(qId: string, text: string) {
-    setState((s) => ({ ...s, answers: { ...s.answers, [qId]: text } }));
+    setState((s) => ({
+      ...s,
+      answers: { ...s.answers, [qId]: text },
+      answerTimes: stampAnswerTime(s, qId, text.trim().length > 0),
+    }));
   }
   /** Topic 1: an auto-filled answer the user edited is no longer "auto". */
   function clearAutoFilled(qId: string) {
@@ -419,6 +488,14 @@ export function TryNow() {
         mcq: mcqPool,
         mcqAnswers: cached.mcqAnswers,
         answers: cached.answers,
+        // Fresh flow — timestamps start over; auto-filled answers count from
+        // now (their earlier originals live on in the archived flow).
+        answerTimes: Object.fromEntries(
+          [
+            ...Object.keys(cached.mcqAnswers),
+            ...Object.keys(cached.answers),
+          ].map((id) => [id, Date.now()])
+        ),
         autoFilledIds: cached.autoFilledIds,
         processName: "",
         roleQuestionsLoaded: false,
@@ -682,10 +759,11 @@ export function TryNow() {
   }
 
   /** §2.2 — Reset rolls back to the exact lastSavedState snapshot taken on
-   *  entering Edit Mode, staying IN edit mode (§3.1 flow). */
+   *  entering Edit Mode, staying IN edit mode (§3.1 flow). Instant — no
+   *  confirmation; the Undo toast is the safety net (PRD v2 Topic 6). */
   function resetCv() {
     if (!editSnapshot || !results) return;
-    if (!confirm("Discard the edits you made in this editing session?")) return;
+    const undo = { cv: results.cv, reportStale: state.reportStale };
     setState((s) =>
       s.results
         ? {
@@ -695,6 +773,25 @@ export function TryNow() {
           }
         : s
     );
+    setResetUndo(undo);
+    if (resetToastTimer.current) clearTimeout(resetToastTimer.current);
+    resetToastTimer.current = setTimeout(() => setResetUndo(null), 5000);
+  }
+
+  /** Reapply the state discarded by the last Reset (toast "Undo"). */
+  function undoReset() {
+    if (!resetUndo) return;
+    setState((s) =>
+      s.results
+        ? {
+            ...s,
+            results: { ...s.results, cv: resetUndo.cv },
+            reportStale: resetUndo.reportStale,
+          }
+        : s
+    );
+    if (resetToastTimer.current) clearTimeout(resetToastTimer.current);
+    setResetUndo(null);
   }
 
   /** Rewrite a highlighted snippet — spends one rewrite from the flow quota. */
@@ -729,6 +826,12 @@ export function TryNow() {
     }
     setReportBusy(true);
     setError("");
+    // Guide the eye to what is being rebuilt (PRD v2 Topic 8) — the report
+    // sections fade via the reportBusy-driven classes below.
+    reportSectionsRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
     try {
       // §2.4 trace — the payload is the LATEST edited CV, not a stale copy.
       console.log(
@@ -1313,13 +1416,10 @@ export function TryNow() {
             <div className="mb-3 mt-3 flex flex-col gap-3 print:hidden">
               {/* Design catalog — 3 rows (Recommended / Classic / Modern),
                   each design viewable on a light or dark background. */}
-              <div>
-                <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-xs font-semibold text-ink-faint">
-                    Choose a design
-                  </p>
-                  <ThemeToggle theme={cvTheme} onChange={setCvTheme} />
-                </div>
+              <div data-tour="design">
+                <p className="mb-1.5 text-xs font-semibold text-ink-faint">
+                  Choose a design
+                </p>
                 <TemplateCatalog
                   template={template}
                   onSelect={(t) => patch({ template: t })}
@@ -1328,8 +1428,9 @@ export function TryNow() {
               </div>
               {/* Primary action — deliberately alone, above the preview frame
                   (the operational controls live on the frame's toolbar) */}
-              <div className="flex items-center justify-end">
+              <div ref={downloadAnchorRef} className="flex items-center justify-end">
                 <Button
+                  data-tour="download"
                   size="md"
                   disabled={reportBusy || editing}
                   title={
@@ -1364,13 +1465,17 @@ export function TryNow() {
             >
               {/* Operational controls, anchored to the preview (PRD Topic 3) */}
               <CvToolbar>
-                <EditToolbar
-                  editing={editing}
-                  onToggleEdit={toggleEdit}
-                  onReset={resetCv}
-                  canReset={isDirty}
-                />
-                <AiSectionToggle cv={results.cv} onChange={editCv} />
+                <span data-tour="edit" className="inline-flex">
+                  <EditToolbar
+                    editing={editing}
+                    onToggleEdit={toggleEdit}
+                    onReset={resetCv}
+                    canReset={isDirty}
+                  />
+                </span>
+                <span data-tour="ai-section" className="inline-flex">
+                  <AiSectionToggle cv={results.cv} onChange={editCv} />
+                </span>
                 <RefreshReportButton
                   onClick={() => regenerateReportNow()}
                   disabled={
@@ -1388,11 +1493,17 @@ export function TryNow() {
                   onClick={() => setFullScreen(true)}
                   disabled={editing}
                 />
-                <SplitToggle
-                  template={template}
-                  split={splitView}
-                  onToggle={setSplitView}
-                />
+                <span data-tour="split" className="inline-flex">
+                  <SplitToggle
+                    template={template}
+                    split={splitView}
+                    onToggle={setSplitView}
+                  />
+                </span>
+                {/* View settings grouped together (PRD v2 Topic 5). */}
+                <span data-tour="theme" className="inline-flex">
+                  <ThemeToggle theme={cvTheme} onChange={setCvTheme} />
+                </span>
               </CvToolbar>
               <div
                 ref={cvPreviewRef}
@@ -1422,6 +1533,14 @@ export function TryNow() {
             </p>
           </div>
 
+          {/* ---- 2-4. Report sections — faded + inert while refreshing ---- */}
+          <div
+            ref={reportSectionsRef}
+            className={`flex scroll-mt-20 flex-col gap-6 transition-opacity duration-300 ${
+              reportBusy ? "pointer-events-none select-none opacity-25" : ""
+            }`}
+            aria-busy={reportBusy}
+          >
           {/* ---- 2. Match analysis ---- */}
           <Card className="p-6 print:hidden">
             <div className="flex items-center justify-between">
@@ -1545,6 +1664,7 @@ export function TryNow() {
               ))}
             </div>
           </Card>
+          </div>
 
           {/* ---- 5. Version history (milestone snapshots) ---- */}
           {state.versions.length > 1 && (
@@ -1641,6 +1761,41 @@ export function TryNow() {
           <Button onClick={confirmRegenerate}>Generate updated report →</Button>
         </div>
       </Modal>
+
+      {/* First-visit guided tour of the Results controls (PRD v2 Topic 4) */}
+      {showTour && resultsShown && (
+        <ResultsTour steps={RESULTS_TOUR_STEPS} onClose={endTour} />
+      )}
+
+      {resetUndo && (
+        <Toast message="Edits discarded" actionLabel="Undo" onAction={undoReset} />
+      )}
+
+      {/* Floating Download — appears only once the original scrolls out of
+          view; same handler + disabled states (PRD v2 Topic 9). Sits above
+          content but below every overlay (tooltip 60 / fullscreen 70). */}
+      {downloadFloating && resultsShown && (
+        <div className="fixed right-6 top-20 z-40 print:hidden">
+          <Button
+            size="md"
+            disabled={reportBusy || editing}
+            title={editing ? "Finish editing (Done) to download" : undefined}
+            onClick={exportBoth}
+            className="shadow-[0_12px_32px_rgba(30,43,36,0.28)]"
+          >
+            {reportBusy ? (
+              "Syncing report…"
+            ) : (
+              <>
+                <span className="hidden sm:inline">
+                  Download my files (2 PDFs)
+                </span>
+                <span className="sm:hidden">Download</span>
+              </>
+            )}
+          </Button>
+        </div>
+      )}
 
       {fullScreen && results && (
         <FullScreenCv

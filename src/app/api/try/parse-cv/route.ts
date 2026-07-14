@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { extractDocText, ParseDocError } from "@/lib/parse-doc";
 import {
+  analyzeJdGreeting,
   extractProfileFromCv,
   llmConfigured,
   LLM_NOT_CONFIGURED_MSG,
@@ -39,11 +40,14 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { profile, questionnaire, mcq } = await extractProfileFromCv(
-      rawText,
-      jdText
-    );
-    return NextResponse.json({ profile, questionnaire, mcq, rawText });
+    // Greeting facts ride along in parallel — non-fatal if they fail.
+    const [{ profile, questionnaire, mcq }, greeting] = await Promise.all([
+      extractProfileFromCv(rawText, jdText),
+      jdText.trim()
+        ? analyzeJdGreeting(jdText, rawText).catch(() => null)
+        : Promise.resolve(null),
+    ]);
+    return NextResponse.json({ profile, questionnaire, mcq, rawText, greeting });
   } catch (e) {
     console.error("try/parse-cv extraction failed:", e);
     return NextResponse.json(

@@ -7,6 +7,8 @@ import {
   DiffChangeSchema,
   GenerationResult,
   GenerationResultSchema,
+  GreetingInfo,
+  GreetingInfoSchema,
   MasterProfile,
   MasterProfileSchema,
   McqQuestionnaire,
@@ -286,6 +288,50 @@ export async function extractProfileFromCv(
     maxTokens: 16000,
   });
   return result;
+}
+
+/* ------------------------------------------------------------------ */
+/* 1a. Greeting facts from the JD — powers the chat's personalized     */
+/*     opening ("…you're interested in the X position")                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Extracts the target job title + field from the JD and whether the
+ * candidate's current role sits in the same field. Takes raw CV text (not the
+ * parsed profile) so it can run concurrently with extractProfileFromCv.
+ */
+export async function analyzeJdGreeting(
+  jdText: string,
+  rawCvText: string
+): Promise<GreetingInfo> {
+  return structuredCall({
+    tier: "fast",
+    system:
+      "You extract greeting facts for a CV-tailoring chat. From a job " +
+      "description you identify the job title and its professional field; " +
+      "from the candidate's CV you infer their current field and judge " +
+      "whether it is the same field as the job's.",
+    prompt:
+      `From the JOB DESCRIPTION extract:\n` +
+      `- targetJobTitle: the exact position title being hired for, cleaned of ` +
+      `req numbers/locations (e.g. "Senior Data Analyst").\n` +
+      `- field: a SHORT human label for the job's professional field, 1-3 ` +
+      `words (e.g. "Data Analytics", "Product Management").\n` +
+      `Then from the CANDIDATE CV infer the candidate's current professional ` +
+      `field (their most recent role) and set:\n` +
+      `- sameField: true only when the candidate's current field and the ` +
+      `job's field are essentially the same line of work (a seniority step ` +
+      `within one field is the SAME field; analyst → marketing is NOT).\n\n` +
+      `--- JOB DESCRIPTION START ---\n${jdText.slice(0, 6000)}\n` +
+      `--- JOB DESCRIPTION END ---\n\n` +
+      `--- CANDIDATE CV START ---\n${rawCvText.slice(0, 2500)}\n` +
+      `--- CANDIDATE CV END ---`,
+    schema: GreetingInfoSchema,
+    toolName: "save_greeting_info",
+    toolDescription:
+      "Save the job title, field label, and same-field verdict for the greeting.",
+    maxTokens: 300,
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -793,4 +839,43 @@ export async function suggestOpenAnswers(
     if (s.answer.trim()) out[s.id] = s.answer.trim();
   }
   return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* 7. Open-answer confirmation loop (PRD 2.5) — professionally rewrite */
+/*    the user's answer; once approved it replaces the raw text        */
+/*    everywhere (chat bubble, edit panel, generation payload)         */
+/* ------------------------------------------------------------------ */
+
+const RefinedAnswerSchema = z.object({ refined: z.string() });
+
+/**
+ * Reformulates a free-text answer into polished professional English for the
+ * chat confirmation step. Translation + polish only: every fact, number, name
+ * and detail is preserved. Invoked only when the answer is long enough to be
+ * worth confirming (the caller decides), so short answers never pay this
+ * round-trip. The approved text becomes the canonical answer.
+ */
+export async function refineAnswer(
+  question: string,
+  answer: string
+): Promise<string> {
+  const result = await structuredCall({
+    tier: "fast",
+    system:
+      "You rewrite a candidate's answer to a screening question as polished, " +
+      "professional first-person English prose. Translate to English when the " +
+      "answer is in another language. PRESERVE EVERY fact, number, name, " +
+      "technology and detail — do NOT add facts, drop details, summarize, or " +
+      "give advice. Keep roughly the same length as the original. Return " +
+      "plain text — no quotes, labels or markdown.",
+    prompt:
+      `Question: ${question}\n\nCandidate's answer:\n${answer.slice(0, 4000)}\n\n` +
+      `Rewrite the answer professionally, keeping all of its details.`,
+    schema: RefinedAnswerSchema,
+    toolName: "save_refined_answer",
+    toolDescription: "Save the professionally rewritten answer.",
+    maxTokens: 1200,
+  });
+  return result.refined.trim();
 }

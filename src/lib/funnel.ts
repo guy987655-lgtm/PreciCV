@@ -1,6 +1,7 @@
 import {
   CvTemplate,
   GenerationResult,
+  GreetingInfo,
   MasterProfile,
   MAX_REQUIRED_QUESTIONS,
   McqQuestionnaire,
@@ -96,10 +97,12 @@ export const PENDING_KEY = "precicv_pending";
 /** Sentinel for the auto-appended free-text "Other…" choice. */
 export const OTHER_OPTION = "__other__";
 
-export type FunnelStep = "upload" | "mcq" | "open" | "gate";
+// The old "mcq" (Quick check) and "open" (Sharpen) steps were merged into one
+// conversational "chat" step (PRD Topic 2). Saved states are migrated on load.
+export type FunnelStep = "upload" | "chat" | "gate";
 
 /** Funnel step sequence — shared by the stepper, resume and History. */
-export const STEP_ORDER: FunnelStep[] = ["upload", "mcq", "open", "gate"];
+export const STEP_ORDER: FunnelStep[] = ["upload", "chat", "gate"];
 
 /** Fired by the Home nav button so a mounted funnel swaps to the hero. */
 export const HOME_EVENT = "specv:home";
@@ -160,6 +163,20 @@ export type FunnelState = {
   reportStale: boolean;
   /** AI-suggested example answers for the Sharpen step, keyed by question id */
   sharpenSuggestions: Record<string, string>;
+  /** Question ids whose answer was auto-filled from a recent flow (Topic 1). */
+  autoFilledIds: string[];
+  /** User-chosen display name for this flow/process (Topic 4). Empty = derive. */
+  processName: string;
+  /** JD-derived greeting data — null when the LLM call failed/skipped. */
+  greetingInfo: GreetingInfo | null;
+  /** The user's one-time free-text reply to the greeting ("" = skipped). */
+  greetingReply: string;
+  /** The greeting exchange finished (reply sent or skipped). */
+  greetingDone: boolean;
+  /** Post-mandatory branch choice. "" = not yet chosen. */
+  branchChoice: "" | "continue" | "generate";
+  /** In the continue branch, the user clicked [Let's Start]. */
+  branchStarted: boolean;
 };
 
 export const EMPTY_FUNNEL: FunnelState = {
@@ -185,6 +202,13 @@ export const EMPTY_FUNNEL: FunnelState = {
   regensUsed: 0,
   reportStale: false,
   sharpenSuggestions: {},
+  autoFilledIds: [],
+  processName: "",
+  greetingInfo: null,
+  greetingReply: "",
+  greetingDone: false,
+  branchChoice: "",
+  branchStarted: false,
 };
 
 /** True when the question was genuinely answered (not skipped/empty). */
@@ -229,11 +253,28 @@ export function loadFunnel(): FunnelState | null {
       }
     }
     const state = { ...EMPTY_FUNNEL, ...(parsed as FunnelState), mcqAnswers };
+    // Saved before the conversational-script release → skip greeting/transition
+    // retroactively and restore the old always-visible-Generate behavior.
+    if (!("branchChoice" in parsed) && state.profile) {
+      state.greetingDone = true;
+      state.branchChoice = "continue";
+      state.branchStarted = true;
+    }
+    // Merged steps: "mcq"+"open" → the unified "chat" step (PRD Topic 2).
+    if (["mcq", "open"].includes(state.step as string)) {
+      state.step = "chat";
+    }
     // Removed steps: "card" (dossier lives on /card) and "job" (the JD is
     // now required upfront) — route saved states somewhere sensible.
     if (["card", "job"].includes(state.step as string)) {
-      state.step = state.jdText?.trim().length >= 100 ? "gate" : "upload";
+      state.step = (state.jdText?.trim().length ?? 0) >= 100 ? "gate" : "upload";
     }
+    // furthestStep is an index into STEP_ORDER, which shrank — clamp it and
+    // make sure it at least covers the (possibly migrated) current step.
+    state.furthestStep = Math.min(
+      Math.max(state.furthestStep ?? 0, STEP_ORDER.indexOf(state.step)),
+      STEP_ORDER.length - 1
+    );
     // Repair over-fragmented topic segmentation in already-saved pools.
     if (state.mcq?.questions?.length) {
       state.mcq = { questions: normalizeMcqPool(state.mcq.questions) };
@@ -329,6 +370,29 @@ export function activateFlow(flow: FunnelState) {
   if (active?.profile && active.flowId !== flow.flowId) pushToHistory(active);
   removeFromHistory(flow.flowId);
   saveFunnel(flow);
+}
+
+/**
+ * Default display name for a flow (Topic 4): "[Job Title] - [Company]", or the
+ * job title alone, falling back to "New Application - [date]". Used until the
+ * user renames the flow on the History dashboard.
+ */
+export function defaultProcessName(state: FunnelState): string {
+  const job = state.results?.jobTitle?.trim();
+  const company = state.results?.company?.trim();
+  if (job && company) return `${job} - ${company}`;
+  if (job) return job;
+  const date = new Date(state.savedAt || Date.now()).toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+  return `New Application - ${date}`;
+}
+
+/** The flow's shown name: an explicit rename wins, else the derived default. */
+export function flowDisplayName(state: FunnelState): string {
+  return state.processName?.trim() || defaultProcessName(state);
 }
 
 /**

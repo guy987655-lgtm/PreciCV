@@ -33,8 +33,11 @@ import { ReportPage } from "@/components/report-page";
 import { TemplateCatalog } from "@/components/template-catalog";
 import {
   AiSectionToggle,
+  CvToolbar,
+  RefreshReportButton,
   SplitToggle,
   ThemeToggle,
+  ToolbarDivider,
   EditToolbar,
 } from "@/components/cv-controls";
 import { RewriteTooltip } from "@/components/rewrite-tooltip";
@@ -810,43 +813,6 @@ export function JobWorkspace({
                   template={generation.template as CvTemplate}
                   onSelect={setTemplate}
                 />
-                <div className="flex flex-wrap items-center gap-2">
-                  <EditToolbar
-                    editing={editing}
-                    onToggleEdit={toggleEdit}
-                    onReset={resetCv}
-                    canReset={isDirty}
-                  />
-                  <SplitToggle
-                    template={generation.template as CvTemplate}
-                    split={splitView}
-                    onToggle={setSplitView}
-                  />
-                  <AiSectionToggle
-                    cv={generation.cv}
-                    onChange={(next) => saveCv(next)}
-                  />
-                  {/* §3.1 — locked during Edit Mode; meaningful once stale. */}
-                  <button
-                    onClick={() => regenerateReportNow()}
-                    disabled={
-                      editing ||
-                      reportBusy ||
-                      !reportStale ||
-                      regensUsed >= maxRegens
-                    }
-                    className="cursor-pointer rounded-full border border-accent bg-selected-bg px-3 py-1 text-xs font-semibold text-accent transition-opacity duration-200 hover:bg-chip disabled:pointer-events-none disabled:opacity-50"
-                    title={
-                      editing
-                        ? "Finish editing (Done) to refresh the report"
-                        : !reportStale
-                          ? "Report is up to date"
-                          : "Rebuild the interview report to match your edits"
-                    }
-                  >
-                    {reportBusy ? "Refreshing…" : "↻ Refresh report"}
-                  </button>
-                </div>
                 {reportStale && !editing && (
                   <p className="text-[11px] text-ink-faint">
                     You edited your CV — the report refreshes automatically on
@@ -870,18 +836,52 @@ export function JobWorkspace({
               </p>
             )}
             <div
-              ref={cvPreviewRef}
-              className={`overflow-auto rounded-xl border bg-slate-100 p-4 transition-all duration-200 ${
+              className={`overflow-hidden rounded-xl border transition-all duration-200 ${
                 editing && !isSample
                   ? "border-accent ring-2 ring-accent/30"
                   : "border-slate-200"
-              } ${
-                isSample
-                  ? "print:hidden select-none"
-                  : "print:border-0 print:bg-white print:p-0"
-              }`}
+              } ${isSample ? "print:hidden" : "print:border-0"}`}
             >
-              <div className="relative origin-top-left scale-[0.85] lg:scale-100">
+              {/* Operational controls, anchored to the preview (PRD Topic 3) */}
+              {!isSample && (
+                <CvToolbar>
+                  <EditToolbar
+                    editing={editing}
+                    onToggleEdit={toggleEdit}
+                    onReset={resetCv}
+                    canReset={isDirty}
+                  />
+                  <AiSectionToggle
+                    cv={generation.cv}
+                    onChange={(next) => saveCv(next)}
+                  />
+                  <RefreshReportButton
+                    onClick={() => regenerateReportNow()}
+                    disabled={
+                      editing ||
+                      reportBusy ||
+                      !reportStale ||
+                      regensUsed >= maxRegens
+                    }
+                    busy={reportBusy}
+                    stale={reportStale}
+                    editing={editing}
+                  />
+                  <ToolbarDivider />
+                  <SplitToggle
+                    template={generation.template as CvTemplate}
+                    split={splitView}
+                    onToggle={setSplitView}
+                  />
+                </CvToolbar>
+              )}
+              <div
+                ref={cvPreviewRef}
+                className={`overflow-auto bg-slate-100 p-4 ${
+                  isSample ? "select-none" : "print:bg-white print:p-0"
+                }`}
+              >
+                <div className="relative origin-top-left scale-[0.85] lg:scale-100">
                 {isSample && <SampleWatermark />}
                 <div className={isSample ? "pointer-events-none" : ""}>
                   <CvRenderer
@@ -896,6 +896,7 @@ export function JobWorkspace({
                     onChange={(next) => saveCv(next)}
                   />
                 </div>
+              </div>
               </div>
             </div>
             {!isSample && (

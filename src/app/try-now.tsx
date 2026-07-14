@@ -7,7 +7,6 @@ import { readJson } from "@/lib/fetch-json";
 import { trackButtonClick } from "@/lib/analytics";
 import {
   CvTemplate,
-  MAX_MCQ_POOL,
   MAX_REPORT_REGENS,
   MAX_REWRITES,
   McqQuestionnaire,
@@ -28,7 +27,6 @@ import {
   FunnelStep,
   HOME_EVENT,
   McqAnswer,
-  OTHER_OPTION,
   STEP_ORDER,
   clearFunnel,
   isMcqAnswered,
@@ -39,11 +37,12 @@ import {
   saveFunnel,
   stashForSignup,
 } from "@/lib/funnel";
+import { findCachedAnswers } from "@/lib/answer-cache";
 import { printBoth } from "@/lib/download";
 import { simMeta, useSimUser } from "@/lib/sim-user";
 import { Badge, Button, Card, Modal, Spinner, Textarea } from "@/components/ui";
 import { Paywall } from "@/components/paywall";
-import { McqOptions } from "@/components/mcq-options";
+import { ChatFlow } from "@/components/chat-flow";
 import { CvRenderer } from "@/components/cv-renderer";
 import { DiffChangeLines } from "@/components/diff-change";
 import { ReportPage } from "@/components/report-page";
@@ -51,8 +50,12 @@ import { TONE_META } from "@/components/interview-faces";
 import { TemplateCatalog } from "@/components/template-catalog";
 import {
   AiSectionToggle,
+  CvToolbar,
+  DisplayReviewButton,
+  RefreshReportButton,
   SplitToggle,
   ThemeToggle,
+  ToolbarDivider,
   EditToolbar,
 } from "@/components/cv-controls";
 import { RewriteTooltip } from "@/components/rewrite-tooltip";
@@ -60,8 +63,7 @@ import { VersionStrip } from "@/components/version-strip";
 
 const STEP_LABELS: Record<FunnelStep, string> = {
   upload: "CV + Job",
-  mcq: "Quick check",
-  open: "Sharpen",
+  chat: "Questions",
   gate: "Results",
 };
 
@@ -321,9 +323,10 @@ export function TryNow() {
     return () => window.removeEventListener(HOME_EVENT, onHome);
   }, []);
 
-  // Reaching the Sharpen step lazily fetches AI example-answer placeholders.
+  // Reaching the chat step lazily fetches AI example-answer placeholders for
+  // the open questions (used as inspiration in the chat text inputs).
   useEffect(() => {
-    if (hydrated && state.step === "open") loadSharpenSuggestions();
+    if (hydrated && state.step === "chat") loadSharpenSuggestions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated, state.step]);
 
@@ -355,21 +358,15 @@ export function TryNow() {
       };
     });
   }
-  /* ------------- carousel navigation ---------------------------------- */
-  function goToQuestion(i: number) {
-    setState((s) => {
-      const max = Math.max((s.mcq?.questions.length ?? 1) - 1, 0);
-      return { ...s, mcqIndex: Math.max(0, Math.min(i, max)) };
-    });
-  }
-  function nextQuestion() {
-    setState((s) => {
-      const max = Math.max((s.mcq?.questions.length ?? 1) - 1, 0);
-      return { ...s, mcqIndex: Math.min(s.mcqIndex + 1, max) };
-    });
-  }
   function answerOpen(qId: string, text: string) {
     setState((s) => ({ ...s, answers: { ...s.answers, [qId]: text } }));
+  }
+  /** Topic 1: an auto-filled answer the user edited is no longer "auto". */
+  function clearAutoFilled(qId: string) {
+    setState((s) => ({
+      ...s,
+      autoFilledIds: s.autoFilledIds.filter((id) => id !== qId),
+    }));
   }
 
   /** Accept a file from the OS picker or a drag-and-drop, guarding the type. */
@@ -404,17 +401,25 @@ export function TryNow() {
       // A new CV upload starts a NEW flow — the previous one is archived
       // to History, never overwritten.
       if (state.profile) pushToHistory(state);
-      const nextStep: FunnelStep =
-        (data.mcq?.questions?.length ?? 0) > 0 ? "mcq" : "open";
+      const mcqPool = { questions: normalizeMcqPool(data.mcq?.questions ?? []) };
+      const questionnaire = data.questionnaire ?? null;
+      // Topic 1: pre-fill questions the user answered in a recent flow.
+      const cached = findCachedAnswers(mcqPool, questionnaire, Date.now());
+      const hasQuestions =
+        mcqPool.questions.length > 0 ||
+        (questionnaire?.questions?.length ?? 0) > 0;
+      const nextStep: FunnelStep = hasQuestions ? "chat" : "gate";
       setState((s) => ({
         ...s,
         flowId: crypto.randomUUID(),
         profile: data.profile,
         rawText: data.rawText ?? "",
-        questionnaire: data.questionnaire,
-        mcq: { questions: normalizeMcqPool(data.mcq?.questions ?? []) },
-        mcqAnswers: {},
-        answers: {},
+        questionnaire,
+        mcq: mcqPool,
+        mcqAnswers: cached.mcqAnswers,
+        answers: cached.answers,
+        autoFilledIds: cached.autoFilledIds,
+        processName: "",
         roleQuestionsLoaded: false,
         mcqIndex: 0,
         results: null,
@@ -425,6 +430,11 @@ export function TryNow() {
         regensUsed: 0,
         reportStale: false,
         sharpenSuggestions: {},
+        greetingInfo: data.greeting ?? null,
+        greetingReply: "",
+        greetingDone: false,
+        branchChoice: "",
+        branchStarted: false,
         step: nextStep,
         furthestStep: STEP_ORDER.indexOf(nextStep),
       }));
@@ -820,51 +830,8 @@ export function TryNow() {
   }
 
   /* ---------------- derived ---------------- */
-  const mcqQuestions = state.mcq?.questions ?? [];
-  const requiredQs = mcqQuestions.filter((q) => q.required);
-  const requiredCount = requiredQs.length;
-  const requiredAnswered = requiredQs.filter((q) =>
-    isMcqAnswered(state.mcqAnswers[q.id])
-  ).length;
-  const mcqAnswered = mcqQuestions.filter((q) =>
-    isMcqAnswered(state.mcqAnswers[q.id])
-  ).length;
-  // Gate: every required question must be answered; the rest are optional.
-  const mcqUnlocked = requiredAnswered >= requiredCount;
   const hasJob = state.jdText.trim().length >= 100;
   const stepIdx = STEP_ORDER.indexOf(state.step);
-
-  // Segments: required questions first ("Must answer"), then topics.
-  const categories = (() => {
-    const requiredIdx: number[] = [];
-    const map = new Map<string, number[]>();
-    mcqQuestions.forEach((mq, i) => {
-      if (mq.required) {
-        requiredIdx.push(i);
-        return;
-      }
-      const t = mq.topic?.trim() || "General";
-      if (!map.has(t)) map.set(t, []);
-      map.get(t)!.push(i);
-    });
-    const topicCats = [...map.entries()].map(([name, indices]) => ({
-      name,
-      indices,
-      required: false,
-    }));
-    return requiredIdx.length > 0
-      ? [{ name: "Must answer", indices: requiredIdx, required: true }, ...topicCats]
-      : topicCats;
-  })();
-  const qIndex = Math.min(
-    state.mcqIndex ?? 0,
-    Math.max(mcqQuestions.length - 1, 0)
-  );
-  const currentQ = mcqQuestions[qIndex];
-  const atLastMcq = qIndex >= mcqQuestions.length - 1;
-  // At the end of the current pool, "Next" fetches more role questions.
-  const canExpandPool =
-    atLastMcq && !state.roleQuestionsLoaded && mcqQuestions.length > 0;
 
   /* ---------------- state-aware banner (§3) ---------------- */
   const banner = (() => {
@@ -1112,7 +1079,7 @@ export function TryNow() {
             .{" "}
             <button
               className="cursor-pointer font-semibold text-accent underline"
-              onClick={() => goTo(hasJob ? "gate" : "mcq")}
+              onClick={() => goTo(hasJob ? "gate" : "chat")}
             >
               Continue where you left off
             </button>
@@ -1210,7 +1177,13 @@ export function TryNow() {
     state.step === "gate" && !meta.registered && Boolean(results);
   return (
     <section
-      className={`mx-auto px-6 pt-4 ${wideResults ? "max-w-[1200px]" : "max-w-[720px]"}`}
+      className={`mx-auto px-6 pt-4 ${
+        wideResults
+          ? "max-w-[1200px]"
+          : state.step === "chat"
+            ? "max-w-[960px]"
+            : "max-w-[720px]"
+      }`}
     >
       {stepPills}
       {bannerEl}
@@ -1233,291 +1206,44 @@ export function TryNow() {
         </div>
       )}
 
-      {/* ============ 2. Quick check — MCQ carousel (3b) ============ */}
-      {state.step === "mcq" && (
-        <div className="flex flex-col gap-[18px]">
+      {/* ======= 2. Unified conversational questions (PRD Topic 2) ======= */}
+      {state.step === "chat" && (
+        <div className="flex flex-col gap-5">
           <Heading
             title={
               state.profile?.contact.fullName
-                ? `Nice CV, ${state.profile.contact.fullName.split(" ")[0]}. Is it up to date?`
-                : "Your CV was analyzed. Is it up to date?"
+                ? `Let's tailor your CV, ${state.profile.contact.fullName.split(" ")[0]}.`
+                : "Let's tailor your CV to this job."
             }
-            sub={
-              requiredCount > 0
-                ? `Only ${requiredCount} question${requiredCount === 1 ? "" : "s"} ${requiredCount === 1 ? "is" : "are"} required — everything else is optional.`
-                : "All questions here are optional — answer what makes your story stronger."
+            sub="Answer the required questions to unlock your reports — then sharpen with a few optional ones."
+          />
+          <ChatFlow
+            state={state}
+            onUpdateMcq={updateMcqAnswer}
+            onSkipMcq={(id) => setMcqSkipped(id, true)}
+            onAnswerOpen={answerOpen}
+            onClearAutoFilled={clearAutoFilled}
+            onLoadRole={loadRoleQuestions}
+            loadingRole={loadingMore}
+            sharpenBusy={sharpenBusy}
+            onGenerate={finishQuestions}
+            generateBusy={generateBusy}
+            onBack={() => goTo("upload")}
+            onGreetingReply={(reply) =>
+              patch({ greetingReply: reply, greetingDone: true })
             }
+            onBranch={(choice) => {
+              trackButtonClick({
+                button_name: `chat_branch_${choice}`,
+                action: "navigate",
+                button_text:
+                  choice === "continue" ? "Continue" : "Generate CV and report",
+                click_source: "landing_try_now",
+              });
+              patch({ branchChoice: choice });
+            }}
+            onBranchStart={() => patch({ branchStarted: true })}
           />
-
-          {/* Top navigation: once the required questions are done, a Continue
-              button sits right by the progress bar so users don't have to
-              scroll to the bottom of the carousel to move on. */}
-          {mcqUnlocked && (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border-2 border-accent bg-selected-bg px-4 py-2.5">
-              <span className="flex items-center gap-2 text-[13.5px] font-bold text-accent-deep">
-                <CheckCircle size={22} />
-                Required questions done
-              </span>
-              <Button size="md" onClick={() => goTo("open")}>
-                Continue to Sharpen →
-              </Button>
-            </div>
-          )}
-
-          {/* Segmented category mini-navigation */}
-          <div className="flex gap-2.5">
-            {categories.map((c) => {
-              const answeredIn = c.indices.filter((i) =>
-                isMcqAnswered(state.mcqAnswers[mcqQuestions[i].id])
-              ).length;
-              const active = c.indices.includes(qIndex);
-              return (
-                <button
-                  key={c.name}
-                  style={{ flexGrow: c.indices.length, flexBasis: 0 }}
-                  onClick={() => goToQuestion(c.indices[0])}
-                  title={`${c.name} — ${answeredIn}/${c.indices.length} answered`}
-                  className="min-w-0 cursor-pointer text-left"
-                >
-                  <div
-                    className={`truncate text-[11.5px] ${
-                      active
-                        ? "font-bold text-accent"
-                        : c.required
-                          ? "font-bold text-ink"
-                          : "font-semibold text-muted"
-                    }`}
-                  >
-                    {c.required ? `★ ${c.name}` : c.name}
-                  </div>
-                  <div className="mt-1 h-1.5 overflow-hidden rounded-[3px] bg-chip">
-                    <div
-                      className={`h-full rounded-[3px] transition-all ${
-                        active ? "bg-accent" : "bg-accent-soft"
-                      }`}
-                      style={{
-                        width: `${(answeredIn / c.indices.length) * 100}%`,
-                      }}
-                    />
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Question card */}
-          {currentQ && (
-            <Card className="p-7">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <span className="rounded-full bg-chip px-3 py-[5px] text-[11.5px] font-bold uppercase tracking-[0.04em] text-accent">
-                    {currentQ.topic || "General"}
-                  </span>
-                  {currentQ.required ? (
-                    <span className="rounded-full bg-ink px-3 py-[5px] text-[11.5px] font-bold uppercase tracking-[0.04em] text-bg">
-                      Required
-                    </span>
-                  ) : (
-                    <span className="text-[11.5px] font-semibold text-muted">
-                      Optional
-                    </span>
-                  )}
-                </div>
-              </div>
-              <div className="mt-3.5 text-xl font-bold leading-[1.35] text-ink">
-                {currentQ.question}
-              </div>
-              <div className="mt-1 text-[13px] text-ink-faint">
-                {currentQ.selectType === "ranked"
-                  ? "Choose one or several — click order sets priority."
-                  : "Choose one."}
-              </div>
-              {state.mcqAnswers[currentQ.id]?.skipped && (
-                <div className="mt-1 text-[13px] text-ink-faint">
-                  Skipped — picking an option answers it anyway.
-                </div>
-              )}
-              <div className="mt-[18px]">
-                <McqOptions
-                  question={currentQ}
-                  answer={state.mcqAnswers[currentQ.id]}
-                  onChange={(next) => updateMcqAnswer(currentQ.id, next)}
-                />
-              </div>
-              {/* §4.1 — completeness questions carry an AI-placeholder escape
-                  hatch: accept a generic professional description instead of
-                  elaborating, so the funnel never hard-blocks. */}
-              {currentQ.placeholderText && (
-                <button
-                  onClick={() => {
-                    updateMcqAnswer(currentQ.id, {
-                      selected: [OTHER_OPTION],
-                      other: currentQ.placeholderText,
-                    });
-                    setTimeout(nextQuestion, 150);
-                  }}
-                  className="mt-3 w-full cursor-pointer rounded-xl border-[1.5px] border-dashed border-accent/60 bg-selected-bg/50 px-4 py-2.5 text-left text-[13px] text-ink-soft transition-colors hover:bg-selected-bg"
-                >
-                  <span className="font-bold text-accent">
-                    ✨ Use AI placeholder
-                  </span>{" "}
-                  — &ldquo;{currentQ.placeholderText}&rdquo;
-                </button>
-              )}
-            </Card>
-          )}
-
-          {/* Carousel nav row — skip lives next to Next (never on required) */}
-          <div className="flex items-center justify-between">
-            <Button
-              variant="ghost"
-              disabled={qIndex === 0}
-              onClick={() => goToQuestion(qIndex - 1)}
-            >
-              ← Prev
-            </Button>
-            <div className="flex items-center gap-3.5">
-              <span className="text-[13px] text-ink-faint">
-                <strong className="text-accent">{requiredAnswered}</strong> /{" "}
-                {requiredCount} required
-                {mcqUnlocked
-                  ? ` · ${mcqAnswered}/${mcqQuestions.length} total`
-                  : " answered"}
-              </span>
-              {currentQ && !currentQ.required && (
-                <button
-                  className="cursor-pointer text-sm font-semibold text-ink-faint transition-colors hover:text-ink-soft"
-                  onClick={() => {
-                    setMcqSkipped(currentQ.id, true);
-                    setTimeout(nextQuestion, 150);
-                  }}
-                >
-                  Skip
-                </button>
-              )}
-              {canExpandPool ? (
-                <Button disabled={loadingMore} onClick={loadRoleQuestions}>
-                  {loadingMore ? (
-                    <Spinner label="Adding role questions…" />
-                  ) : (
-                    "＋ More questions"
-                  )}
-                </Button>
-              ) : (
-                <Button disabled={atLastMcq} onClick={nextQuestion}>
-                  Next →
-                </Button>
-              )}
-            </div>
-          </div>
-
-          {/* Reaching the last card unlocks a bigger, role-specific pool */}
-          {canExpandPool && !loadingMore && (
-            <p className="text-center text-[12.5px] text-ink-faint">
-              That&apos;s the last one for now. Press{" "}
-              <strong className="text-accent">＋ More questions</strong> to pull
-              up to {MAX_MCQ_POOL} role-specific questions employers expect for
-              your role.
-            </p>
-          )}
-
-          {/* Step footer — the Continue CTA becomes prominent once the
-              required questions are all answered (mandatory part complete). */}
-          {mcqUnlocked && (
-            <div className="flex items-center justify-center gap-2 rounded-2xl border-2 border-accent bg-selected-bg px-4 py-3 text-center">
-              <CheckCircle size={24} />
-              <p className="text-[14px] font-bold text-accent-deep">
-                Required questions done — you can continue. Answer more to
-                improve your match, or move on.
-              </p>
-            </div>
-          )}
-          <div className="flex items-center justify-between gap-3">
-            <BackButton to="upload" />
-            <Button
-              size={mcqUnlocked ? "lg" : "md"}
-              disabled={!mcqUnlocked}
-              onClick={() => goTo("open")}
-              className={
-                mcqUnlocked ? "ring-2 ring-accent/30 ring-offset-2" : ""
-              }
-            >
-              Continue to Sharpen →
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* ============ 3. Open questions (3c) ============ */}
-      {state.step === "open" && state.questionnaire && (
-        <div className="flex flex-col gap-[18px]">
-          <Heading
-            title={`${state.questionnaire.questions.length} optional questions — about three minutes`}
-            sub="The details recruiters look for. Write in any language — we'll fix the wording."
-          />
-
-          {/* This whole step is optional — make skipping the obvious path,
-              and tell users they can finish it later from the My Card tab. */}
-          <div className="-mt-1 flex flex-col items-center gap-3 rounded-2xl border-2 border-accent bg-selected-bg px-5 py-4 text-center">
-            <p className="text-[14px] leading-relaxed text-ink-soft">
-              This step is <strong className="text-ink">completely optional</strong>.
-              Answer now, or finish them later from the{" "}
-              <Link href="/card" className="font-bold text-accent underline">
-                My Card
-              </Link>{" "}
-              tab. Your results are ready either way.
-            </p>
-            <Button size="lg" onClick={finishQuestions}>
-              Skip this step — take me to my results →
-            </Button>
-          </div>
-
-          <Card className="flex flex-col gap-[22px] p-7">
-            {sharpenBusy && (
-              <Spinner label="Drafting example answers from your CV…" />
-            )}
-            {state.questionnaire.questions.map((q) => {
-              const suggestion = state.sharpenSuggestions[q.id];
-              return (
-                <div key={q.id}>
-                  <div className="text-[15.5px] font-bold text-ink">
-                    {q.question}
-                  </div>
-                  <div className="mt-0.5 text-[13px] text-ink-faint">{q.why}</div>
-                  <Textarea
-                    rows={2}
-                    className="mt-2.5"
-                    // A CV-grounded example answer seeds the field as inspiration;
-                    // falls back to a generic prompt while (or if) none loads.
-                    placeholder={
-                      suggestion
-                        ? `e.g. ${suggestion}`
-                        : sharpenBusy
-                          ? "Drafting a suggestion…"
-                          : "Share the details in your own words…"
-                    }
-                    value={state.answers[q.id] ?? ""}
-                    onChange={(e) => answerOpen(q.id, e.target.value)}
-                  />
-                </div>
-              );
-            })}
-          </Card>
-
-          <div className="flex items-center justify-between gap-3">
-            <BackButton to={mcqQuestions.length > 0 ? "mcq" : "upload"} />
-            <div className="flex items-center gap-3">
-              <button
-                className="cursor-pointer text-sm font-semibold text-ink-faint transition-colors hover:text-ink-soft"
-                onClick={finishQuestions}
-              >
-                Skip for now
-              </button>
-              <Button onClick={finishQuestions}>
-                Continue to my results →
-              </Button>
-            </div>
-          </div>
         </div>
       )}
 
@@ -1558,7 +1284,7 @@ export function TryNow() {
             .
           </p>
           <div className="flex items-center gap-3">
-            <BackButton to="open" />
+            <BackButton to="chat" />
             <button
               className="cursor-pointer text-[13px] text-muted underline transition-colors hover:text-ink-soft"
               onClick={startOver}
@@ -1600,69 +1326,21 @@ export function TryNow() {
                   jdText={state.jdText}
                 />
               </div>
-              {/* Controls */}
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <EditToolbar
-                    editing={editing}
-                    onToggleEdit={toggleEdit}
-                    onReset={resetCv}
-                    canReset={isDirty}
-                  />
-                  <AiSectionToggle cv={results.cv} onChange={editCv} />
-                  {/* §3.1 — Refresh Report is locked during Edit Mode and only
-                      meaningful once edits desynced the report. */}
-                  <button
-                    onClick={() => regenerateReportNow()}
-                    disabled={
-                      editing ||
-                      reportBusy ||
-                      !state.reportStale ||
-                      state.regensUsed >= MAX_REPORT_REGENS
-                    }
-                    className="cursor-pointer rounded-full border border-accent bg-selected-bg px-3 py-1 text-xs font-semibold text-accent transition-opacity duration-200 hover:bg-chip disabled:pointer-events-none disabled:opacity-50"
-                    title={
-                      editing
-                        ? "Finish editing (Done) to refresh the report"
-                        : !state.reportStale
-                          ? "Report is up to date"
-                          : "Rebuild the interview report to match your edits"
-                    }
-                  >
-                    {reportBusy ? "Refreshing…" : "↻ Refresh report"}
-                  </button>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    onClick={() => setFullScreen(true)}
-                    disabled={editing}
-                    className="cursor-pointer rounded-full border border-border bg-card px-3 py-1 text-xs font-semibold text-ink-soft transition-opacity duration-200 hover:bg-chip disabled:pointer-events-none disabled:opacity-50"
-                    title={
-                      editing
-                        ? "Finish editing (Done) to open Display Review"
-                        : "Full-screen review with zoom"
-                    }
-                  >
-                    ⛶ Display review
-                  </button>
-                  <SplitToggle
-                    template={template}
-                    split={splitView}
-                    onToggle={setSplitView}
-                  />
-                  <Button
-                    size="sm"
-                    disabled={reportBusy || editing}
-                    title={
-                      editing
-                        ? "Finish editing (Done) to download"
-                        : undefined
-                    }
-                    onClick={exportBoth}
-                  >
-                    {reportBusy ? "Syncing report…" : "Download my files (2 PDFs)"}
-                  </Button>
-                </div>
+              {/* Primary action — deliberately alone, above the preview frame
+                  (the operational controls live on the frame's toolbar) */}
+              <div className="flex items-center justify-end">
+                <Button
+                  size="md"
+                  disabled={reportBusy || editing}
+                  title={
+                    editing
+                      ? "Finish editing (Done) to download"
+                      : undefined
+                  }
+                  onClick={exportBoth}
+                >
+                  {reportBusy ? "Syncing report…" : "Download my files (2 PDFs)"}
+                </Button>
               </div>
               {state.reportStale && !editing && (
                 <p className="text-[11px] text-ink-faint">
@@ -1678,21 +1356,57 @@ export function TryNow() {
               </p>
             )}
             <div
-              ref={cvPreviewRef}
-              className={`overflow-auto rounded-2xl border bg-chip p-4 transition-all duration-200 print:border-0 print:bg-white print:p-0 ${
+              className={`overflow-hidden rounded-2xl border transition-all duration-200 print:border-0 ${
                 editing
                   ? "border-accent ring-2 ring-accent/30"
                   : "border-border"
               }`}
             >
-              <CvRenderer
-                cv={results.cv}
-                template={template}
-                theme={cvTheme}
-                split={shownSplit}
-                editable={editing}
-                onChange={editCv}
-              />
+              {/* Operational controls, anchored to the preview (PRD Topic 3) */}
+              <CvToolbar>
+                <EditToolbar
+                  editing={editing}
+                  onToggleEdit={toggleEdit}
+                  onReset={resetCv}
+                  canReset={isDirty}
+                />
+                <AiSectionToggle cv={results.cv} onChange={editCv} />
+                <RefreshReportButton
+                  onClick={() => regenerateReportNow()}
+                  disabled={
+                    editing ||
+                    reportBusy ||
+                    !state.reportStale ||
+                    state.regensUsed >= MAX_REPORT_REGENS
+                  }
+                  busy={reportBusy}
+                  stale={state.reportStale}
+                  editing={editing}
+                />
+                <ToolbarDivider />
+                <DisplayReviewButton
+                  onClick={() => setFullScreen(true)}
+                  disabled={editing}
+                />
+                <SplitToggle
+                  template={template}
+                  split={splitView}
+                  onToggle={setSplitView}
+                />
+              </CvToolbar>
+              <div
+                ref={cvPreviewRef}
+                className="overflow-auto bg-chip p-4 print:bg-white print:p-0"
+              >
+                <CvRenderer
+                  cv={results.cv}
+                  template={template}
+                  theme={cvTheme}
+                  split={shownSplit}
+                  editable={editing}
+                  onChange={editCv}
+                />
+              </div>
             </div>
             <RewriteTooltip
               containerRef={cvPreviewRef}
@@ -1878,7 +1592,7 @@ export function TryNow() {
             onAddJob={() => goTo("upload")}
           />
           <div>
-            <BackButton to="open" />
+            <BackButton to="chat" />
           </div>
         </div>
       )}
@@ -1898,7 +1612,7 @@ export function TryNow() {
           <Button size="lg" onClick={() => router.push("/demo")}>
             Open the workspace (demo) →
           </Button>
-          <BackButton to="open" />
+          <BackButton to="chat" />
         </div>
       )}
 

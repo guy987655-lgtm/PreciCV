@@ -109,6 +109,57 @@ body {
   }
 }
 
+/* Chat conversational animations — WhatsApp-style typing beats.
+   `both` fill keeps delayed elements hidden until their delay elapses. */
+@keyframes chat-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes chat-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes chat-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+    transform: none;
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+.chat-fade-in {
+  animation: chat-fade-in 180ms ease-out both;
+}
+.chat-pop-in {
+  animation: chat-pop-in 200ms ease-out both;
+}
+.typing-dot {
+  animation: chat-dot 1s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-fade-in,
+  .chat-pop-in,
+  .typing-dot {
+    animation: none;
+  }
+}
+
 /* The simulation report exists only as a print target (second file). */
 .report-page {
   display: none;

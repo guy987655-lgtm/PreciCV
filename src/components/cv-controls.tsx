@@ -1,11 +1,90 @@
 "use client";
 
+import { ReactNode } from "react";
 import { AI_SECTION_ID, CvTemplate, TailoredCv } from "@/lib/types";
 import { CvTheme } from "@/components/cv-renderer";
 import { canToggleSplit, forcedSplit } from "@/lib/templates";
 
-const chip =
-  "cursor-pointer rounded-full border px-3 py-1 text-xs font-semibold transition-colors";
+/**
+ * Toolbar buttons attached to the CV preview frame — deliberately NOT the
+ * rounded-full pill chip, so operational controls read as document tools and
+ * never blend into the template-design selectors (PRD Topic 3).
+ */
+const toolbarBtn =
+  "inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-semibold transition-colors disabled:pointer-events-none disabled:opacity-50";
+const toolbarIdle = "text-ink-soft hover:bg-chip";
+const toolbarActive = "bg-selected-bg text-accent";
+
+/** The control strip that sits on top of the CV preview frame. */
+export function CvToolbar({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1 border-b border-border bg-card px-2.5 py-1.5 print:hidden">
+      {children}
+    </div>
+  );
+}
+
+export function ToolbarDivider() {
+  return <span aria-hidden className="mx-1 h-4 w-px bg-border" />;
+}
+
+/** §3.1 — locked during Edit Mode and only meaningful once edits desynced the report. */
+export function RefreshReportButton({
+  onClick,
+  disabled,
+  busy,
+  stale,
+  editing,
+}: {
+  onClick: () => void;
+  disabled: boolean;
+  busy: boolean;
+  stale: boolean;
+  editing: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`${toolbarBtn} ${
+        stale && !disabled ? toolbarActive : toolbarIdle
+      } transition-opacity duration-200`}
+      title={
+        editing
+          ? "Finish editing (Done) to refresh the report"
+          : !stale
+            ? "Report is up to date"
+            : "Rebuild the interview report to match your edits"
+      }
+    >
+      {busy ? "Refreshing…" : "↻ Refresh report"}
+    </button>
+  );
+}
+
+/** Opens the full-screen zoomable CV review. */
+export function DisplayReviewButton({
+  onClick,
+  disabled,
+}: {
+  onClick: () => void;
+  disabled: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`${toolbarBtn} ${toolbarIdle} transition-opacity duration-200`}
+      title={
+        disabled
+          ? "Finish editing (Done) to open Display Review"
+          : "Full-screen review with zoom"
+      }
+    >
+      ⛶ Display review
+    </button>
+  );
+}
 
 /**
  * Split/full toggle constrained by the active template's `splitMode`:
@@ -25,7 +104,7 @@ export function SplitToggle({
     const locked = forcedSplit(template);
     return (
       <span
-        className={`${chip} cursor-default border-border bg-chip text-ink-faint`}
+        className={`${toolbarBtn} cursor-default text-ink-faint`}
         title={
           locked
             ? "This design always uses the split layout"
@@ -39,11 +118,7 @@ export function SplitToggle({
   return (
     <button
       onClick={() => onToggle(!split)}
-      className={`${chip} ${
-        split
-          ? "border-accent bg-selected-bg text-accent"
-          : "border-border bg-card text-ink-soft hover:bg-chip"
-      }`}
+      className={`${toolbarBtn} ${split ? toolbarActive : toolbarIdle}`}
     >
       ⿻ Split view
     </button>
@@ -100,10 +175,8 @@ export function AiSectionToggle({
   return (
     <button
       onClick={toggle}
-      className={`${chip} ${
-        hidden
-          ? "border-border bg-card text-ink-faint"
-          : "border-accent bg-selected-bg text-accent"
+      className={`${toolbarBtn} ${
+        hidden ? "text-ink-faint hover:bg-chip" : toolbarActive
       }`}
       title={
         hidden
@@ -138,18 +211,18 @@ export function EditToolbar({
     return (
       <button
         onClick={() => onToggleEdit(true)}
-        className={`${chip} border-border bg-card text-ink-soft hover:bg-chip`}
+        className={`${toolbarBtn} ${toolbarIdle}`}
       >
         ✎ Edit
       </button>
     );
   }
   return (
-    <div className="inline-flex items-center gap-2">
+    <div className="inline-flex items-center gap-1">
       <button
         onClick={onReset}
         disabled={!canReset}
-        className={`${chip} border-border bg-card text-ink-soft transition-opacity duration-200 hover:bg-chip disabled:pointer-events-none disabled:opacity-50`}
+        className={`${toolbarBtn} ${toolbarIdle} transition-opacity duration-200`}
         title={
           canReset
             ? "Revert to your last saved state"
@@ -160,7 +233,7 @@ export function EditToolbar({
       </button>
       <button
         onClick={() => onToggleEdit(false)}
-        className={`${chip} border-accent bg-accent text-on-accent hover:bg-accent-hover`}
+        className={`${toolbarBtn} bg-accent text-on-accent hover:bg-accent-hover`}
       >
         ✓ Done
       </button>

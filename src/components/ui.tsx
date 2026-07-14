@@ -14,7 +14,7 @@ export function Button({
   className,
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: "primary" | "secondary" | "outline" | "ghost" | "danger" | "success" | "dark";
+  variant?: "primary" | "secondary" | "outline" | "ghost" | "danger" | "success" | "dark" | "white";
   size?: "sm" | "md" | "lg";
 }) {
   return (
@@ -33,11 +33,41 @@ export function Button({
         // Ghost/outline: transparent pill with 1.5px border
         (variant === "outline" || variant === "ghost") &&
           "border-[1.5px] border-border-strong bg-transparent text-ink-soft hover:bg-card",
+        // Solid white pill (e.g. the secondary generate CTA inside the chat)
+        variant === "white" &&
+          "border-[1.5px] border-border-strong bg-card font-bold text-ink hover:bg-chip",
         variant === "danger" && "bg-red-700 font-bold text-white hover:bg-red-800",
         className
       )}
       {...props}
     />
+  );
+}
+
+/**
+ * Hover/focus hint bubble. Shows on pointer hover and on keyboard focus of the
+ * wrapped control; `focus-within` also keeps it reachable on touch devices
+ * without swallowing the tap.
+ */
+export function Tooltip({
+  label,
+  children,
+  className,
+}: {
+  label: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <span className={cx("group/tip relative inline-flex", className)}>
+      {children}
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute bottom-full left-1/2 z-30 mb-2 w-max max-w-[260px] -translate-x-1/2 rounded-[10px] bg-ink px-3 py-2 text-[12px] font-medium leading-snug text-bg opacity-0 shadow-lg transition-opacity duration-150 group-hover/tip:opacity-100 group-focus-within/tip:opacity-100"
+      >
+        {label}
+      </span>
+    </span>
   );
 }
 

@@ -1,11 +1,12 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   FunnelState,
   STEP_ORDER,
   activateFlow,
+  flowDisplayName,
   loadFunnel,
   loadHistory,
   removeFromHistory,
@@ -20,13 +21,12 @@ import { ReportPage } from "@/components/report-page";
 
 type PrintTarget = "cv" | "report" | "both";
 
-/** Human title for a flow: candidate + target job (or a JD snippet). */
+/** Max length for a user-chosen process name (PRD 4.5.6). */
+const MAX_PROCESS_NAME = 50;
+
+/** Human title for a flow: an explicit rename wins, else the derived default. */
 function flowTitle(f: FunnelState): string {
-  const job =
-    f.results?.jobTitle ||
-    f.jdText.trim().split("\n").map((l) => l.trim()).filter(Boolean)[0] ||
-    "";
-  return [f.profile?.contact.fullName, job].filter(Boolean).join(" → ") || "Untitled flow";
+  return flowDisplayName(f);
 }
 
 /**
@@ -46,10 +46,57 @@ export default function HistoryPage() {
     target: PrintTarget;
   } | null>(null);
 
+  // Inline process renaming (PRD Topic 4).
+  const [editing, setEditing] = useState<{ id: string; value: string } | null>(
+    null
+  );
+  const [renameError, setRenameError] = useState<string | null>(null);
+  // Set on Esc so the input's blur handler doesn't also commit the revert.
+  const cancelledRef = useRef(false);
+
   function refresh() {
     const f = loadFunnel();
     setActive(f?.profile ? f : null);
     setHistory(loadHistory());
+  }
+
+  function startRename(flow: FunnelState) {
+    setRenameError(null);
+    setEditing({ id: flow.flowId, value: flowDisplayName(flow) });
+  }
+
+  /** Persists to the active flow or the archived entry, whichever holds it. */
+  function persistName(flow: FunnelState, name: string) {
+    const current = loadFunnel();
+    if (current?.profile && current.flowId === flow.flowId) {
+      saveFunnel({ ...current, processName: name });
+    } else {
+      updateHistoryEntry(flow.flowId, { processName: name });
+    }
+    refresh();
+  }
+
+  function commitRename(flow: FunnelState) {
+    if (cancelledRef.current) {
+      cancelledRef.current = false;
+      return;
+    }
+    if (!editing || editing.id !== flow.flowId) return;
+    const name = editing.value.trim().slice(0, MAX_PROCESS_NAME);
+    if (!name) {
+      // PRD 4.5.6 — flash a warning and revert to the previous valid name.
+      setRenameError(flow.flowId);
+      setTimeout(() => setRenameError(null), 1600);
+      setEditing(null);
+      return;
+    }
+    persistName(flow, name);
+    setEditing(null);
+  }
+
+  function cancelRename() {
+    cancelledRef.current = true;
+    setEditing(null);
   }
   useEffect(() => {
     refresh();
@@ -111,18 +158,53 @@ export default function HistoryPage() {
     const bothDownloaded = flow.downloadedCv && flow.downloadedReport;
     const stepNum =
       Math.min(flow.furthestStep ?? 0, STEP_ORDER.length - 1) + 1;
+    const isEditing = editing?.id === flow.flowId;
     return (
       <Card key={flow.flowId || "active"} className="p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <button
-            className="min-w-0 cursor-pointer text-left"
-            onClick={() => resume(flow)}
-            title={completed ? "Open this flow" : "Resume where you left off"}
-          >
+          <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="truncate text-[15.5px] font-bold text-ink">
-                {flowTitle(flow)}
-              </span>
+              {isEditing ? (
+                <input
+                  autoFocus
+                  maxLength={MAX_PROCESS_NAME}
+                  className="min-w-0 max-w-full rounded-md border border-indigo-400 bg-surface px-2 py-0.5 text-[15.5px] font-bold text-ink outline-none focus:ring-2 focus:ring-indigo-300"
+                  value={editing?.value ?? ""}
+                  onChange={(e) =>
+                    setEditing({ id: flow.flowId, value: e.target.value })
+                  }
+                  onBlur={() => commitRename(flow)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      (e.target as HTMLInputElement).blur();
+                    } else if (e.key === "Escape") {
+                      e.preventDefault();
+                      cancelRename();
+                    }
+                  }}
+                />
+              ) : (
+                <button
+                  className="min-w-0 cursor-pointer truncate text-left text-[15.5px] font-bold text-ink hover:underline"
+                  onClick={() => resume(flow)}
+                  title={
+                    completed ? "Open this flow" : "Resume where you left off"
+                  }
+                >
+                  {flowTitle(flow)}
+                </button>
+              )}
+              {!isEditing && (
+                <button
+                  aria-label="Rename this process"
+                  title="Rename"
+                  className="shrink-0 cursor-pointer rounded-full px-1.5 py-0.5 text-sm text-muted transition-colors hover:text-indigo-600"
+                  onClick={() => startRename(flow)}
+                >
+                  ✎
+                </button>
+              )}
               {isActive && <Badge tone="indigo">Active</Badge>}
               {completed ? (
                 <Badge tone="green">Completed ✓</Badge>
@@ -132,7 +214,15 @@ export default function HistoryPage() {
                 </Badge>
               )}
             </div>
-            <p className="mt-1 text-[12.5px] text-ink-faint">
+            {renameError === flow.flowId && (
+              <p className="mt-1 text-[12px] font-medium text-red-600">
+                Name can’t be empty — reverted to the previous name.
+              </p>
+            )}
+            <button
+              className="mt-1 block cursor-pointer text-left text-[12.5px] text-ink-faint"
+              onClick={() => resume(flow)}
+            >
               {flow.savedAt
                 ? new Date(flow.savedAt).toLocaleDateString("en-GB", {
                     day: "numeric",
@@ -142,8 +232,8 @@ export default function HistoryPage() {
                 : ""}
               {flow.results?.company ? ` · ${flow.results.company}` : ""}
               {completed && bothDownloaded && " · files downloaded"}
-            </p>
-          </button>
+            </button>
+          </div>
 
           <div className="flex flex-wrap items-center gap-2">
             {completed ? (

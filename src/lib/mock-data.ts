@@ -95,7 +95,7 @@ export function mockFunnelState(opts?: { withJob?: boolean }): FunnelState {
   return {
     flowId: "mock-flow",
     step: "gate",
-    furthestStep: 3,
+    furthestStep: 2,
     results: null,
     template: "classic",
     downloadedCv: false,
@@ -105,6 +105,13 @@ export function mockFunnelState(opts?: { withJob?: boolean }): FunnelState {
     regensUsed: 0,
     reportStale: false,
     sharpenSuggestions: {},
+    autoFilledIds: [],
+    processName: "",
+    greetingInfo: null,
+    greetingReply: "",
+    greetingDone: true,
+    branchChoice: "continue",
+    branchStarted: true,
     profile: {
       contact: {
         fullName: "Dana Levi",

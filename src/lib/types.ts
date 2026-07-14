@@ -239,6 +239,19 @@ export const ReportResultSchema = z.object({
 });
 export type ReportResult = z.infer<typeof ReportResultSchema>;
 
+/**
+ * JD-derived facts for the chat's personalized greeting, extracted by a fast
+ * LLM call during upload (in parallel with profile extraction). `sameField`
+ * compares the JD's field against the candidate's current role.
+ */
+export const GreetingInfoSchema = z.object({
+  targetJobTitle: z.string().default(""),
+  /** Short human field label, e.g. "Data Analytics". */
+  field: z.string().default(""),
+  sameField: z.boolean().default(false),
+});
+export type GreetingInfo = z.infer<typeof GreetingInfoSchema>;
+
 /* ------------------------------------------------------------------ */
 /* Monetization                                                        */
 /* ------------------------------------------------------------------ */

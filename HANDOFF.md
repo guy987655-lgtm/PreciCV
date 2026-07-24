@@ -20,8 +20,42 @@ Point this file at a fresh session to continue exactly where we stopped.
 | GitHub / Google / LinkedIn OAuth | ✅ all three verified reaching their real auth screens |
 | Supabase redirect allow-list | `http://localhost:3000/auth/callback` |
 | Provider callback (set in each provider console) | `https://nrcmijgoyxthbdftdzgg.supabase.co/auth/v1/callback` |
-| `.env.local` | `GEMINI_API_KEY`, `DEV_FREE_MODE=true`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` |
-| **Missing** | service-role/secret key, Stripe keys, PostHog key, `NEXT_PUBLIC_APP_URL` |
+| `.env.local` (7 keys, all live-probed 2026-07-24) | `GEMINI_API_KEY` ✅, `NEXT_PUBLIC_SUPABASE_URL` ✅, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` ✅, `SUPABASE_SERVICE_ROLE_KEY` ✅, `SUPABASE_SECRET_KEY` ✅ (spare), `STRIPE_SECRET_KEY` ✅ test-mode, `DEV_FREE_MODE=false` |
+| **Missing** | `STRIPE_WEBHOOK_SECRET`, `NEXT_PUBLIC_APP_URL`, PostHog key |
+
+## Production readiness — audited 2026-07-24
+
+Verified by probing each service directly (`npm run build` + live API calls):
+
+| Check | Result |
+|---|---|
+| `next build` | ✅ exit 0, 33 routes, no errors or warnings |
+| `tsc --noEmit` | ✅ clean (eslint has 20 pre-existing `set-state-in-effect` errors; they do not block the build) |
+| OAuth handoff | ✅ all three 302 to the real provider (github.com / accounts.google.com / api.linkedin.com); Supabase has github, google, linkedin_oidc, email enabled |
+| RLS | ✅ anonymous reads 0 rows on all 4 tables while service_role sees them; anonymous INSERT into `purchases` blocked (42501) — nobody can grant themselves a paid purchase |
+| Stripe key + Checkout | ✅ test key valid; a session created through the exact code path (inline `price_data`) succeeded and the `user_id`/`job_id`/`tier` metadata round-tripped |
+
+**Blockers before real money can be taken:**
+
+1. **Stripe account is not activated** — `details_submitted=false`, `charges_enabled=false`,
+   `payouts_enabled=false`, no capabilities. Onboarding (business details + bank)
+   must be completed in the Stripe dashboard; until then only test mode works.
+2. **No webhook exists anywhere** — 0 registered endpoints on the Stripe account and
+   no `STRIPE_WEBHOOK_SECRET`. `purchases.status` only flips to `paid` from
+   `checkout.session.completed`, so today a user would pay and still see the
+   blurred sample. Register `https://<prod>/api/stripe/webhook` after the first deploy.
+3. **No deploy target** — the Vercel account holds `world-cup-2026`,
+   `claude-code-course` and `tapecalc`; there is no project for this repo. Pushing
+   to GitHub therefore deploys nothing yet, and no env var exists in production
+   (`.env.local` is gitignored and local-only).
+4. **Redirect allow-list is localhost-only** — add `https://<prod>/auth/callback`
+   and set the Site URL, or every production sign-in dead-ends. (Not verifiable
+   from the API: Supabase validates it at the callback stage, and reading the
+   list needs a management token.)
+
+Recommended order: push → create the Vercel project and set env vars → deploy →
+add the prod callback to Supabase → register the Stripe webhook → test with
+`4242 4242 4242 4242` → complete Stripe activation → swap in live keys.
 
 ## The flow as it now works
 

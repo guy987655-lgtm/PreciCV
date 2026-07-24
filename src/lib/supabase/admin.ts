@@ -2,7 +2,7 @@ import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
 /**
  * Service-role client. Server-side only — bypasses RLS.
- * Used by the Stripe webhook (no user session) and account deletion.
+ * Used by the Lemon Squeezy webhook (no user session) and account deletion.
  */
 export function createAdminClient() {
   return createSupabaseClient(

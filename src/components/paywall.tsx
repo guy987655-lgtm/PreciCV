@@ -1,7 +1,10 @@
 "use client";
 
-import { TIERS, TierId } from "@/lib/types";
+import { TIERS, TierId, VISIBLE_TIERS } from "@/lib/types";
 import { Badge, Button, Card, Spinner } from "@/components/ui";
+
+/** The tier we steer users toward — the $1 gap makes it the obvious pick. */
+const HIGHLIGHT_TIER: TierId = "full";
 
 /**
  * The Paywall — appears right BEFORE final document generation, after the
@@ -22,20 +25,21 @@ export function Paywall({
   onAddJob?: () => void;
 }) {
   return (
-    <div className="grid gap-4 sm:grid-cols-3">
-      {(Object.entries(TIERS) as [TierId, (typeof TIERS)[TierId]][]).map(
-        ([tierId, tier]) => {
+    <div className="grid gap-4 sm:grid-cols-2">
+      {VISIBLE_TIERS.map((tierId) => {
+          const tier = TIERS[tierId];
           const locked = tier.requiresJob && !hasJob;
+          const highlighted = tierId === HIGHLIGHT_TIER;
           return (
             <Card
               key={tierId}
               className={`flex flex-col p-5 ${
-                tierId === "match" ? "border-2 border-accent" : ""
+                highlighted ? "border-2 border-accent" : ""
               } ${locked ? "opacity-80" : ""}`}
             >
               <div className="flex items-center justify-between gap-2">
                 <h3 className="font-bold text-ink">{tier.name}</h3>
-                {tierId === "match" && <Badge tone="indigo">Popular</Badge>}
+                {highlighted && <Badge tone="indigo">Best value</Badge>}
               </div>
               <p className="mt-1 font-display text-3xl font-extrabold text-ink">
                 ${tier.priceUsd}
@@ -63,7 +67,7 @@ export function Paywall({
               ) : (
                 <Button
                   className="mt-4 w-full"
-                  variant={tierId === "match" ? "primary" : "outline"}
+                  variant={highlighted ? "primary" : "outline"}
                   disabled={busy}
                   onClick={() => onSelect(tierId)}
                 >
@@ -72,8 +76,7 @@ export function Paywall({
               )}
             </Card>
           );
-        }
-      )}
+        })}
     </div>
   );
 }

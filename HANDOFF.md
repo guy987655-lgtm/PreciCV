@@ -1,12 +1,16 @@
-# HANDOFF — Supabase auth + freemium funnel (2026-07-24)
+# HANDOFF — Supabase auth + freemium funnel + payments (2026-07-25)
 
 Point this file at a fresh session to continue exactly where we stopped.
+Pricing strategy lives in **`PRICING_MODEL.md`** — that is the source of truth
+for tiers and the payment provider.
 
 ## Where the code is
 
-- Branch **`freemium-funnel-and-oauth`**, commit **`4ef99b2`**. **Not pushed** —
-  in this project `push == deploy`, so pushing is the user's call.
-- `main` is untouched. To ship: `git checkout main && git merge freemium-funnel-and-oauth`.
+- Branch **`freemium-funnel-and-oauth`**. `main` is untouched. To ship:
+  `git checkout main && git merge freemium-funnel-and-oauth`.
+- No Vercel project exists for this repo yet (verified 2026-07-25 — the account
+  holds `world-cup-2026`, `claude-code-course`, `tapecalc`), so **pushing does
+  not deploy anything**. Creating the project is a deliberate separate step.
 - Node is not on `PATH`: `export PATH="$HOME/.local/node/bin:$PATH"`.
 - Dev server: launch config **`precicv-dev`** (`.claude/launch.json`) → port 3000.
 - Typecheck (the reliable gate, since `/jobs/[id]` only compiles when visited):
@@ -20,8 +24,9 @@ Point this file at a fresh session to continue exactly where we stopped.
 | GitHub / Google / LinkedIn OAuth | ✅ all three verified reaching their real auth screens |
 | Supabase redirect allow-list | `http://localhost:3000/auth/callback` |
 | Provider callback (set in each provider console) | `https://nrcmijgoyxthbdftdzgg.supabase.co/auth/v1/callback` |
-| `.env.local` (7 keys, all live-probed 2026-07-24) | `GEMINI_API_KEY` ✅, `NEXT_PUBLIC_SUPABASE_URL` ✅, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` ✅, `SUPABASE_SERVICE_ROLE_KEY` ✅, `SUPABASE_SECRET_KEY` ✅ (spare), `STRIPE_SECRET_KEY` ✅ test-mode, `DEV_FREE_MODE=false` |
-| **Missing** | `STRIPE_WEBHOOK_SECRET`, `NEXT_PUBLIC_APP_URL`, PostHog key |
+| `.env.local` | `GEMINI_API_KEY` ✅, `NEXT_PUBLIC_SUPABASE_URL` ✅, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` ✅, `SUPABASE_SERVICE_ROLE_KEY` ✅, `NEXT_PUBLIC_APP_URL` ✅, `DEV_FREE_MODE=false`, plus the Lemon Squeezy block below |
+| **Lemon Squeezy** (live-probed 2026-07-25) | Store **SpeCV** id `438606`, USD, **test mode**. Variants: match `1945861` $3, full `1945868` $4, upgrade `1945870` $1. `LEMONSQUEEZY_API_KEY` ✅ returns 200 |
+| **Missing** | `LEMONSQUEEZY_WEBHOOK_SECRET` (needs a public URL first), PostHog key |
 
 ## Production readiness — audited 2026-07-24
 
@@ -33,29 +38,31 @@ Verified by probing each service directly (`npm run build` + live API calls):
 | `tsc --noEmit` | ✅ clean (eslint has 20 pre-existing `set-state-in-effect` errors; they do not block the build) |
 | OAuth handoff | ✅ all three 302 to the real provider (github.com / accounts.google.com / api.linkedin.com); Supabase has github, google, linkedin_oidc, email enabled |
 | RLS | ✅ anonymous reads 0 rows on all 4 tables while service_role sees them; anonymous INSERT into `purchases` blocked (42501) — nobody can grant themselves a paid purchase |
-| Stripe key + Checkout | ✅ test key valid; a session created through the exact code path (inline `price_data`) succeeded and the `user_id`/`job_id`/`tier` metadata round-tripped |
+| Lemon Squeezy checkout | ✅ 2026-07-25: `POST /v1/checkouts` returned **201** with `test_mode:true`; the `custom` data (`user_id`/`job_id`/`tier`) round-tripped, and the hosted page rendered with SpeCV branding, $3.00, card + PayPal |
 
 **Blockers before real money can be taken:**
 
-1. **Stripe account is not activated** — `details_submitted=false`, `charges_enabled=false`,
-   `payouts_enabled=false`, no capabilities. Onboarding (business details + bank)
-   must be completed in the Stripe dashboard; until then only test mode works.
-2. **No webhook exists anywhere** — 0 registered endpoints on the Stripe account and
-   no `STRIPE_WEBHOOK_SECRET`. `purchases.status` only flips to `paid` from
-   `checkout.session.completed`, so today a user would pay and still see the
-   blurred sample. Register `https://<prod>/api/stripe/webhook` after the first deploy.
-3. **No deploy target** — the Vercel account holds `world-cup-2026`,
-   `claude-code-course` and `tapecalc`; there is no project for this repo. Pushing
-   to GitHub therefore deploys nothing yet, and no env var exists in production
-   (`.env.local` is gitignored and local-only).
+1. **Migration `0005_lemonsqueezy.sql` is not applied to the live database.** It
+   renames `purchases.stripe_session_id` → `provider_ref`, which the webhook
+   writes. Until it runs, a paid order fails to record and the user keeps seeing
+   the blurred sample. **Do this before the first production payment.**
+2. **No deploy target** — no Vercel project for this repo (re-verified
+   2026-07-25), so pushing to GitHub deploys nothing and no production env var
+   exists (`.env.local` is gitignored and local-only).
+3. **No webhook exists** — needs a public URL first. After deploying, register
+   `https://<prod>/api/payments/webhook` in Lemon Squeezy and set
+   `LEMONSQUEEZY_WEBHOOK_SECRET` to the same self-chosen string in both the LS
+   dashboard and the Vercel env. `verifyLsWebhook` rejects everything without it.
 4. **Redirect allow-list is localhost-only** — add `https://<prod>/auth/callback`
    and set the Site URL, or every production sign-in dead-ends. (Not verifiable
    from the API: Supabase validates it at the callback stage, and reading the
    list needs a management token.)
+5. **Lemon Squeezy store is not activated** — steps 3/4/7 in the LS dashboard
+   (identity, 2FA, bank) are required before live payments. Test mode works now.
 
 Recommended order: push → create the Vercel project and set env vars → deploy →
-add the prod callback to Supabase → register the Stripe webhook → test with
-`4242 4242 4242 4242` → complete Stripe activation → swap in live keys.
+apply migration 0005 → add the prod callback to Supabase → register the LS
+webhook → test end-to-end in test mode → activate the store → leave test mode.
 
 ## The flow as it now works
 
@@ -66,7 +73,7 @@ add the prod callback to Supabase → register the Stripe webhook → test with
   → /login → provider → /auth/callback (next=/continue)
   → /continue → POST /api/try/import      ← creates profile + job in Supabase
   → /jobs/{id}                            ← AUTO-generates this job's sample
-  → blurred + watermarked results + "Unlock full version →" → tiers $2/$3/$5
+  → blurred + watermarked results + "Unlock full version →" → $3 / $4 (+$1 upgrade)
 ```
 
 Free users may **view only** — no download/export, `print:hidden` on samples.
@@ -106,9 +113,11 @@ blurred preview.
      every row it appears in, so "Recommended" can show 3 open chips. Unlocking
      strictly the 2 leftmost per row instead would yield only 4 distinct
      designs, since the recommended row is drawn from the other two.
-3. **Stripe** — keys + webhook not configured; `DEV_FREE_MODE=true` grants
-   purchases for free. Prices live in `TIERS` (`src/lib/types.ts`), charged via
-   inline `price_data`, so no Stripe products need creating.
+3. **Payments** — Lemon Squeezy is wired and probed; only the webhook is
+   missing (needs a public URL). `DEV_FREE_MODE=true` still grants purchases for
+   free locally. Prices live in `TIERS` (`src/lib/types.ts`) **and** as three
+   variants in the LS dashboard — change one, change the other. See
+   `PRICING_MODEL.md`.
 4. **PostHog** — code fully wired, only `NEXT_PUBLIC_POSTHOG_KEY` is missing.
 5. **Brand naming is inconsistent** and users see it: app says *SpeCV*, the
    GitHub OAuth app says *PreciCV*, README says *PreciCV*, and Google's consent

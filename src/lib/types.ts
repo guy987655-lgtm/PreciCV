@@ -287,8 +287,8 @@ export const TIERS = {
   },
   full: {
     name: "Full Prep",
-    priceUsd: 5,
-    priceCents: 500,
+    priceUsd: 4,
+    priceCents: 400,
     maxRevisions: 10,
     requiresJob: true,
     description:
@@ -301,6 +301,18 @@ export const TIERS = {
   },
 } as const;
 export type TierId = keyof typeof TIERS;
+
+/**
+ * Displayed-only anchor for the `match → full` upgrade: the UI strikes through
+ * `$UPGRADE_ANCHOR_USD` and charges the real difference
+ * (`full.priceCents - match.priceCents` = $1). Purely psychological — the
+ * charge is always the diff, never this value.
+ */
+export const UPGRADE_ANCHOR_USD = 2;
+
+/** The two tiers offered in the paywall today (`base` is kept for a future
+ *  no-job entry point but hidden from the UI — see PRICING_MODEL.md §9.1). */
+export const VISIBLE_TIERS: TierId[] = ["match", "full"];
 
 /** Minimum cosine similarity between original and updated JD on revision */
 export const JD_SIMILARITY_THRESHOLD = 0.85;

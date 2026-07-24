@@ -16,6 +16,7 @@ import {
   TailoredCv,
   TIERS,
   TierId,
+  UPGRADE_ANCHOR_USD,
 } from "@/lib/types";
 import {
   CvVersion,
@@ -194,6 +195,7 @@ export function JobWorkspace({
   const [redFlagModal, setRedFlagModal] = useState(false);
   const [pendingSample, setPendingSample] = useState(false);
   const [reviseOpen, setReviseOpen] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [reviseText, setReviseText] = useState("");
   const [revisionsUsed, setRevisionsUsed] = useState(purchase?.revisionsUsed ?? 0);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
@@ -270,20 +272,25 @@ export function JobWorkspace({
   const isSample = Boolean(generation?.isSample);
   // Free sample keeps the first change readable; the rest render blurred.
   const SAMPLE_CLEAR_CHANGES = 1;
+  // match → full upgrade: charge only the difference ($1), anchored to $2.
+  const upgradeUsd = (TIERS.full.priceCents - TIERS.match.priceCents) / 100;
+  const canUpgrade = purchase?.tier === "match" && !isSample;
 
   /* ---------------- payment ---------------- */
-  async function checkout(tier: TierId) {
+  // `isUpgrade` only shapes analytics — the server detects the paid `match`
+  // row on this job and charges the $1 difference for a `full` checkout.
+  async function checkout(tier: TierId, isUpgrade = false) {
     setBusy("checkout");
     setError("");
     trackButtonClick({
-      button_name: `buy_${tier}`,
+      button_name: isUpgrade ? "upgrade_to_full" : `buy_${tier}`,
       action: "checkout",
-      button_text: `Buy ${TIERS[tier].name}`,
+      button_text: isUpgrade ? "Upgrade to Full Prep" : `Buy ${TIERS[tier].name}`,
       click_source: "job_workspace",
       job_id: job.id,
     });
     try {
-      const res = await fetch("/api/stripe/checkout", {
+      const res = await fetch("/api/payments/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jobId: job.id, tier }),
@@ -995,6 +1002,31 @@ export function JobWorkspace({
                 </Button>
               </Card>
             )}
+
+            {/* Upgrade match → full: unlock the interview simulation report
+                + AI revisions for the $1 difference (anchored to $2). */}
+            {canUpgrade && (
+              <Card className="border-2 border-accent p-5 print:hidden">
+                <h2 className="font-semibold text-slate-900">
+                  Get interview-ready
+                </h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  Add the interview simulation report and up to{" "}
+                  {TIERS.full.maxRevisions} AI revisions.
+                </p>
+                <Button
+                  variant="primary"
+                  className="mt-3 w-full"
+                  onClick={() => setUpgradeOpen(true)}
+                >
+                  Upgrade to Full Prep —{" "}
+                  <span className="line-through opacity-70">
+                    ${UPGRADE_ANCHOR_USD}
+                  </span>{" "}
+                  ${upgradeUsd}
+                </Button>
+              </Card>
+            )}
           </div>
 
           {/* Right pane: the CV — editable when owned, watermarked when sample */}
@@ -1215,6 +1247,51 @@ export function JobWorkspace({
           </Button>
           <Button disabled={busy === "revise" || reviseText.trim().length < 3} onClick={revise}>
             {busy === "revise" ? <Spinner label="Revising…" /> : "Apply revision"}
+          </Button>
+        </div>
+      </Modal>
+
+      {/* Upgrade offer — a single-option "pricing view": match → full for the
+          $1 difference, shown with the $2 anchor struck through. */}
+      <Modal
+        open={upgradeOpen}
+        onClose={() => setUpgradeOpen(false)}
+        title="Upgrade to Full Prep"
+      >
+        <Card className="border-2 border-accent p-5">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="font-bold text-ink">{TIERS.full.name}</h3>
+            <Badge tone="indigo">Upgrade</Badge>
+          </div>
+          <p className="mt-1 font-display text-3xl font-extrabold text-ink">
+            <span className="mr-2 align-middle text-xl font-bold text-ink-faint line-through">
+              ${UPGRADE_ANCHOR_USD}
+            </span>
+            ${upgradeUsd}
+            <span className="font-sans text-sm font-normal text-ink-faint">
+              {" "}
+              one-time
+            </span>
+          </p>
+          <ul className="mt-3 space-y-1.5 text-sm text-ink-soft">
+            <li>✓ Interview simulation report</li>
+            <li>✓ Up to {TIERS.full.maxRevisions} AI revisions</li>
+            <li>✓ Keeps everything you already unlocked</li>
+          </ul>
+        </Card>
+        <div className="mt-5 flex justify-end gap-3">
+          <Button variant="ghost" onClick={() => setUpgradeOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            disabled={busy === "checkout"}
+            onClick={() => checkout("full", true)}
+          >
+            {busy === "checkout" ? (
+              <Spinner />
+            ) : (
+              `Upgrade for $${upgradeUsd}`
+            )}
           </Button>
         </div>
       </Modal>

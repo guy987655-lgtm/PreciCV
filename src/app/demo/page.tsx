@@ -4,7 +4,7 @@ import { demoCv, demoDiff, demoHits } from "./demo-data";
 
 /**
  * DEMO ONLY — renders the paid (Premium) Review Workspace with mock data
- * so the experience can be previewed without Supabase/Stripe/Anthropic
+ * so the experience can be previewed without Supabase/Lemon Squeezy/Anthropic
  * keys. See /demo/sample for the free-sample (watermarked) state.
  */
 export default function DemoPage() {

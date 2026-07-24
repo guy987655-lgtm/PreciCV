@@ -328,6 +328,8 @@ const CONTINUE_MSG =
   "feel like you've had enough.";
 const GENERATE_MSG =
   "No problem. Just say the word and I'll start generating your CV.";
+const REGISTER_MSG =
+  "Perfect — register free to save your answers and unlock your tailored CV and reports.";
 
 /**
  * Post-mandatory transition (PRD 1.5.5-1.5.7): milestone message, side-by-side
@@ -342,6 +344,7 @@ export function TransitionBlock({
   onStart,
   onGenerate,
   generateBusy,
+  registered,
 }: {
   branchChoice: FunnelState["branchChoice"];
   branchStarted: boolean;
@@ -349,6 +352,7 @@ export function TransitionBlock({
   onStart: () => void;
   onGenerate: () => void;
   generateBusy: boolean;
+  registered: boolean;
 }) {
   // Live while the choice is still pending at mount; otherwise static history.
   const [live] = useState(() => branchChoice === "");
@@ -409,15 +413,17 @@ export function TransitionBlock({
             animate={live}
             onDone={() => setFollowUpDone(true)}
           >
-            {GENERATE_MSG}
+            {registered ? GENERATE_MSG : REGISTER_MSG}
           </TypingBotMessage>
           {followUpDone && (
             <div className="chat-pop-in pl-[42px]">
               <Button size="lg" disabled={generateBusy} onClick={onGenerate}>
                 {generateBusy ? (
                   <Spinner label="Generating…" />
-                ) : (
+                ) : registered ? (
                   "Generate Reports →"
+                ) : (
+                  "Register to see your results →"
                 )}
               </Button>
             </div>

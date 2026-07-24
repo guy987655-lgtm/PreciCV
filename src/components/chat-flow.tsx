@@ -51,6 +51,8 @@ function isNonEnglish(text: string): boolean {
 
 type ChatFlowProps = {
   state: FunnelState;
+  /** Real auth state — guests register before results (freemium gate). */
+  registered: boolean;
   onUpdateMcq: (qId: string, next: McqAnswer) => void;
   onSkipMcq: (qId: string) => void;
   onAnswerOpen: (qId: string, text: string) => void;
@@ -244,6 +246,7 @@ function QuestionStep({
  */
 export function ChatFlow({
   state,
+  registered,
   onUpdateMcq,
   onSkipMcq,
   onAnswerOpen,
@@ -491,6 +494,7 @@ export function ChatFlow({
       onStart={onBranchStart}
       onGenerate={onGenerate}
       generateBusy={generateBusy}
+      registered={registered}
     />
   );
 
@@ -700,8 +704,10 @@ export function ChatFlow({
               >
                 {generateBusy ? (
                   <Spinner label="Generating…" />
-                ) : (
+                ) : registered ? (
                   "Generate my reports →"
+                ) : (
+                  "Register to see your results →"
                 )}
               </Button>
             )}
@@ -740,7 +746,7 @@ export function ChatFlow({
       <Modal
         open={confirmGenerate}
         onClose={() => setConfirmGenerate(false)}
-        title="Generate your reports now?"
+        title="Finish now?"
       >
         <p className="text-[14.5px] leading-relaxed text-ink-soft">
           You have{" "}
@@ -748,8 +754,8 @@ export function ChatFlow({
             {remainingOptional} optional question
             {remainingOptional === 1 ? "" : "s"}
           </span>{" "}
-          left. Do you want me to start generating your tailored CV and
-          reports?
+          left. Want to wrap up here? Everything you&apos;ve answered so far is
+          saved.
         </p>
         <div className="mt-5 flex flex-wrap justify-end gap-2">
           <Button
@@ -766,7 +772,7 @@ export function ChatFlow({
               onGenerate();
             }}
           >
-            Yes, generate
+            Yes, finish →
           </Button>
         </div>
       </Modal>

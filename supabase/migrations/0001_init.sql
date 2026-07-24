@@ -48,13 +48,13 @@ create table public.generations (
 create index generations_job_idx on public.generations (job_id, revision_number desc);
 
 -- ============================================================
--- purchases: one purchase per job (Standard $10 / Premium $15)
+-- purchases: one purchase per job (Base $2 / Job Match $3 / Full Prep $5)
 -- ============================================================
 create table public.purchases (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users (id) on delete cascade,
   job_id uuid not null references public.jobs (id) on delete cascade,
-  tier text not null check (tier in ('standard', 'premium')),
+  tier text not null check (tier in ('base', 'match', 'full')),
   status text not null default 'pending', -- pending | paid
   amount_cents int not null default 0,
   stripe_session_id text,

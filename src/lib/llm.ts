@@ -142,10 +142,25 @@ async function geminiRequestOnce(
     return { ok: false, status: res.status, body: await res.text() };
   }
   const data = await res.json();
-  const text: string = (data.candidates?.[0]?.content?.parts ?? [])
+  const cand = data.candidates?.[0];
+  const finishReason: string | undefined = cand?.finishReason;
+  const text: string = (cand?.content?.parts ?? [])
     .map((p: { text?: string }) => p.text ?? "")
     .join("");
-  if (!text) return { ok: false, status: 0, body: "empty response" };
+  if (!text) {
+    return {
+      ok: false,
+      status: 0,
+      body: `empty response (finishReason=${finishReason ?? "?"})`,
+    };
+  }
+  // A non-STOP finish (usually MAX_TOKENS) means the JSON was cut off mid-
+  // stream — log it so the downstream parse failure is diagnosable.
+  if (finishReason && finishReason !== "STOP") {
+    console.error(
+      `[gemini] finishReason=${finishReason} model=${model} chars=${text.length}`
+    );
+  }
   // Defensive: strip accidental markdown fences.
   return {
     ok: true,
@@ -184,6 +199,67 @@ async function geminiRequest(
   throw new Error(`Gemini API error ${last.status}: ${last.body.slice(0, 300)}`);
 }
 
+/**
+ * Parse JSON that may arrive wrapped in prose or trailing junk: try a direct
+ * parse first, then fall back to the outermost {…} / […] slice so a stray
+ * sentence around otherwise-valid JSON no longer fails the whole generation.
+ */
+function parseJsonLoose(text: string): unknown {
+  const candidates: string[] = [text];
+  const start = text.search(/[[{]/);
+  const end = Math.max(text.lastIndexOf("}"), text.lastIndexOf("]"));
+  if (start >= 0 && end > start) candidates.push(text.slice(start, end + 1));
+  // Last resort: re-escape raw control characters inside string literals —
+  // Gemini occasionally drops a literal newline into a bullet, which makes an
+  // otherwise complete document unparseable.
+  candidates.push(repairJsonControlChars(candidates[candidates.length - 1]));
+
+  let lastErr: unknown = new Error("no JSON object found in response");
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * Escapes raw control characters that appear INSIDE JSON string literals
+ * (newlines, tabs, stray 0x00-0x1F), leaving structure untouched.
+ */
+function repairJsonControlChars(text: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) {
+      out += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      out += ch;
+      continue;
+    }
+    if (inString && ch.charCodeAt(0) < 0x20) {
+      out +=
+        ch === "\n" ? "\\n" : ch === "\r" ? "\\r" : ch === "\t" ? "\\t" : "";
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
 async function geminiCall<T>(opts: StructuredCallOpts<T>): Promise<T> {
   const jsonSchema = z.toJSONSchema(opts.schema, { target: "draft-7" });
   const basePrompt =
@@ -203,14 +279,23 @@ async function geminiCall<T>(opts: StructuredCallOpts<T>): Promise<T> {
           `Return corrected JSON that strictly matches the schema.`;
     const text = await geminiRequest(opts.system, prompt, maxTokens);
     try {
-      const parsed = opts.schema.safeParse(JSON.parse(text));
+      const parsed = opts.schema.safeParse(parseJsonLoose(text));
       if (parsed.success) return parsed.data;
       lastError = parsed.error.issues
         .slice(0, 5)
         .map((i) => `${i.path.join(".")}: ${i.message}`)
         .join("; ");
-    } catch {
+    } catch (e) {
       lastError = "response was not valid JSON";
+      // Pinpoint the offending character so the defect is diagnosable.
+      const msg = e instanceof Error ? e.message : String(e);
+      const pos = Number(/position (\d+)/.exec(msg)?.[1] ?? -1);
+      const around =
+        pos >= 0 ? text.slice(Math.max(0, pos - 140), pos + 140) : "";
+      console.error(
+        `[geminiCall] JSON.parse failed (${text.length} chars): ${msg}` +
+          (around ? `\n  context: …${around}…` : "")
+      );
     }
   }
   throw new Error(`AI returned invalid structured output (${lastError})`);
@@ -616,7 +701,7 @@ export async function generateTailoredCv(
     schema: GenerationResultSchema,
     toolName: "save_tailored_cv",
     toolDescription: "Save the tailored one-page CV and its diff report.",
-    maxTokens: 16000,
+    maxTokens: 32000,
   });
 
   // Layout validation: enforce the 1-page budget with one compression retry.
@@ -633,7 +718,7 @@ export async function generateTailoredCv(
       schema: GenerationResultSchema,
       toolName: "save_tailored_cv",
       toolDescription: "Save the compressed tailored CV and its diff report.",
-      maxTokens: 16000,
+      maxTokens: 32000,
     });
   }
 

@@ -539,7 +539,7 @@ export function CvRenderer({
     section: TailoredCv["sections"][number];
     si: number;
   }): ReactNode => (
-    <div key={section.id}>
+    <div key={section.id} data-cv-section={section.id}>
       <Editable
         as="h2"
         className={t.sectionTitle}
@@ -1154,7 +1154,7 @@ export function CvRenderer({
       n += 1;
       blocks.push({
         node: (
-          <div key={section.id}>
+          <div key={section.id} data-cv-section={section.id}>
             {cfg.label(section.title, n, si)}
             <div className={cfg.itemGap ?? "mt-[7px] space-y-2"}>
               {section.items.map((item, ii) => (

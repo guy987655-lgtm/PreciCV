@@ -12,10 +12,10 @@ const PROTECTED_PREFIXES = [
 export async function proxy(request: NextRequest) {
   // Not configured yet (fresh clone without .env.local): let pages through
   // so the landing page still renders.
-  if (
-    !process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-  ) {
+  const supabaseKey =
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !supabaseKey) {
     return NextResponse.next({ request });
   }
 
@@ -23,7 +23,7 @@ export async function proxy(request: NextRequest) {
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+    supabaseKey,
     {
       cookies: {
         getAll() {

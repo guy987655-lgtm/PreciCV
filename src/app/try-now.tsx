@@ -705,8 +705,14 @@ export function TryNow() {
       setShowRegenConfirm(true);
       return;
     }
+    // Freemium gate: guests register BEFORE seeing results. Their profile +
+    // answers + JD are stashed and imported into Supabase after signup, which
+    // lands them on the job's pricing/free-sample page (see /continue).
+    if (!meta.registered) {
+      goToSignup("questions_register");
+      return;
+    }
     goTo("gate");
-    if (!meta.registered && !results && !generateBusy) generateNow();
   }
 
   /** Confirmed regenerate: archive the finished flow as its own History row
@@ -1322,6 +1328,7 @@ export function TryNow() {
           />
           <ChatFlow
             state={state}
+            registered={meta.registered}
             onUpdateMcq={updateMcqAnswer}
             onSkipMcq={(id) => setMcqSkipped(id, true)}
             onAnswerOpen={answerOpen}
@@ -1400,6 +1407,17 @@ export function TryNow() {
 
       {state.step === "gate" && !meta.registered && results && (
         <div className="flex flex-col gap-6">
+          {/* Register-to-save gate — persists this run into the user's account
+              (Supabase) via /continue → /api/try/import. */}
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border-[1.5px] border-green-100 bg-green-50 px-5 py-4 text-[14.5px] text-accent-deep print:hidden">
+            <p>
+              <strong>Love your new CV?</strong> Register free to save it to
+              your account and unlock job-by-job tailoring.
+            </p>
+            <Button size="md" onClick={() => goToSignup("results_register")}>
+              Register free to save →
+            </Button>
+          </div>
           {/* ---- 1. Tailored CV ---- */}
           <div>
             <div className="text-center">

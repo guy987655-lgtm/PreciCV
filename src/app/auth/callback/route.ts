@@ -18,7 +18,11 @@ export async function GET(request: Request) {
           .select("onboarded")
           .eq("user_id", data.user.id)
           .maybeSingle();
-        const dest = profile?.onboarded ? next : "/onboarding";
+        // Funnel signups carry next=/continue (which imports the stashed
+        // profile and sets onboarded); only cold signups with no funnel in
+        // progress fall back to the /onboarding wizard.
+        const dest =
+          profile?.onboarded || next === "/continue" ? next : "/onboarding";
         return NextResponse.redirect(`${origin}${dest}`);
       }
       return NextResponse.redirect(`${origin}${next}`);

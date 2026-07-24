@@ -75,32 +75,73 @@ type Props = {
 };
 
 /**
- * Free (registered, non-paying) users get a deliberately limited comparison:
- * education / skills in full, key points from a single role, and everything
- * else hidden behind the paywall.
+ * The free sample shows the WHOLE tailored CV, but its lower half is blurred
+ * behind a watermark — a real teaser that reads clearly at the top (name,
+ * summary, first role) and locks the rest until purchase (SampleLockOverlay).
  */
-function limitSampleCv(cv: TailoredCv): { cv: TailoredCv; hidden: string[] } {
-  const sections: TailoredCv["sections"] = [];
-  const hidden: string[] = [];
-  let roleShown = false;
-  for (const s of cv.sections) {
-    const name = `${s.id} ${s.title}`.toLowerCase();
-    if (/educ|skill|cert|lang/.test(name)) {
-      sections.push(s);
-    } else if (!roleShown && /exp|work|employ|career/.test(name)) {
-      sections.push({ ...s, items: s.items.slice(0, 1) });
-      roleShown = true;
-      if (s.items.length > 1) hidden.push(`${s.items.length - 1} more roles`);
-    } else {
-      hidden.push(s.title || s.id);
-    }
-  }
-  // Fallback: if no section matched the heuristics, show the first one only.
-  if (sections.length === 0 && cv.sections.length > 0) {
-    sections.push(cv.sections[0]);
-    hidden.push(...cv.sections.slice(1).map((s) => s.title || s.id));
-  }
-  return { cv: { ...cv, sections }, hidden };
+
+/**
+ * Blurs the sample CV from `topPct` downward — measured to land halfway
+ * through Experience, so its top half reads clearly and the rest is locked.
+ */
+function SampleLockOverlay({ topPct }: { topPct: number }) {
+  return (
+    <div className="pointer-events-none absolute inset-0 z-20 print:hidden">
+      <div
+        className="absolute inset-x-0 bottom-0"
+        style={{
+          top: `${topPct}%`,
+          backdropFilter: "blur(6px)",
+          WebkitBackdropFilter: "blur(6px)",
+          maskImage: "linear-gradient(to bottom, transparent 0%, black 15%)",
+          WebkitMaskImage: "linear-gradient(to bottom, transparent 0%, black 15%)",
+          background:
+            "linear-gradient(to bottom, rgba(248,250,252,0) 0%, rgba(248,250,252,0.5) 60%, rgba(248,250,252,0.72) 100%)",
+        }}
+      />
+      <div className="absolute inset-x-0 bottom-7 flex justify-center">
+        <span className="rounded-full bg-slate-900/85 px-4 py-2 text-sm font-semibold text-white shadow-lg">
+          🔒 Unlock to read every section
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Free-sample teaser list: the first `clear` items read normally, the rest
+ * render blurred + unselectable so the value is visible but locked.
+ */
+function TeaserList({
+  items,
+  clear = 1,
+  sample,
+}: {
+  items: string[];
+  clear?: number;
+  sample: boolean;
+}) {
+  const shown = sample ? items.slice(0, clear) : items;
+  const blurred = sample ? items.slice(clear) : [];
+  return (
+    <>
+      <ul className="mt-1 list-disc pl-4 text-sm text-slate-600">
+        {shown.map((x, i) => (
+          <li key={i}>{x}</li>
+        ))}
+      </ul>
+      {blurred.length > 0 && (
+        <ul
+          aria-hidden
+          className="mt-0.5 list-disc select-none pl-4 text-sm text-slate-600 blur-[4px]"
+        >
+          {blurred.map((x, i) => (
+            <li key={i}>{x}</li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
 }
 
 /** Diagonal repeated watermark for the locked free-sample preview. */
@@ -131,7 +172,11 @@ export function JobWorkspace({
   const router = useRouter();
   const [generation, setGeneration] = useState(initialGen);
   const [sampleLeft, setSampleLeft] = useState(freeSampleAvailable);
-  const [busy, setBusy] = useState<"" | "checkout" | "generate" | "revise">("");
+  // Start in the generating state when we'll auto-run the sample on arrival,
+  // so the loading spinner shows immediately (no flash of the intro card).
+  const [busy, setBusy] = useState<"" | "checkout" | "generate" | "revise">(
+    freeSampleAvailable && !initialGen && !purchase ? "generate" : ""
+  );
   const [error, setError] = useState("");
   const [redFlagModal, setRedFlagModal] = useState(false);
   const [pendingSample, setPendingSample] = useState(false);
@@ -162,6 +207,9 @@ export function JobWorkspace({
   const [rewritesUsed, setRewritesUsed] = useState(purchase?.rewritesUsed ?? 0);
   const [regensUsed, setRegensUsed] = useState(purchase?.regensUsed ?? 0);
   const cvPreviewRef = useRef<HTMLDivElement>(null);
+  // The scaled CV sheet — measured to start the free-sample blur mid-Experience.
+  const cvSheetRef = useRef<HTMLDivElement>(null);
+  const [blurTopPct, setBlurTopPct] = useState(42);
   // "Refresh report" scrolls here and fades it while rebuilding (Topic 8).
   const reportSectionsRef = useRef<HTMLDivElement>(null);
   // §2.2 — lastSavedState snapshot taken on entering Edit Mode; isDirty
@@ -207,15 +255,8 @@ export function JobWorkspace({
 
   const hits = job.dealbreakerHits;
   const isSample = Boolean(generation?.isSample);
-  const sampleView = generation && isSample ? limitSampleCv(generation.cv) : null;
-  const visibleChanges = generation
-    ? isSample
-      ? generation.diff.changes.slice(0, 3)
-      : generation.diff.changes
-    : [];
-  const hiddenChangeCount = generation
-    ? generation.diff.changes.length - visibleChanges.length
-    : 0;
+  // Free sample keeps the first change readable; the rest render blurred.
+  const SAMPLE_CLEAR_CHANGES = 1;
 
   /* ---------------- payment ---------------- */
   async function checkout(tier: TierId) {
@@ -293,6 +334,51 @@ export function JobWorkspace({
       setBusy("");
     }
   }
+
+  // Free users see their result immediately: auto-run the one-time sample on
+  // arrival — no manual click. Runs once; a failure falls back to the button.
+  const autoSampleTried = useRef(false);
+  useEffect(() => {
+    if (
+      freeSampleAvailable &&
+      !generation &&
+      !purchase &&
+      !autoSampleTried.current
+    ) {
+      autoSampleTried.current = true;
+      generate(false, true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Place the sample blur halfway down the Experience section: its top half
+  // stays readable, everything below it is locked. Falls back to a sensible
+  // percentage when a design doesn't tag its sections.
+  useEffect(() => {
+    if (!isSample) return;
+    const measure = () => {
+      const sheet = cvSheetRef.current;
+      if (!sheet) return;
+      const sheetRect = sheet.getBoundingClientRect();
+      if (sheetRect.height === 0) return;
+      const exp = Array.from(
+        sheet.querySelectorAll<HTMLElement>("[data-cv-section]")
+      ).find((n) => /exp|work|employ|career/i.test(n.dataset.cvSection ?? ""));
+      if (!exp) return;
+      const expRect = exp.getBoundingClientRect();
+      const midY = expRect.top - sheetRect.top + expRect.height / 2;
+      setBlurTopPct(
+        Math.min(85, Math.max(18, (midY / sheetRect.height) * 100))
+      );
+    };
+    // Let the renderer's dynamic page-fill settle before measuring.
+    const t = setTimeout(measure, 220);
+    window.addEventListener("resize", measure);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener("resize", measure);
+    };
+  }, [isSample, generation?.cv, generation?.template, cvTheme, splitView]);
 
   /* ---------------- AI revisions (premium) ---------------- */
   async function revise() {
@@ -417,8 +503,10 @@ export function JobWorkspace({
   }, [printRequest, reportBusy]);
 
   async function setTemplate(t: CvTemplate) {
-    if (!generation || isSample) return;
+    if (!generation) return;
     setGeneration({ ...generation, template: t });
+    // Free samples may taste every design, but never persist the choice.
+    if (isSample) return;
     await fetch(`/api/generations/${generation.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -582,8 +670,8 @@ export function JobWorkspace({
     <main className="mx-auto max-w-[1400px] px-4 py-8">
       <header className="mb-6 flex flex-wrap items-center justify-between gap-3 print:hidden">
         <div>
-          <Link href="/dashboard" className="text-sm text-indigo-600 hover:underline">
-            ← Dashboard
+          <Link href="/" className="text-sm text-indigo-600 hover:underline">
+            SpeCV
           </Link>
           <h1 className="text-xl font-bold text-slate-900">
             {job.title || "Tailored CV"}
@@ -608,7 +696,28 @@ export function JobWorkspace({
             )}
           </div>
         )}
-        {generation && isSample && <Badge tone="amber">Free sample — preview only</Badge>}
+        {generation && isSample && (
+          <div className="flex items-center gap-3">
+            <Badge tone="amber">Free sample — preview only</Badge>
+            <Button
+              size="md"
+              onClick={() => {
+                trackButtonClick({
+                  button_name: "sample_unlock",
+                  action: "navigate",
+                  button_text: "Unlock full version",
+                  click_source: "job_workspace",
+                  job_id: job.id,
+                });
+                document
+                  .getElementById("unlock-pricing")
+                  ?.scrollIntoView({ behavior: "smooth", block: "start" });
+              }}
+            >
+              Unlock full version →
+            </Button>
+          </div>
+        )}
       </header>
 
       {/* Approval gate: review & edit first, files unlock on approval */}
@@ -668,36 +777,51 @@ export function JobWorkspace({
         </div>
       )}
 
-      {/* State 1: nothing generated yet */}
+      {/* State 1: nothing generated yet — free users auto-generate the sample
+          on arrival (mount effect above); a clean spinner shows meanwhile and
+          the manual card is only the post-failure fallback. */}
       {!purchase && !generation && (
         <div className="mx-auto max-w-3xl space-y-6 print:hidden">
-          {sampleLeft && (
-            <Card className="border-2 border-emerald-300 bg-emerald-50/40 p-6 text-center">
-              <Badge tone="green">One-time free sample</Badge>
-              <h2 className="mt-2 text-lg font-semibold text-slate-900">
-                See it before you pay
-              </h2>
-              <p className="mx-auto mt-1 max-w-md text-sm text-slate-600">
-                Generate a real tailored CV for this job, shown as a
-                watermarked preview (not downloadable). You can use this
-                once per account.
-              </p>
-              <Button
-                size="lg"
-                variant="success"
-                className="mt-4"
-                disabled={busy === "generate"}
-                onClick={() => generate(false, true)}
-              >
-                {busy === "generate" ? (
-                  <Spinner label="Preparing your sample… (30–90 seconds)" />
-                ) : (
-                  "Generate my free sample"
-                )}
-              </Button>
+          {busy === "generate" ? (
+            <Card className="p-10 text-center">
+              <Spinner label="Building your free preview… (30–90 seconds)" />
             </Card>
+          ) : (
+            <>
+              {sampleLeft && (
+                <Card className="border-2 border-emerald-300 bg-emerald-50/40 p-6 text-center">
+                  <Badge tone="green">One-time free sample</Badge>
+                  <h2 className="mt-2 text-lg font-semibold text-slate-900">
+                    See it before you pay
+                  </h2>
+                  <p className="mx-auto mt-1 max-w-md text-sm text-slate-600">
+                    Generate a real tailored CV for this job, shown as a
+                    watermarked preview (not downloadable). You can use this
+                    once per account.
+                  </p>
+                  <Button
+                    size="lg"
+                    variant="success"
+                    className="mt-4"
+                    onClick={() => generate(false, true)}
+                  >
+                    Generate my free sample
+                  </Button>
+                </Card>
+              )}
+              {/* Explains the otherwise-bare pricing view for users whose
+                  one free preview was already spent on another job. */}
+              {!sampleLeft && (
+                <Card className="p-5 text-center">
+                  <p className="text-sm text-slate-600">
+                    You&apos;ve already used your one-time free preview on
+                    another job. Choose a tier below to generate this one.
+                  </p>
+                </Card>
+              )}
+              {tierCards}
+            </>
           )}
-          {tierCards}
         </div>
       )}
 
@@ -769,39 +893,36 @@ export function JobWorkspace({
                   <h3 className="mt-4 text-xs font-semibold uppercase text-emerald-700">
                     Strengths
                   </h3>
-                  <ul className="mt-1 list-disc pl-4 text-sm text-slate-600">
-                    {generation.diff.gapAnalysis.strengths.map((s, i) => (
-                      <li key={i}>{s}</li>
-                    ))}
-                  </ul>
+                  <TeaserList
+                    items={generation.diff.gapAnalysis.strengths}
+                    sample={isSample}
+                  />
                 </>
               )}
-              {!isSample && generation.diff.gapAnalysis.gaps.length > 0 && (
+              {generation.diff.gapAnalysis.gaps.length > 0 && (
                 <>
                   <h3 className="mt-3 text-xs font-semibold uppercase text-red-700">Gaps</h3>
-                  <ul className="mt-1 list-disc pl-4 text-sm text-slate-600">
-                    {generation.diff.gapAnalysis.gaps.map((g, i) => (
-                      <li key={i}>{g}</li>
-                    ))}
-                  </ul>
+                  <TeaserList
+                    items={generation.diff.gapAnalysis.gaps}
+                    sample={isSample}
+                  />
                 </>
               )}
-              {!isSample && generation.diff.gapAnalysis.recommendations.length > 0 && (
+              {generation.diff.gapAnalysis.recommendations.length > 0 && (
                 <>
                   <h3 className="mt-3 text-xs font-semibold uppercase text-indigo-700">
                     Recommendations
                   </h3>
-                  <ul className="mt-1 list-disc pl-4 text-sm text-slate-600">
-                    {generation.diff.gapAnalysis.recommendations.map((r, i) => (
-                      <li key={i}>{r}</li>
-                    ))}
-                  </ul>
+                  <TeaserList
+                    items={generation.diff.gapAnalysis.recommendations}
+                    sample={isSample}
+                  />
                 </>
               )}
               {isSample && (
                 <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
-                  🔒 The gap analysis and concrete recommendations are part of
-                  the full report.
+                  🔒 Unlock the full report to read every strength, gap and
+                  recommendation.
                 </p>
               )}
             </Card>
@@ -814,24 +935,33 @@ export function JobWorkspace({
                 )}
               </h2>
               <div className="mt-3 space-y-3">
-                {visibleChanges.map((c, i) => (
-                  <div key={i} className="rounded-lg border border-slate-100 p-3 text-sm">
-                    <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-                      {c.section} · {c.type}
+                {generation.diff.changes.map((c, i) => {
+                  const locked = isSample && i >= SAMPLE_CLEAR_CHANGES;
+                  return (
+                    <div
+                      key={i}
+                      aria-hidden={locked}
+                      className={`rounded-lg border border-slate-100 p-3 text-sm ${
+                        locked ? "pointer-events-none select-none blur-[4px]" : ""
+                      }`}
+                    >
+                      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                        {c.section} · {c.type}
+                      </p>
+                      <DiffChangeLines change={c} />
+                      {c.reason && (
+                        <p className="mt-1.5 text-xs italic text-slate-500">{c.reason}</p>
+                      )}
+                    </div>
+                  );
+                })}
+                {isSample &&
+                  generation.diff.changes.length > SAMPLE_CLEAR_CHANGES && (
+                    <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                      🔒 Unlock to read all {generation.diff.changes.length}{" "}
+                      changes.
                     </p>
-                    <DiffChangeLines change={c} />
-                    {c.reason && (
-                      <p className="mt-1.5 text-xs italic text-slate-500">{c.reason}</p>
-                    )}
-                  </div>
-                ))}
-                {hiddenChangeCount > 0 && (
-                  <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
-                    🔒 {hiddenChangeCount} more change
-                    {hiddenChangeCount > 1 ? "s" : ""} in the full report —
-                    unlock to see everything.
-                  </p>
-                )}
+                  )}
               </div>
             </Card>
 
@@ -858,36 +988,35 @@ export function JobWorkspace({
 
           {/* Right pane: the CV — editable when owned, watermarked when sample */}
           <div>
-            {/* Design catalog + preview controls (owned CVs only) */}
-            {!isSample && (
-              <div className="mb-3 flex flex-col gap-3 print:hidden">
-                <p className="text-xs font-semibold text-ink-faint">
-                  Choose a design
+            {/* Design catalog — owned CVs AND free samples, so preview users
+                can taste every design before paying. */}
+            <div className="mb-3 flex flex-col gap-3 print:hidden">
+              <p className="text-xs font-semibold text-ink-faint">
+                {isSample ? "Try any design — free preview" : "Choose a design"}
+              </p>
+              <TemplateCatalog
+                template={generation.template as CvTemplate}
+                onSelect={setTemplate}
+              />
+              {!isSample && reportStale && !editing && (
+                <p className="text-[11px] text-ink-faint">
+                  You edited your CV — the report refreshes automatically on
+                  export, or refresh it now.
                 </p>
-                <TemplateCatalog
-                  template={generation.template as CvTemplate}
-                  onSelect={setTemplate}
-                />
-                {reportStale && !editing && (
-                  <p className="text-[11px] text-ink-faint">
-                    You edited your CV — the report refreshes automatically on
-                    export, or refresh it now.
-                  </p>
-                )}
-                {editing && (
-                  <p className="text-[11px] font-semibold text-accent">
-                    ✎ Edit Mode — click any text to edit; highlight a phrase for
-                    an AI rewrite ({Math.max(0, maxRewrites - rewritesUsed)}{" "}
-                    left). Done saves and exits.
-                  </p>
-                )}
-              </div>
-            )}
+              )}
+              {!isSample && editing && (
+                <p className="text-[11px] font-semibold text-accent">
+                  ✎ Edit Mode — click any text to edit; highlight a phrase for
+                  an AI rewrite ({Math.max(0, maxRewrites - rewritesUsed)}{" "}
+                  left). Done saves and exits.
+                </p>
+              )}
+            </div>
             {isSample && (
               <p className="mb-2 text-xs text-amber-700 print:hidden">
-                🔒 Limited watermarked preview — the free sample shows your
-                education, skills and one role only. Purchase this job to see
-                the complete CV, edit it and download.
+                🔒 Watermarked preview — the top of your tailored CV is shown in
+                full; the rest is blurred. Purchase this job to unlock the
+                complete CV, edit it and download.
               </p>
             )}
             <div
@@ -898,7 +1027,7 @@ export function JobWorkspace({
               } ${isSample ? "print:hidden" : "print:border-0"}`}
             >
               {/* Operational controls, anchored to the preview (PRD Topic 3) */}
-              {!isSample && (
+              {!isSample ? (
                 <CvToolbar>
                   <EditToolbar
                     editing={editing}
@@ -931,6 +1060,17 @@ export function JobWorkspace({
                   {/* View settings grouped together (PRD v2 Topic 5). */}
                   <ThemeToggle theme={cvTheme} onChange={setCvTheme} />
                 </CvToolbar>
+              ) : (
+                /* Free sample: design + light/dark tasters only — no editing,
+                   AI actions or export. */
+                <CvToolbar>
+                  <SplitToggle
+                    template={generation.template as CvTemplate}
+                    split={splitView}
+                    onToggle={setSplitView}
+                  />
+                  <ThemeToggle theme={cvTheme} onChange={setCvTheme} />
+                </CvToolbar>
               )}
               <div
                 ref={cvPreviewRef}
@@ -938,11 +1078,15 @@ export function JobWorkspace({
                   isSample ? "select-none" : "print:bg-white print:p-0"
                 }`}
               >
-                <div className="relative origin-top-left scale-[0.85] lg:scale-100">
+                <div
+                  ref={cvSheetRef}
+                  className="relative origin-top-left scale-[0.85] lg:scale-100"
+                >
                 {isSample && <SampleWatermark />}
-                <div className={isSample ? "pointer-events-none" : ""}>
+                {isSample && <SampleLockOverlay topPct={blurTopPct} />}
+                <div className={isSample ? "pointer-events-none select-none" : ""}>
                   <CvRenderer
-                    cv={sampleView ? sampleView.cv : generation.cv}
+                    cv={generation.cv}
                     template={generation.template as CvTemplate}
                     theme={cvTheme}
                     split={effectiveSplit(
@@ -965,12 +1109,6 @@ export function JobWorkspace({
                 onRewrite={handleRewrite}
               />
             )}
-            {sampleView && sampleView.hidden.length > 0 && (
-              <p className="mt-2 text-xs text-amber-700 print:hidden">
-                🔒 Hidden in the free sample: {sampleView.hidden.join(", ")}.
-              </p>
-            )}
-
             {/* Version history (milestone snapshots) */}
             {!isSample && versions.length > 1 && (
               <Card className="mt-4 p-5 print:hidden">
@@ -978,9 +1116,9 @@ export function JobWorkspace({
               </Card>
             )}
 
-            {/* Sample → conversion CTA */}
+            {/* Sample → conversion CTA (pricing) */}
             {isSample && !purchase && (
-              <div className="mt-6 print:hidden">
+              <div id="unlock-pricing" className="mt-6 scroll-mt-24 print:hidden">
                 <h2 className="mb-3 text-center text-lg font-semibold text-slate-900">
                   Like what you see? Unlock the full version
                 </h2>

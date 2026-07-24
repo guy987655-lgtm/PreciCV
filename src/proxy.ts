@@ -57,6 +57,15 @@ export async function proxy(request: NextRequest) {
   }
 
   if (user && path === "/login") {
+    // An already-signed-in user redoing the funnel arrives with
+    // ?next=/continue — honour it, or they'd be dumped on /dashboard and
+    // their new job (and its free sample) would never be created. Only
+    // same-origin relative paths, so this can't become an open redirect.
+    const next = request.nextUrl.searchParams.get("next");
+    const safeNext = next && next.startsWith("/") && !next.startsWith("//");
+    if (safeNext) {
+      return NextResponse.redirect(new URL(next, request.url));
+    }
     const url = request.nextUrl.clone();
     url.pathname = "/dashboard";
     url.search = "";

@@ -14,13 +14,13 @@ const BodySchema = z.object({
   jobId: z.string().uuid(),
   /** User explicitly acknowledged dealbreaker warnings (PRD §4.3 modal). */
   acknowledgeRedFlags: z.boolean().optional().default(false),
-  /** Use the one-time free sample instead of a paid credit. */
+  /** Use this job's free sample instead of a paid credit. */
   useFreeSample: z.boolean().optional().default(false),
 });
 
 /**
  * The heavy tailoring call. Requires a paid purchase for this job_id, OR
- * the user's one-time free sample (result is watermarked + locked).
+ * this job's free sample (one per job; result is watermarked + locked).
  * If a sample generation already exists and the job is now paid, the
  * sample is unlocked in place — no extra LLM call.
  */
@@ -63,22 +63,16 @@ export async function POST(request: Request) {
 
   const { data: profileRow } = await supabase
     .from("profiles")
-    .select("master_data, free_sample_used")
+    .select("master_data")
     .eq("user_id", user.id)
     .single();
 
-  // Entitlement: paid purchase, or the one-time free sample.
+  // Entitlement: paid purchase, or this job's free sample. The sample is one
+  // PER JOB, so there is no account-wide check here — the "already generated"
+  // guard below (one revision-0 row per job) is what limits it to one.
   const asSample = !purchase;
-  if (asSample) {
-    if (!useFreeSample) {
-      return NextResponse.json({ error: "payment_required" }, { status: 402 });
-    }
-    if (profileRow?.free_sample_used) {
-      return NextResponse.json(
-        { error: "free_sample_used", message: "Your one-time free sample was already used." },
-        { status: 403 }
-      );
-    }
+  if (asSample && !useFreeSample) {
+    return NextResponse.json({ error: "payment_required" }, { status: 402 });
   }
 
   const hits = (job.dealbreaker_hits as unknown[]) ?? [];
@@ -141,6 +135,9 @@ export async function POST(request: Request) {
   }
 
   if (asSample) {
+    // Informational only now that samples are per-job: marks that this user
+    // has tasted the sample at least once (funnel analytics). Nothing gates
+    // on it — kept so a lifetime cap could be reinstated without a backfill.
     await supabase
       .from("profiles")
       .update({ free_sample_used: true })

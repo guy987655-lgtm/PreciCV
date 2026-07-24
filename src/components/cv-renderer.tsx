@@ -616,7 +616,7 @@ export function CvRenderer({
   );
 
   const renderSkills = (): ReactNode => (
-    <div key="__skills">
+    <div key="__skills" data-cv-section="skills">
       <h2 className={t.sectionTitle} style={sectionTitleStyle}>
         Skills
       </h2>
@@ -820,7 +820,9 @@ export function CvRenderer({
                     />
                   ) : null}
                 </div>
-                <div style={{ paddingTop: 7 }}>
+                {/* Tagged per item: this design interleaves date and content
+                    cells, so a section is not one node the sample can band. */}
+                <div data-cv-section={section.id} style={{ paddingTop: 7 }}>
                   {ledgerTitle(item, si, ii)}
                   {ledgerCompany(item, si, ii)}
                   {ledgerBullets(item, si, ii)}
@@ -831,6 +833,7 @@ export function CvRenderer({
         ))}
         {cv.skills.length > 0 && (
           <div
+            data-cv-section="skills"
             style={{
               gridColumn: "1 / -1",
               borderTop: `1px solid ${pal.rule}`,
@@ -854,7 +857,7 @@ export function CvRenderer({
     section: (typeof sections)[number]["section"],
     si: number
   ): ReactNode => (
-    <div key={section.id}>
+    <div key={section.id} data-cv-section={section.id}>
       <Editable
         as="h2"
         className={ledgerLabelCls}
@@ -897,7 +900,7 @@ export function CvRenderer({
     if (cv.skills.length > 0) {
       blocks.push({
         node: (
-          <div key="__skills">
+          <div key="__skills" data-cv-section="skills">
             <h2
               className={ledgerLabelCls}
               style={{ color: accent, borderTop: `1px solid ${pal.rule}`, paddingTop: 8 }}
@@ -1142,7 +1145,7 @@ export function CvRenderer({
       n += 1;
       blocks.push({
         node: (
-          <div key="__summary">
+          <div key="__summary" data-cv-section="summary">
             {cfg.label("Summary", n)}
             <div className="mt-[6px]">{summaryNode(cfg.summaryCls)}</div>
           </div>
@@ -1177,7 +1180,7 @@ export function CvRenderer({
       n += 1;
       blocks.push({
         node: (
-          <div key="__skills">
+          <div key="__skills" data-cv-section="skills">
             {cfg.label("Skills", n)}
             <div className="mt-[7px]">{cfg.skillsNode}</div>
           </div>
@@ -1373,7 +1376,9 @@ export function CvRenderer({
         {sections.map(({ section, si }) => (
           <Fragment key={section.id}>
             {rowLabel(section.title, si)}
-            <div>
+            {/* The content cell carries the tag: the label sits in its own
+                grid column, so the sample blur bands the text only. */}
+            <div data-cv-section={section.id}>
               {section.items.map((it, ii) =>
                 item(it, si, ii, ii === section.items.length - 1)
               )}
@@ -1383,7 +1388,9 @@ export function CvRenderer({
         {cv.skills.length > 0 && (
           <>
             {rowLabel("Skills")}
-            <div>{skillInline("text-[10.5px] leading-[1.7]")}</div>
+            <div data-cv-section="skills">
+              {skillInline("text-[10.5px] leading-[1.7]")}
+            </div>
           </>
         )}
       </div>
@@ -1956,7 +1963,7 @@ export function CvRenderer({
           </div>
         )}
         {sections.map(({ section, si }) => (
-          <div key={section.id}>
+          <div key={section.id} data-cv-section={section.id}>
             {label(section.title, si)}
             {section.items.map((it, ii) => (
               <div key={it.id} className="mt-[7px]">
@@ -2070,7 +2077,7 @@ export function CvRenderer({
             ) : (
               <>
                 {cv.summary && (
-                  <div className="mt-1">
+                  <div className="mt-1" data-cv-section="summary">
                     <h2 className={t.sectionTitle} style={sectionTitleStyle}>
                       Summary
                     </h2>

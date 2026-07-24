@@ -75,33 +75,47 @@ type Props = {
 };
 
 /**
- * The free sample shows the WHOLE tailored CV, but its lower half is blurred
- * behind a watermark — a real teaser that reads clearly at the top (name,
- * summary, first role) and locks the rest until purchase (SampleLockOverlay).
+ * The free sample shows the WHOLE tailored CV, but every section is cut in
+ * half behind a watermark: the top half reads clearly, the bottom half is
+ * blurred until purchase (SampleLockOverlay). Splitting per section rather
+ * than once down the page keeps the teaser honest in every layout — a
+ * two-column design used to leave nearly everything readable.
  */
 
-/**
- * Blurs the sample CV from `topPct` downward — measured to land halfway
- * through Experience, so its top half reads clearly and the rest is locked.
- */
-function SampleLockOverlay({ topPct }: { topPct: number }) {
+/** One blurred band, as percentages of the CV sheet it is laid over. */
+type BlurBand = { top: number; left: number; width: number; height: number };
+
+/** Sheet has no measurable sections (custom layout): blur its lower half. */
+const FALLBACK_BANDS: BlurBand[] = [
+  { top: 42, left: 0, width: 100, height: 58 },
+];
+
+/** Blurs the bottom half of every measured section of the sample CV. */
+function SampleLockOverlay({ bands }: { bands: BlurBand[] }) {
   return (
     <div className="pointer-events-none absolute inset-0 z-20 print:hidden">
-      <div
-        className="absolute inset-x-0 bottom-0"
-        style={{
-          top: `${topPct}%`,
-          backdropFilter: "blur(6px)",
-          WebkitBackdropFilter: "blur(6px)",
-          maskImage: "linear-gradient(to bottom, transparent 0%, black 15%)",
-          WebkitMaskImage: "linear-gradient(to bottom, transparent 0%, black 15%)",
-          background:
-            "linear-gradient(to bottom, rgba(248,250,252,0) 0%, rgba(248,250,252,0.5) 60%, rgba(248,250,252,0.72) 100%)",
-        }}
-      />
+      {bands.map((b, i) => (
+        <div
+          key={i}
+          className="absolute"
+          style={{
+            top: `${b.top}%`,
+            left: `${b.left}%`,
+            width: `${b.width}%`,
+            height: `${b.height}%`,
+            backdropFilter: "blur(6px)",
+            WebkitBackdropFilter: "blur(6px)",
+            maskImage: "linear-gradient(to bottom, transparent 0%, black 30%)",
+            WebkitMaskImage:
+              "linear-gradient(to bottom, transparent 0%, black 30%)",
+            background:
+              "linear-gradient(to bottom, rgba(248,250,252,0) 0%, rgba(248,250,252,0.5) 60%, rgba(248,250,252,0.72) 100%)",
+          }}
+        />
+      ))}
       <div className="absolute inset-x-0 bottom-7 flex justify-center">
         <span className="rounded-full bg-slate-900/85 px-4 py-2 text-sm font-semibold text-white shadow-lg">
-          🔒 Unlock to read every section
+          🔒 Unlock to read every section in full
         </span>
       </div>
     </div>
@@ -171,7 +185,6 @@ export function JobWorkspace({
 }: Props) {
   const router = useRouter();
   const [generation, setGeneration] = useState(initialGen);
-  const [sampleLeft, setSampleLeft] = useState(freeSampleAvailable);
   // Start in the generating state when we'll auto-run the sample on arrival,
   // so the loading spinner shows immediately (no flash of the intro card).
   const [busy, setBusy] = useState<"" | "checkout" | "generate" | "revise">(
@@ -207,9 +220,9 @@ export function JobWorkspace({
   const [rewritesUsed, setRewritesUsed] = useState(purchase?.rewritesUsed ?? 0);
   const [regensUsed, setRegensUsed] = useState(purchase?.regensUsed ?? 0);
   const cvPreviewRef = useRef<HTMLDivElement>(null);
-  // The scaled CV sheet — measured to start the free-sample blur mid-Experience.
+  // The scaled CV sheet — measured to cut each section in half for the sample.
   const cvSheetRef = useRef<HTMLDivElement>(null);
-  const [blurTopPct, setBlurTopPct] = useState(42);
+  const [blurBands, setBlurBands] = useState<BlurBand[]>(FALLBACK_BANDS);
   // "Refresh report" scrolls here and fades it while rebuilding (Topic 8).
   const reportSectionsRef = useRef<HTMLDivElement>(null);
   // §2.2 — lastSavedState snapshot taken on entering Edit Mode; isDirty
@@ -326,7 +339,6 @@ export function JobWorkspace({
         revisionNumber: generation?.revisionNumber ?? 0,
         isSample: data.isSample ?? false,
       });
-      if (asSample) setSampleLeft(false);
       router.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong");
@@ -335,7 +347,7 @@ export function JobWorkspace({
     }
   }
 
-  // Free users see their result immediately: auto-run the one-time sample on
+  // Free users see their result immediately: auto-run this job's sample on
   // arrival — no manual click. Runs once; a failure falls back to the button.
   const autoSampleTried = useRef(false);
   useEffect(() => {
@@ -351,25 +363,34 @@ export function JobWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Place the sample blur halfway down the Experience section: its top half
-  // stays readable, everything below it is locked. Falls back to a sensible
-  // percentage when a design doesn't tag its sections.
+  // Cut every section of the sample in half: its top half stays readable, its
+  // bottom half is blurred. Measured per section (and per column, since each
+  // band carries its own left/width) so two-column designs lock as much as
+  // single-column ones. Falls back to one lower-half band when a design
+  // doesn't tag its sections.
   useEffect(() => {
     if (!isSample) return;
     const measure = () => {
       const sheet = cvSheetRef.current;
       if (!sheet) return;
       const sheetRect = sheet.getBoundingClientRect();
-      if (sheetRect.height === 0) return;
-      const exp = Array.from(
+      if (sheetRect.height === 0 || sheetRect.width === 0) return;
+      const bands = Array.from(
         sheet.querySelectorAll<HTMLElement>("[data-cv-section]")
-      ).find((n) => /exp|work|employ|career/i.test(n.dataset.cvSection ?? ""));
-      if (!exp) return;
-      const expRect = exp.getBoundingClientRect();
-      const midY = expRect.top - sheetRect.top + expRect.height / 2;
-      setBlurTopPct(
-        Math.min(85, Math.max(18, (midY / sheetRect.height) * 100))
-      );
+      )
+        .map((n) => {
+          const r = n.getBoundingClientRect();
+          const half = r.height / 2;
+          return {
+            top: ((r.top - sheetRect.top + half) / sheetRect.height) * 100,
+            left: ((r.left - sheetRect.left) / sheetRect.width) * 100,
+            width: (r.width / sheetRect.width) * 100,
+            height: (half / sheetRect.height) * 100,
+          };
+        })
+        // Skip slivers — a section too short to split reads as a smudge.
+        .filter((b) => b.height > 0.6 && b.width > 0);
+      setBlurBands(bands.length > 0 ? bands : FALLBACK_BANDS);
     };
     // Let the renderer's dynamic page-fill settle before measuring.
     const t = setTimeout(measure, 220);
@@ -788,16 +809,16 @@ export function JobWorkspace({
             </Card>
           ) : (
             <>
-              {sampleLeft && (
+              {freeSampleAvailable && (
                 <Card className="border-2 border-emerald-300 bg-emerald-50/40 p-6 text-center">
-                  <Badge tone="green">One-time free sample</Badge>
+                  <Badge tone="green">Free sample for this job</Badge>
                   <h2 className="mt-2 text-lg font-semibold text-slate-900">
                     See it before you pay
                   </h2>
                   <p className="mx-auto mt-1 max-w-md text-sm text-slate-600">
                     Generate a real tailored CV for this job, shown as a
-                    watermarked preview (not downloadable). You can use this
-                    once per account.
+                    watermarked preview (not downloadable). Every job you add
+                    gets one free preview.
                   </p>
                   <Button
                     size="lg"
@@ -807,16 +828,6 @@ export function JobWorkspace({
                   >
                     Generate my free sample
                   </Button>
-                </Card>
-              )}
-              {/* Explains the otherwise-bare pricing view for users whose
-                  one free preview was already spent on another job. */}
-              {!sampleLeft && (
-                <Card className="p-5 text-center">
-                  <p className="text-sm text-slate-600">
-                    You&apos;ve already used your one-time free preview on
-                    another job. Choose a tier below to generate this one.
-                  </p>
                 </Card>
               )}
               {tierCards}
@@ -992,11 +1003,14 @@ export function JobWorkspace({
                 can taste every design before paying. */}
             <div className="mb-3 flex flex-col gap-3 print:hidden">
               <p className="text-xs font-semibold text-ink-faint">
-                {isSample ? "Try any design — free preview" : "Choose a design"}
+                {isSample
+                  ? "Try 6 designs free — 🔒 unlock for the rest"
+                  : "Choose a design"}
               </p>
               <TemplateCatalog
                 template={generation.template as CvTemplate}
                 onSelect={setTemplate}
+                sample={isSample}
               />
               {!isSample && reportStale && !editing && (
                 <p className="text-[11px] text-ink-faint">
@@ -1014,9 +1028,9 @@ export function JobWorkspace({
             </div>
             {isSample && (
               <p className="mb-2 text-xs text-amber-700 print:hidden">
-                🔒 Watermarked preview — the top of your tailored CV is shown in
-                full; the rest is blurred. Purchase this job to unlock the
-                complete CV, edit it and download.
+                🔒 Watermarked preview — every section shows its first half;
+                the rest is blurred. Purchase this job to unlock the complete
+                CV, edit it and download.
               </p>
             )}
             <div
@@ -1083,7 +1097,7 @@ export function JobWorkspace({
                   className="relative origin-top-left scale-[0.85] lg:scale-100"
                 >
                 {isSample && <SampleWatermark />}
-                {isSample && <SampleLockOverlay topPct={blurTopPct} />}
+                {isSample && <SampleLockOverlay bands={blurBands} />}
                 <div className={isSample ? "pointer-events-none select-none" : ""}>
                   <CvRenderer
                     cv={generation.cv}
@@ -1164,7 +1178,7 @@ export function JobWorkspace({
           ))}
           <p className="pt-2 font-medium text-slate-800">
             {pendingSample
-              ? "Are you sure you want to use your one-time free sample on it?"
+              ? "Are you sure you want to use this job's free sample on it?"
               : "Are you sure you want to proceed and spend a credit?"}
           </p>
         </div>

@@ -49,13 +49,12 @@ export default async function JobPage({
     .limit(1)
     .maybeSingle();
 
-  const { data: profileRow } = await supabase
-    .from("profiles")
-    .select("free_sample_used")
-    .eq("user_id", user.id)
-    .maybeSingle();
-
   const tier = purchase?.tier as keyof typeof TIERS | undefined;
+
+  // One free sample PER JOB (it used to be one per account): every new job
+  // gets a taste. Available while this job is unpaid and not yet generated —
+  // the "one generation per job" rule is what caps it at one.
+  const freeSampleAvailable = !purchase && !generation;
 
   return (
     <JobWorkspace
@@ -96,7 +95,7 @@ export default async function JobPage({
             }
           : null
       }
-      freeSampleAvailable={!profileRow?.free_sample_used && !purchase}
+      freeSampleAvailable={freeSampleAvailable}
     />
   );
 }

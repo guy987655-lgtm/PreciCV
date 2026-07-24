@@ -153,3 +153,31 @@ export function recommendTemplates(jdText: string, limit = 4): CvTemplate[] {
   }
   return out.slice(0, limit);
 }
+
+/** Designs each catalog row opens up for a free-sample viewer. */
+export const SAMPLE_UNLOCKED_PER_ROW = 2;
+
+/**
+ * The designs a free sample may be viewed in: the first
+ * `SAMPLE_UNLOCKED_PER_ROW` of each catalog row, skipping any already taken
+ * by an earlier row — the recommended row is drawn from the other two, so
+ * without the skip the rows would overlap and yield fewer than six. Every
+ * other design is shown locked. Paid CVs use the whole catalog.
+ */
+export function sampleUnlockedTemplates(
+  recommended: CvTemplate[]
+): Set<CvTemplate> {
+  const byCategory = (c: TemplateCategory) =>
+    CV_TEMPLATES.filter((t) => CV_TEMPLATE_INFO[t].category === c);
+  const unlocked = new Set<CvTemplate>();
+  for (const row of [recommended, byCategory("classic"), byCategory("modern")]) {
+    let taken = 0;
+    for (const t of row) {
+      if (taken >= SAMPLE_UNLOCKED_PER_ROW) break;
+      if (unlocked.has(t)) continue;
+      unlocked.add(t);
+      taken += 1;
+    }
+  }
+  return unlocked;
+}

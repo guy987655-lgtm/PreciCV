@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { goHome, loadFunnel } from "@/lib/funnel";
 import { useSession } from "@/lib/use-session";
+import { createClient } from "@/lib/supabase/client";
 
 /**
  * The shared top bar.
@@ -58,6 +59,19 @@ export function Navbar() {
     { href: "/card", label: "My card" },
   ];
 
+  async function signOut() {
+    setMenuOpen(false);
+    try {
+      await createClient().auth.signOut();
+    } catch {
+      // Missing env or an already-dead session: fall through to the reload,
+      // which lands on the homepage as a guest either way.
+    }
+    // Full reload rather than router.push: it drops every cached server
+    // component holding the signed-in view.
+    window.location.href = "/";
+  }
+
   return (
     <nav className="mx-auto flex max-w-[1280px] items-center justify-between px-6 py-5 sm:px-14">
       <Link
@@ -105,6 +119,11 @@ export function Navbar() {
                 role="menu"
                 className="absolute right-0 z-50 mt-2 w-48 overflow-hidden rounded-2xl border border-border bg-card py-1 shadow-[0_12px_40px_rgba(30,43,36,0.18)]"
               >
+                {user?.email && (
+                  <p className="truncate border-b border-border px-4 pb-2 pt-1 text-[12.5px] text-ink-faint">
+                    {user.email}
+                  </p>
+                )}
                 {menuItems.map((m) => (
                   <Link
                     key={m.href}
@@ -118,6 +137,13 @@ export function Navbar() {
                     {m.label}
                   </Link>
                 ))}
+                <button
+                  role="menuitem"
+                  onClick={signOut}
+                  className="block w-full cursor-pointer border-t border-border px-4 py-2.5 text-left text-[14.5px] text-ink-soft transition-colors hover:bg-chip"
+                >
+                  Log out
+                </button>
               </div>
             )}
           </div>

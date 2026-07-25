@@ -347,11 +347,14 @@ export function JobWorkspace({
   }
 
   /* ---------------- generation (paid credit or free sample) --------- */
-  async function generate(acknowledged: boolean, asSample: boolean) {
+  async function generate(
+    acknowledged: boolean,
+    asSample: boolean
+  ): Promise<boolean> {
     if (hits.length > 0 && !acknowledged) {
       setPendingSample(asSample);
       setRedFlagModal(true);
-      return;
+      return false;
     }
     setRedFlagModal(false);
     setBusy("generate");
@@ -396,8 +399,10 @@ export function JobWorkspace({
         splitView: generation?.splitView,
       });
       router.refresh();
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong");
+      return false;
     } finally {
       setBusy("");
     }
@@ -410,13 +415,18 @@ export function JobWorkspace({
   const autoRunTried = useRef(false);
   useEffect(() => {
     if (generation || autoRunTried.current) return;
-    if (purchase) {
-      autoRunTried.current = true;
-      generate(false, false);
-    } else if (freeSampleAvailable) {
-      autoRunTried.current = true;
-      generate(false, true);
-    }
+    if (!purchase && !freeSampleAvailable) return;
+    autoRunTried.current = true;
+    const asSample = !purchase;
+    void (async () => {
+      // One silent retry: the model occasionally returns malformed JSON, and
+      // a single blip should not dump the user back onto a button after they
+      // finished the questions (or paid).
+      const ok = await generate(false, asSample);
+      // Red flags stop generation on purpose (the modal is waiting on the
+      // user) — that is not a failure to retry.
+      if (!ok && hits.length === 0) await generate(false, asSample);
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

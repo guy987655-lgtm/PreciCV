@@ -209,10 +209,16 @@ function parseJsonLoose(text: string): unknown {
   const start = text.search(/[[{]/);
   const end = Math.max(text.lastIndexOf("}"), text.lastIndexOf("]"));
   if (start >= 0 && end > start) candidates.push(text.slice(start, end + 1));
-  // Last resort: re-escape raw control characters inside string literals —
-  // Gemini occasionally drops a literal newline into a bullet, which makes an
+  // Re-escape raw control characters inside string literals — Gemini
+  // occasionally drops a literal newline into a bullet, which makes an
   // otherwise complete document unparseable.
   candidates.push(repairJsonControlChars(candidates[candidates.length - 1]));
+  // Last resort: close a document that simply stops early. Observed in
+  // production on a full tailoring response — 19k chars, well under the token
+  // budget, missing only its outermost "}" — which failed twice in a row and
+  // surfaced as a bare 500 on /api/generate.
+  const fromStart = start >= 0 ? text.slice(start) : text;
+  candidates.push(closeUnbalancedJson(repairJsonControlChars(fromStart)));
 
   let lastErr: unknown = new Error("no JSON object found in response");
   for (const candidate of candidates) {
@@ -223,6 +229,40 @@ function parseJsonLoose(text: string): unknown {
     }
   }
   throw lastErr;
+}
+
+/**
+ * Closes a JSON document that ends mid-structure: terminates an open string,
+ * drops a dangling comma or half-written key, and appends the closing
+ * brackets still on the stack. Zod then fills any field that never arrived
+ * with its default rather than the whole generation being lost.
+ */
+function closeUnbalancedJson(text: string): string {
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+
+  for (const ch of text) {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{" || ch === "[") stack.push(ch);
+    else if (ch === "}" || ch === "]") stack.pop();
+  }
+
+  if (!inString && stack.length === 0) return text; // already balanced
+  let out = text;
+  if (inString) out += '"';
+  // A trailing comma, or a key with no value yet, would break the parse.
+  out = out.replace(/,\s*$/, "").replace(/,?\s*"[^"]*"\s*:\s*$/, "");
+  for (let i = stack.length - 1; i >= 0; i--) {
+    out += stack[i] === "{" ? "}" : "]";
+  }
+  return out;
 }
 
 /**

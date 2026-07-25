@@ -8,9 +8,14 @@ for tiers and the payment provider.
 
 - Branch **`freemium-funnel-and-oauth`**. `main` is untouched. To ship:
   `git checkout main && git merge freemium-funnel-and-oauth`.
-- No Vercel project exists for this repo yet (verified 2026-07-25 — the account
-  holds `world-cup-2026`, `claude-code-course`, `tapecalc`), so **pushing does
-  not deploy anything**. Creating the project is a deliberate separate step.
+- **Vercel: two projects deploy this repo from `main`.** `preci-cv`
+  (`https://preci-cv.vercel.app`) is the one we treat as production — set its
+  env vars there. `preci-cv-gjz9` (`https://preci-cv-gjz9.vercel.app`) is an
+  older one from 2026-07-15, left alone; it will also rebuild on every push to
+  `main` and serve a degraded site without env vars. Clean it up eventually.
+- **Do not trust `list_projects` from the Vercel MCP integration** — it is
+  scoped and returned only unrelated projects, which led to a wrong "no project
+  exists" conclusion. Verify by probing the domain over HTTP instead.
 - Node is not on `PATH`: `export PATH="$HOME/.local/node/bin:$PATH"`.
 - Dev server: launch config **`precicv-dev`** (`.claude/launch.json`) → port 3000.
 - Typecheck (the reliable gate, since `/jobs/[id]` only compiles when visited):

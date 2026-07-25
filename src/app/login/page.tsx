@@ -27,15 +27,27 @@ function LoginForm() {
       button_text: provider.label,
       click_source: "login_page",
     });
-    const supabase = createClient();
-    const next = searchParams.get("next") ?? "/dashboard";
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: provider.id,
-      options: {
-        redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`,
-      },
-    });
-    if (error) setError(error.message);
+    // createClient() THROWS when the Supabase env vars are missing (e.g. a
+    // deployment that never got them), and signInWithOAuth can reject too.
+    // Without this catch the rejection escapes and the button just looks
+    // dead — no redirect, no message, nothing to debug.
+    try {
+      const supabase = createClient();
+      const next = searchParams.get("next") ?? "/dashboard";
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: provider.id,
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`,
+        },
+      });
+      if (error) setError(error.message);
+    } catch (e) {
+      setError(
+        e instanceof Error
+          ? `Sign-in is unavailable: ${e.message}`
+          : "Sign-in is unavailable. Please try again."
+      );
+    }
   }
 
   return (

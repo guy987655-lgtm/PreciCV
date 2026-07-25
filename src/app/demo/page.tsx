@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { JobWorkspace } from "../jobs/[id]/workspace";
-import { demoCv, demoDiff, demoHits } from "./demo-data";
+import { demoCv, demoDiff, demoHits, demoSimulation } from "./demo-data";
 
 /**
  * DEMO ONLY — renders the paid (Premium) Review Workspace with mock data
@@ -33,6 +33,7 @@ export default function DemoPage() {
           id: "00000000-0000-0000-0000-000000000001",
           cv: demoCv,
           diff: demoDiff,
+          simulation: demoSimulation,
           template: "classic",
           revisionNumber: 2,
         }}

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { JobWorkspace } from "../../jobs/[id]/workspace";
-import { demoCv, demoDiff } from "../demo-data";
+import { demoCv, demoDiff, demoSimulation } from "../demo-data";
 
 /**
  * DEMO ONLY — the one-time FREE SAMPLE state: a real generated CV shown
@@ -32,6 +32,7 @@ export default function DemoSamplePage() {
           id: "00000000-0000-0000-0000-000000000002",
           cv: demoCv,
           diff: demoDiff,
+          simulation: demoSimulation,
           template: "classic",
           revisionNumber: 0,
           isSample: true,

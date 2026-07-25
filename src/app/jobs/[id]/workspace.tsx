@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { readJson } from "@/lib/fetch-json";
@@ -27,6 +26,7 @@ import {
 import { effectiveSplit } from "@/lib/templates";
 import { printBoth } from "@/lib/download";
 import { Badge, Button, Card, Modal, Spinner, Textarea, Toast } from "@/components/ui";
+import { Navbar } from "@/components/navbar";
 import { CvRenderer, CvTheme } from "@/components/cv-renderer";
 import { DiffChangeLines } from "@/components/diff-change";
 import { Paywall } from "@/components/paywall";
@@ -35,14 +35,22 @@ import { TemplateCatalog } from "@/components/template-catalog";
 import {
   AiSectionToggle,
   CvToolbar,
+  DisplayReviewButton,
   RefreshReportButton,
   SplitToggle,
   ThemeToggle,
   ToolbarDivider,
   EditToolbar,
 } from "@/components/cv-controls";
+import { FullScreenCv } from "@/components/full-screen-cv";
+import {
+  RESULTS_TOUR_KEY,
+  RESULTS_TOUR_STEPS,
+  ResultsTour,
+} from "@/components/results-tour";
 import { RewriteTooltip } from "@/components/rewrite-tooltip";
 import { VersionStrip } from "@/components/version-strip";
+import { TONE_META } from "@/components/interview-faces";
 
 type Props = {
   job: {
@@ -214,6 +222,23 @@ export function JobWorkspace({
     initialGen?.splitView ?? false
   );
   const [editing, setEditing] = useState(false);
+  // Full-screen CV review: the whole sheet at once, scaled to fit.
+  const [fullScreen, setFullScreen] = useState(false);
+  /**
+   * First-visit spotlight tour of the results controls. It shares
+   * RESULTS_TOUR_KEY with the funnel so a browser only ever sees it once —
+   * and this is where real users actually land, since the funnel gates them
+   * into signing up before its own results view.
+   */
+  const [showTour, setShowTour] = useState(false);
+  const endTour = useCallback(() => {
+    setShowTour(false);
+    try {
+      localStorage.setItem(RESULTS_TOUR_KEY, "1");
+    } catch {
+      /* private mode */
+    }
+  }, []);
   const [reportBusy, setReportBusy] = useState(false);
   const [printRequest, setPrintRequest] = useState(false);
   const [reportStale, setReportStale] = useState(
@@ -275,6 +300,15 @@ export function JobWorkspace({
   // match → full upgrade: charge only the difference ($1), anchored to $2.
   const upgradeUsd = (TIERS.full.priceCents - TIERS.match.priceCents) / 100;
   const canUpgrade = purchase?.tier === "match" && !isSample;
+  /**
+   * The interview simulation is always generated and stored, whatever the
+   * tier — so it can be shown as a real, mostly-blurred teaser to everyone who
+   * has not bought Full Prep. That makes the section itself the driver for the
+   * +$1 upgrade instead of a feature nobody knows exists.
+   */
+  const simLocked = isSample || purchase?.tier === "match";
+  /** Questions left fully readable while locked; the rest blur. */
+  const SIM_CLEAR_QUESTIONS = 1;
 
   /* ---------------- payment ---------------- */
   // `isUpgrade` only shapes analytics — the server detects the paid `match`
@@ -342,9 +376,16 @@ export function JobWorkspace({
         id: data.generationId,
         cv: data.cv,
         diff: data.diff,
+        // The API returns the simulation and it is persisted server-side —
+        // dropping it here left the report print target out of the DOM, so
+        // "download reports" produced an empty page until a page reload.
+        simulation: data.simulation,
         template: generation?.template ?? "classic",
         revisionNumber: generation?.revisionNumber ?? 0,
         isSample: data.isSample ?? false,
+        reportStale: false,
+        cvTheme: generation?.cvTheme,
+        splitView: generation?.splitView,
       });
       router.refresh();
     } catch (e) {
@@ -431,9 +472,15 @@ export function JobWorkspace({
         id: data.generationId,
         cv: data.cv,
         diff: data.diff,
+        // Same as in generate(): keep the simulation so the report print
+        // target stays mounted.
+        simulation: data.simulation,
         template: generation?.template ?? "classic",
         revisionNumber: data.revisionNumber,
         isSample: false,
+        reportStale: false,
+        cvTheme: generation?.cvTheme,
+        splitView: generation?.splitView,
       });
       setRevisionsUsed((n) => n + 1);
       setReviseOpen(false);
@@ -508,6 +555,20 @@ export function JobWorkspace({
     setEditing(next);
   }
 
+  // Open the tour once the results are on screen. The delay lets the layout
+  // and design catalog settle before the spotlight measures its targets.
+  useEffect(() => {
+    if (!generation) return;
+    const t = setTimeout(() => {
+      try {
+        if (!localStorage.getItem(RESULTS_TOUR_KEY)) setShowTour(true);
+      } catch {
+        // Private mode — no tour flag, no tour.
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [generation]);
+
   // Deferred print: fire only once any smart-download report refresh has
   // finished AND rendered, so the printed report reflects the latest CV.
   useEffect(() => {
@@ -525,7 +586,10 @@ export function JobWorkspace({
         )
       );
     }
-    printBoth({ name: undefined, company: job.company });
+    printBoth({
+      name: generation?.cv.contact.fullName,
+      company: job.company,
+    });
     setPrintRequest(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [printRequest, reportBusy]);
@@ -695,12 +759,15 @@ export function JobWorkspace({
   /* ================= render ================= */
 
   return (
-    <main className="mx-auto max-w-[1400px] px-4 py-8">
+    <>
+      {/* The shared top bar — same logo and tabs as the rest of the site
+          (it used to be a bespoke text link, which read as a different brand). */}
+      <div className="print:hidden">
+        <Navbar />
+      </div>
+      <main className="mx-auto max-w-[1400px] px-4 py-8">
       <header className="mb-6 flex flex-wrap items-center justify-between gap-3 print:hidden">
         <div>
-          <Link href="/" className="text-sm text-indigo-600 hover:underline">
-            SpeCV
-          </Link>
           <h1 className="text-xl font-bold text-slate-900">
             {job.title || "Tailored CV"}
             {job.company && <span className="font-normal text-slate-500"> · {job.company}</span>}
@@ -715,6 +782,7 @@ export function JobWorkspace({
             )}
             {approved && (
               <Button
+                data-tour="download"
                 disabled={reportBusy || editing}
                 title={editing ? "Finish editing (Done) to export" : undefined}
                 onClick={exportPdf}
@@ -983,6 +1051,111 @@ export function JobWorkspace({
               </div>
             </Card>
 
+            {/* Interview simulation report — visible to everyone, but mostly
+                blurred until Full Prep is owned (see simLocked). */}
+            {generation.simulation &&
+              (generation.simulation.pitch ||
+                generation.simulation.questions.length > 0) && (
+                <Card className="p-5 print:hidden">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h2 className="font-semibold text-slate-900">
+                      Interview simulation report
+                    </h2>
+                    {simLocked && <Badge tone="amber">🔒 Locked</Badge>}
+                  </div>
+
+                  {generation.simulation.pitch && (
+                    <div className="mt-3 rounded-[14px] bg-green-50 p-3 text-sm text-accent-deep">
+                      <p className="text-xs font-bold uppercase">
+                        Your 30-second pitch
+                      </p>
+                      <p
+                        aria-hidden={simLocked}
+                        className={`mt-1 italic ${
+                          simLocked
+                            ? "pointer-events-none select-none blur-[5px]"
+                            : ""
+                        }`}
+                      >
+                        “{generation.simulation.pitch}”
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="mt-3 space-y-3">
+                    {generation.simulation.questions.map((q, i) => {
+                      const tone = TONE_META[q.tone] ?? TONE_META.curious;
+                      const locked = simLocked && i >= SIM_CLEAR_QUESTIONS;
+                      return (
+                        <div
+                          key={i}
+                          aria-hidden={locked}
+                          className={`rounded-[14px] border border-slate-100 p-3 text-sm ${
+                            locked
+                              ? "pointer-events-none select-none blur-[4px]"
+                              : ""
+                          }`}
+                        >
+                          <span
+                            className="rounded-full px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide text-white"
+                            style={{ background: tone.chip }}
+                          >
+                            {tone.label}
+                          </span>
+                          <span className="ml-2 text-[11px] italic text-ink-faint">
+                            {tone.hint}
+                          </span>
+                          <p className="mt-1 font-semibold text-slate-900">
+                            {q.question}
+                          </p>
+                          {q.whyTheyAsk && (
+                            <p className="mt-1 text-xs italic text-slate-500">
+                              Why they ask: {q.whyTheyAsk}
+                            </p>
+                          )}
+                          {q.howToAnswer && (
+                            <p className="mt-1.5 text-[13px] text-slate-600">
+                              {q.howToAnswer}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Unlock CTA — a paid `match` user goes straight to the $1
+                      upgrade; a free sample still has to buy a tier. */}
+                  {simLocked && (
+                    <div className="mt-3 rounded-lg bg-slate-50 px-3 py-2.5">
+                      <p className="text-xs text-slate-600">
+                        🔒 {generation.simulation.questions.length} likely
+                        questions with guidance on how to answer each one.
+                      </p>
+                      {canUpgrade ? (
+                        <Button
+                          size="md"
+                          className="mt-2 w-full"
+                          onClick={() => setUpgradeOpen(true)}
+                        >
+                          Unlock for ${upgradeUsd}
+                        </Button>
+                      ) : (
+                        <button
+                          className="mt-2 cursor-pointer text-xs font-semibold text-accent underline"
+                          onClick={() =>
+                            document
+                              .getElementById("unlock-pricing")
+                              ?.scrollIntoView({ behavior: "smooth" })
+                          }
+                        >
+                          See unlock options →
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </Card>
+              )}
+
             {/* AI revisions (Full Prep tier) */}
             {purchase && purchase.maxRevisions > 0 && !isSample && (
               <Card className="p-5">
@@ -1039,11 +1212,13 @@ export function JobWorkspace({
                   ? "Try 6 designs free — 🔒 unlock for the rest"
                   : "Choose a design"}
               </p>
-              <TemplateCatalog
-                template={generation.template as CvTemplate}
-                onSelect={setTemplate}
-                sample={isSample}
-              />
+              <div data-tour="design">
+                <TemplateCatalog
+                  template={generation.template as CvTemplate}
+                  onSelect={setTemplate}
+                  sample={isSample}
+                />
+              </div>
               {!isSample && reportStale && !editing && (
                 <p className="text-[11px] text-ink-faint">
                   You edited your CV — the report refreshes automatically on
@@ -1075,16 +1250,20 @@ export function JobWorkspace({
               {/* Operational controls, anchored to the preview (PRD Topic 3) */}
               {!isSample ? (
                 <CvToolbar>
-                  <EditToolbar
-                    editing={editing}
-                    onToggleEdit={toggleEdit}
-                    onReset={resetCv}
-                    canReset={isDirty}
-                  />
-                  <AiSectionToggle
-                    cv={generation.cv}
-                    onChange={(next) => saveCv(next)}
-                  />
+                  <span data-tour="edit" className="inline-flex">
+                    <EditToolbar
+                      editing={editing}
+                      onToggleEdit={toggleEdit}
+                      onReset={resetCv}
+                      canReset={isDirty}
+                    />
+                  </span>
+                  <span data-tour="ai-section" className="inline-flex">
+                    <AiSectionToggle
+                      cv={generation.cv}
+                      onChange={(next) => saveCv(next)}
+                    />
+                  </span>
                   <RefreshReportButton
                     onClick={() => regenerateReportNow()}
                     disabled={
@@ -1098,18 +1277,31 @@ export function JobWorkspace({
                     editing={editing}
                   />
                   <ToolbarDivider />
-                  <SplitToggle
-                    template={generation.template as CvTemplate}
-                    split={splitView}
-                    onToggle={setSplitView}
+                  <DisplayReviewButton
+                    onClick={() => setFullScreen(true)}
+                    disabled={editing}
                   />
+                  <span data-tour="split" className="inline-flex">
+                    <SplitToggle
+                      template={generation.template as CvTemplate}
+                      split={splitView}
+                      onToggle={setSplitView}
+                    />
+                  </span>
                   {/* View settings grouped together (PRD v2 Topic 5). */}
-                  <ThemeToggle theme={cvTheme} onChange={setCvTheme} />
+                  <span data-tour="theme" className="inline-flex">
+                    <ThemeToggle theme={cvTheme} onChange={setCvTheme} />
+                  </span>
                 </CvToolbar>
               ) : (
                 /* Free sample: design + light/dark tasters only — no editing,
-                   AI actions or export. */
+                   AI actions or export. Full-screen review is allowed: it shows
+                   the same watermarked sheet, just bigger. */
                 <CvToolbar>
+                  <DisplayReviewButton
+                    onClick={() => setFullScreen(true)}
+                    disabled={false}
+                  />
                   <SplitToggle
                     template={generation.template as CvTemplate}
                     split={splitView}
@@ -1185,7 +1377,21 @@ export function JobWorkspace({
             jobTitle: job.title,
             company: job.company,
           }}
-          candidateName={job.title || ""}
+          candidateName={generation.cv.contact.fullName || ""}
+        />
+      )}
+
+      {showTour && generation && !fullScreen && (
+        <ResultsTour steps={RESULTS_TOUR_STEPS} onClose={endTour} />
+      )}
+
+      {fullScreen && generation && (
+        <FullScreenCv
+          cv={generation.cv}
+          template={generation.template as CvTemplate}
+          theme={cvTheme}
+          split={effectiveSplit(generation.template as CvTemplate, splitView)}
+          onClose={() => setFullScreen(false)}
         />
       )}
 
@@ -1295,6 +1501,7 @@ export function JobWorkspace({
           </Button>
         </div>
       </Modal>
-    </main>
+      </main>
+    </>
   );
 }

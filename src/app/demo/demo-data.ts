@@ -1,4 +1,9 @@
-import { DealbreakerHit, DiffReport, TailoredCv } from "@/lib/types";
+import {
+  DealbreakerHit,
+  DiffReport,
+  InterviewSimulation,
+  TailoredCv,
+} from "@/lib/types";
 
 /** Shared mock data for the /demo pages. */
 
@@ -140,3 +145,46 @@ export const demoHits: DealbreakerHit[] = [
     confidence: "high",
   },
 ];
+
+/** The interview simulation — Full Prep's headline deliverable, so the demo
+ *  and the sample teaser both need it to represent the product honestly. */
+export const demoSimulation: InterviewSimulation = {
+  pitch:
+    "I'm a frontend engineer with seven years in React, most recently leading " +
+    "the design-system work that cut our team's UI build time by about a third. " +
+    "What draws me to this role is the RSC migration — I shipped one last year " +
+    "and learned where the sharp edges are.",
+  questions: [
+    {
+      question: "Walk me through your React Server Components migration.",
+      whyTheyAsk:
+        "It is the top requirement in the job description — they need proof it is real.",
+      howToAnswer:
+        "Lead with the scale (how many routes), then one concrete problem you hit and how you solved it.",
+      tone: "curious",
+    },
+    {
+      question: "Tell me about a time you disagreed with a design decision.",
+      whyTheyAsk: "Checking how you handle friction with adjacent teams.",
+      howToAnswer:
+        "Pick a case where you changed your own mind after seeing data — it shows judgment, not stubbornness.",
+      tone: "friendly",
+    },
+    {
+      question:
+        "Your CV says you led a squad, but the title is Senior Engineer, not Lead. Which is it?",
+      whyTheyAsk:
+        "Probing for exaggeration — they want the boundary of your actual authority.",
+      howToAnswer:
+        "Be exact: you owned technical direction for N engineers without formal reports. Do not inflate it.",
+      tone: "challenging",
+    },
+    {
+      question: "How do you keep a design system from drifting over time?",
+      whyTheyAsk: "The role owns the platform team's shared components.",
+      howToAnswer:
+        "Name the mechanism you used — visual regression tests, a contribution review, adoption metrics.",
+      tone: "curious",
+    },
+  ],
+};

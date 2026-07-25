@@ -366,7 +366,7 @@ export default function CardPage() {
             <p className="mx-auto mt-2 max-w-sm text-sm text-ink-soft">
               {sim === "registered_no_profile"
                 ? "Your account has no profile yet. Build it in about 3 minutes — your latest CV plus everything you tell us about it."
-                : "Your card is your career dossier: your latest CV plus everything you tell us about it. Build it in about 3 minutes — no account needed."}
+                : "Your card is your career dossier: your latest CV plus everything you tell us about it. Build it in about 3 minutes."}
             </p>
             <Link href="/">
               <Button size="lg" className="mt-5">

@@ -2,7 +2,7 @@
 
 import { ReactNode, useEffect, useRef, useState } from "react";
 import { FunnelState } from "@/lib/funnel";
-import { Button, Spinner, Textarea, Tooltip } from "@/components/ui";
+import { Button, Spinner, Tooltip } from "@/components/ui";
 
 /**
  * Scripted conversational beats for the chat funnel (PRD Topic 1): the
@@ -233,7 +233,15 @@ export function GreetingBlock({
   // Was the greeting still live when this block mounted? False = reload history.
   const [live] = useState(() => !state.greetingDone);
   const [scriptDone, setScriptDone] = useState(state.greetingDone);
-  const [draft, setDraft] = useState("");
+
+  // The greeting no longer asks anything, so advance on its own once it has
+  // finished typing — an empty reply is what the old "Skip" button sent.
+  const advanced = useRef(false);
+  useEffect(() => {
+    if (!scriptDone || state.greetingDone || advanced.current) return;
+    advanced.current = true;
+    onReply("");
+  }, [scriptDone, state.greetingDone, onReply]);
 
   const profile = state.profile;
   const info = state.greetingInfo;
@@ -242,20 +250,15 @@ export function GreetingBlock({
   const currentTitle =
     profile?.experience?.[0]?.title || profile?.headline || "";
 
-  // The two-message variant ends on a closed question — offer one-tap replies.
-  const closedQuestion = Boolean(info?.targetJobTitle && currentTitle);
-  const messages: ReactNode[] = closedQuestion
-    ? [
-        `Hi ${first}, I see you are a ${currentTitle} and you're interested in the ${info!.targetJobTitle} position.`,
-        info!.sameField
-          ? info!.field
-            ? `Makes sense, looking to stay in the ${info!.field} field, huh?`
-            : "Makes sense, staying on the same path, huh?"
-          : "I see you're looking to step outside your original role. How about we make some adjustments?",
-      ]
-    : [
-        `Hi ${first}! I've read your CV and the job you're targeting — let's tailor your CV together.`,
-      ];
+  // One greeting line, then straight into the questionnaire. There used to be
+  // a second message asking whether the candidate wanted to stay in their
+  // field, plus a reply box gating the questions behind it — removed: it
+  // bought nothing and made the funnel wait on the user.
+  const messages: ReactNode[] = [
+    info?.targetJobTitle && currentTitle
+      ? `Hi ${first}, I see you are a ${currentTitle} and you're interested in the ${info.targetJobTitle} position.`
+      : `Hi ${first}! I've read your CV and the job you're targeting — let's tailor your CV together.`,
+  ];
 
   return (
     <>
@@ -265,45 +268,7 @@ export function GreetingBlock({
         onDone={() => setScriptDone(true)}
       />
 
-      {/* One-time free-text reply (PRD: "await user input to proceed") */}
-      {scriptDone && !state.greetingDone && (
-        <div className="chat-pop-in rounded-[18px] border-[1.5px] border-border bg-card p-4">
-          {/* Quick replies for the closed greeting question — one tap submits
-              through the same handler as typing + Send (PRD v2 Topic 1). */}
-          {closedQuestion && (
-            <div className="mb-3 flex flex-wrap gap-2">
-              {["Yep", "Not necessarily", "Definitely no"].map((r) => (
-                <button
-                  key={r}
-                  onClick={() => onReply(r)}
-                  className="cursor-pointer rounded-full border-[1.5px] border-border bg-card px-3.5 py-1.5 text-[13px] font-semibold text-ink-soft transition-colors hover:border-accent-soft hover:bg-selected-bg hover:text-ink"
-                >
-                  {r}
-                </button>
-              ))}
-            </div>
-          )}
-          <Textarea
-            autoFocus
-            rows={2}
-            placeholder="Say anything — or tell me a bit about what you're looking for…"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-          />
-          <div className="mt-3 flex items-center justify-between gap-2">
-            <button
-              onClick={() => onReply("")}
-              className="cursor-pointer text-[13px] font-semibold text-ink-faint hover:text-ink-soft"
-            >
-              Skip
-            </button>
-            <Button size="md" onClick={() => onReply(draft.trim())}>
-              Send →
-            </Button>
-          </div>
-        </div>
-      )}
-
+      {/* Older flows may carry a stored reply — keep rendering it as history. */}
       {state.greetingDone && state.greetingReply && (
         <UserBubble>{state.greetingReply}</UserBubble>
       )}
@@ -311,7 +276,7 @@ export function GreetingBlock({
         <TypingBotMessage animate={live} onDone={onAckDone}>
           {state.greetingReply
             ? "Love it — thanks for sharing. Now, a few quick questions to nail this application."
-            : "No problem — let's jump straight in."}
+            : "Let's get started — a few quick questions to nail this application."}
         </TypingBotMessage>
       )}
     </>

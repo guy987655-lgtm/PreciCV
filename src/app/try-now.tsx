@@ -6,7 +6,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { readJson } from "@/lib/fetch-json";
 import { trackButtonClick } from "@/lib/analytics";
 import {
-  CvTemplate,
   MAX_REPORT_REGENS,
   MAX_REWRITES,
   McqQuestionnaire,
@@ -1114,7 +1113,7 @@ export function TryNow() {
                 fileInputRef.current?.click();
               }}
             >
-              Try it free →
+              Get started →
             </Button>
             {state.profile && (
               <Button
@@ -1128,7 +1127,7 @@ export function TryNow() {
               </Button>
             )}
             <span className="text-sm text-ink-faint">
-              Free to use — no account needed
+              Takes about a minute
             </span>
           </div>
           <div className="mt-2.5 flex flex-wrap gap-2">
@@ -1148,7 +1147,7 @@ export function TryNow() {
         <div ref={uploadCardRef}>
           <Card className="flex flex-col gap-3.5 p-7">
             <div className="text-[17px] font-bold text-ink">
-              Start here — no account needed
+              Start here
             </div>
             {uploadFields("dark")}
           </Card>
@@ -1183,13 +1182,13 @@ export function TryNow() {
             title={
               meta.registered
                 ? "Build your base profile"
-                : "Start here — no account needed"
+                : "Start here"
             }
             sub="Your CV and the job you want — we need both to ask only the questions that matter."
           />
           <Card className="flex flex-col gap-3.5 p-7">{uploadFields("primary")}</Card>
           <p className="text-center text-[13px] text-ink-faint">
-            Takes about a minute · Free to use
+            Takes about a minute
           </p>
         </div>
       )}
@@ -1426,7 +1425,7 @@ export function TryNow() {
             <p className="mt-3 text-center text-xs text-ink-faint print:hidden">
               {remaining !== null
                 ? `${remaining} free CV${remaining === 1 ? "" : "s"} left today.`
-                : "Free to use."}
+                : ""}
             </p>
           </div>
 

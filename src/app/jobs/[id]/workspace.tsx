@@ -24,7 +24,7 @@ import {
   makeVersion,
 } from "@/lib/cv-session";
 import { effectiveSplit } from "@/lib/templates";
-import { printBoth } from "@/lib/download";
+import { printBoth, printFile } from "@/lib/download";
 import { Badge, Button, Card, Modal, Spinner, Textarea, Toast } from "@/components/ui";
 import { Navbar } from "@/components/navbar";
 import { CvRenderer, CvTheme } from "@/components/cv-renderer";
@@ -196,8 +196,10 @@ export function JobWorkspace({
   const [generation, setGeneration] = useState(initialGen);
   // Start in the generating state when we'll auto-run the sample on arrival,
   // so the loading spinner shows immediately (no flash of the intro card).
+  // Mirrors the auto-run below, so the spinner is up on first paint instead
+  // of flashing the intro/"ready to tailor" card first.
   const [busy, setBusy] = useState<"" | "checkout" | "generate" | "revise">(
-    freeSampleAvailable && !initialGen && !purchase ? "generate" : ""
+    !initialGen && (purchase || freeSampleAvailable) ? "generate" : ""
   );
   const [error, setError] = useState("");
   const [redFlagModal, setRedFlagModal] = useState(false);
@@ -309,6 +311,12 @@ export function JobWorkspace({
   const simLocked = isSample || purchase?.tier === "match";
   /** Questions left fully readable while locked; the rest blur. */
   const SIM_CLEAR_QUESTIONS = 1;
+  /** Is there simulation content to render a section for? */
+  const hasSimulationSection = Boolean(
+    generation?.simulation &&
+      (generation.simulation.pitch ||
+        generation.simulation.questions.length > 0)
+  );
 
   /* ---------------- payment ---------------- */
   // `isUpgrade` only shapes analytics — the server detects the paid `match`
@@ -395,17 +403,18 @@ export function JobWorkspace({
     }
   }
 
-  // Free users see their result immediately: auto-run this job's sample on
-  // arrival — no manual click. Runs once; a failure falls back to the button.
-  const autoSampleTried = useRef(false);
+  // Nobody should have to press a button to see what they came for. Free
+  // users get this job's sample auto-run on arrival; buyers returning from
+  // checkout get the real thing auto-run the same way, so payment lands
+  // straight on the CV. Runs once; a failure falls back to the button.
+  const autoRunTried = useRef(false);
   useEffect(() => {
-    if (
-      freeSampleAvailable &&
-      !generation &&
-      !purchase &&
-      !autoSampleTried.current
-    ) {
-      autoSampleTried.current = true;
+    if (generation || autoRunTried.current) return;
+    if (purchase) {
+      autoRunTried.current = true;
+      generate(false, false);
+    } else if (freeSampleAvailable) {
+      autoRunTried.current = true;
       generate(false, true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -586,10 +595,14 @@ export function JobWorkspace({
         )
       );
     }
-    printBoth({
+    // Job Match buys the CV only — printing "both" would hand it a second,
+    // empty file since the report print target is not mounted for that tier.
+    const meta = {
       name: generation?.cv.contact.fullName,
       company: job.company,
-    });
+    };
+    if (simLocked) printFile("cv", meta);
+    else printBoth(meta);
     setPrintRequest(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [printRequest, reportBusy]);
@@ -911,29 +924,34 @@ export function JobWorkspace({
         </div>
       )}
 
-      {/* State 2: paid, not generated */}
+      {/* State 2: paid, not generated. Generation auto-starts on arrival, so
+          this is normally just the loading state after checkout; the button is
+          the fallback if that run failed. */}
       {purchase && !generation && (
         <Card className="mx-auto max-w-xl p-8 text-center print:hidden">
           <Badge tone="indigo">{TIERS[purchase.tier].name} tier active</Badge>
-          <h2 className="mt-3 text-lg font-semibold text-slate-900">
-            Ready to tailor your CV
-          </h2>
-          <p className="mt-1 text-sm text-slate-600">
-            Claude will build a one-page CV tailored to this job from your
-            Master Data Lake, plus a full change report.
-          </p>
-          <Button
-            size="lg"
-            className="mt-6"
-            disabled={busy === "generate"}
-            onClick={() => generate(false, false)}
-          >
-            {busy === "generate" ? (
+          {busy === "generate" ? (
+            <div className="mt-4">
               <Spinner label="Tailoring your CV… (30–90 seconds)" />
-            ) : (
-              "Generate tailored CV"
-            )}
-          </Button>
+            </div>
+          ) : (
+            <>
+              <h2 className="mt-3 text-lg font-semibold text-slate-900">
+                Ready to tailor your CV
+              </h2>
+              <p className="mt-1 text-sm text-slate-600">
+                We&apos;ll build a one-page CV tailored to this job from your
+                Master Data Lake, plus a full change report.
+              </p>
+              <Button
+                size="lg"
+                className="mt-6"
+                onClick={() => generate(false, false)}
+              >
+                Generate tailored CV
+              </Button>
+            </>
+          )}
         </Card>
       )}
 
@@ -961,57 +979,6 @@ export function JobWorkspace({
             }`}
             aria-busy={reportBusy}
           >
-            <Card className="p-5">
-              <div className="flex items-center justify-between">
-                <h2 className="font-semibold text-slate-900">Match analysis</h2>
-                <span className="text-2xl font-bold text-indigo-600">
-                  {generation.diff.gapAnalysis.matchScore}%
-                </span>
-              </div>
-              <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-100">
-                <div
-                  className="h-full rounded-full bg-indigo-500"
-                  style={{ width: `${generation.diff.gapAnalysis.matchScore}%` }}
-                />
-              </div>
-              {generation.diff.gapAnalysis.strengths.length > 0 && (
-                <>
-                  <h3 className="mt-4 text-xs font-semibold uppercase text-emerald-700">
-                    Strengths
-                  </h3>
-                  <TeaserList
-                    items={generation.diff.gapAnalysis.strengths}
-                    sample={isSample}
-                  />
-                </>
-              )}
-              {generation.diff.gapAnalysis.gaps.length > 0 && (
-                <>
-                  <h3 className="mt-3 text-xs font-semibold uppercase text-red-700">Gaps</h3>
-                  <TeaserList
-                    items={generation.diff.gapAnalysis.gaps}
-                    sample={isSample}
-                  />
-                </>
-              )}
-              {generation.diff.gapAnalysis.recommendations.length > 0 && (
-                <>
-                  <h3 className="mt-3 text-xs font-semibold uppercase text-indigo-700">
-                    Recommendations
-                  </h3>
-                  <TeaserList
-                    items={generation.diff.gapAnalysis.recommendations}
-                    sample={isSample}
-                  />
-                </>
-              )}
-              {isSample && (
-                <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
-                  🔒 Unlock the full report to read every strength, gap and
-                  recommendation.
-                </p>
-              )}
-            </Card>
 
             <Card className="p-5">
               <h2 className="font-semibold text-slate-900">
@@ -1051,110 +1018,6 @@ export function JobWorkspace({
               </div>
             </Card>
 
-            {/* Interview simulation report — visible to everyone, but mostly
-                blurred until Full Prep is owned (see simLocked). */}
-            {generation.simulation &&
-              (generation.simulation.pitch ||
-                generation.simulation.questions.length > 0) && (
-                <Card className="p-5 print:hidden">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h2 className="font-semibold text-slate-900">
-                      Interview simulation report
-                    </h2>
-                    {simLocked && <Badge tone="amber">🔒 Locked</Badge>}
-                  </div>
-
-                  {generation.simulation.pitch && (
-                    <div className="mt-3 rounded-[14px] bg-green-50 p-3 text-sm text-accent-deep">
-                      <p className="text-xs font-bold uppercase">
-                        Your 30-second pitch
-                      </p>
-                      <p
-                        aria-hidden={simLocked}
-                        className={`mt-1 italic ${
-                          simLocked
-                            ? "pointer-events-none select-none blur-[5px]"
-                            : ""
-                        }`}
-                      >
-                        “{generation.simulation.pitch}”
-                      </p>
-                    </div>
-                  )}
-
-                  <div className="mt-3 space-y-3">
-                    {generation.simulation.questions.map((q, i) => {
-                      const tone = TONE_META[q.tone] ?? TONE_META.curious;
-                      const locked = simLocked && i >= SIM_CLEAR_QUESTIONS;
-                      return (
-                        <div
-                          key={i}
-                          aria-hidden={locked}
-                          className={`rounded-[14px] border border-slate-100 p-3 text-sm ${
-                            locked
-                              ? "pointer-events-none select-none blur-[4px]"
-                              : ""
-                          }`}
-                        >
-                          <span
-                            className="rounded-full px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide text-white"
-                            style={{ background: tone.chip }}
-                          >
-                            {tone.label}
-                          </span>
-                          <span className="ml-2 text-[11px] italic text-ink-faint">
-                            {tone.hint}
-                          </span>
-                          <p className="mt-1 font-semibold text-slate-900">
-                            {q.question}
-                          </p>
-                          {q.whyTheyAsk && (
-                            <p className="mt-1 text-xs italic text-slate-500">
-                              Why they ask: {q.whyTheyAsk}
-                            </p>
-                          )}
-                          {q.howToAnswer && (
-                            <p className="mt-1.5 text-[13px] text-slate-600">
-                              {q.howToAnswer}
-                            </p>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* Unlock CTA — a paid `match` user goes straight to the $1
-                      upgrade; a free sample still has to buy a tier. */}
-                  {simLocked && (
-                    <div className="mt-3 rounded-lg bg-slate-50 px-3 py-2.5">
-                      <p className="text-xs text-slate-600">
-                        🔒 {generation.simulation.questions.length} likely
-                        questions with guidance on how to answer each one.
-                      </p>
-                      {canUpgrade ? (
-                        <Button
-                          size="md"
-                          className="mt-2 w-full"
-                          onClick={() => setUpgradeOpen(true)}
-                        >
-                          Unlock for ${upgradeUsd}
-                        </Button>
-                      ) : (
-                        <button
-                          className="mt-2 cursor-pointer text-xs font-semibold text-accent underline"
-                          onClick={() =>
-                            document
-                              .getElementById("unlock-pricing")
-                              ?.scrollIntoView({ behavior: "smooth" })
-                          }
-                        >
-                          See unlock options →
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </Card>
-              )}
 
             {/* AI revisions (Full Prep tier) */}
             {purchase && purchase.maxRevisions > 0 && !isSample && (
@@ -1176,9 +1039,11 @@ export function JobWorkspace({
               </Card>
             )}
 
-            {/* Upgrade match → full: unlock the interview simulation report
-                + AI revisions for the $1 difference (anchored to $2). */}
-            {canUpgrade && (
+            {/* Upgrade match → full for the $1 difference (anchored to $2).
+                Only when the simulation section below the CV is absent — that
+                section carries the same CTA and shows what you actually get,
+                so rendering both would be two buttons for one purchase. */}
+            {canUpgrade && !hasSimulationSection && (
               <Card className="border-2 border-accent p-5 print:hidden">
                 <h2 className="font-semibold text-slate-900">
                   Get interview-ready
@@ -1295,13 +1160,11 @@ export function JobWorkspace({
                 </CvToolbar>
               ) : (
                 /* Free sample: design + light/dark tasters only — no editing,
-                   AI actions or export. Full-screen review is allowed: it shows
-                   the same watermarked sheet, just bigger. */
+                   AI actions or export. Deliberately NO Display review either:
+                   FullScreenCv renders the bare sheet with no watermark and no
+                   lock overlay, which handed the whole locked CV to a
+                   non-paying user. */
                 <CvToolbar>
-                  <DisplayReviewButton
-                    onClick={() => setFullScreen(true)}
-                    disabled={false}
-                  />
                   <SplitToggle
                     template={generation.template as CvTemplate}
                     split={splitView}
@@ -1318,7 +1181,14 @@ export function JobWorkspace({
               >
                 <div
                   ref={cvSheetRef}
-                  className="relative origin-top-left scale-[0.85] lg:scale-100"
+                  /* print:transform-none is load-bearing. ANY transform here
+                     (even scale(1)) makes this div the containing block for
+                     the absolutely-positioned .cv-page, and the print
+                     viewport is narrower than `lg` so the 0.85 scale applied
+                     too — between them the sheet landed outside the printable
+                     area and the exported CV came out blank. The print path
+                     must have no transform at all. */
+                  className="relative origin-top-left scale-[0.85] lg:scale-100 print:transform-none"
                 >
                 {isSample && <SampleWatermark />}
                 {isSample && <SampleLockOverlay bands={blurBands} />}
@@ -1347,6 +1217,173 @@ export function JobWorkspace({
                 onRewrite={handleRewrite}
               />
             )}
+
+            {/* Under the CV: match analysis first, then the interview
+                simulation. Shares the report-refresh fade with the change
+                report in the left column. */}
+            <div
+              className={`mt-4 space-y-4 transition-opacity duration-300 print:hidden ${
+                reportBusy ? "pointer-events-none select-none opacity-25" : ""
+              }`}
+              aria-busy={reportBusy}
+            >
+            <Card className="p-5">
+              <div className="flex items-center justify-between">
+                <h2 className="font-semibold text-slate-900">Match analysis</h2>
+                <span className="text-2xl font-bold text-indigo-600">
+                  {generation.diff.gapAnalysis.matchScore}%
+                </span>
+              </div>
+              <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-100">
+                <div
+                  className="h-full rounded-full bg-indigo-500"
+                  style={{ width: `${generation.diff.gapAnalysis.matchScore}%` }}
+                />
+              </div>
+              {generation.diff.gapAnalysis.strengths.length > 0 && (
+                <>
+                  <h3 className="mt-4 text-xs font-semibold uppercase text-emerald-700">
+                    Strengths
+                  </h3>
+                  <TeaserList
+                    items={generation.diff.gapAnalysis.strengths}
+                    sample={isSample}
+                  />
+                </>
+              )}
+              {generation.diff.gapAnalysis.gaps.length > 0 && (
+                <>
+                  <h3 className="mt-3 text-xs font-semibold uppercase text-red-700">Gaps</h3>
+                  <TeaserList
+                    items={generation.diff.gapAnalysis.gaps}
+                    sample={isSample}
+                  />
+                </>
+              )}
+              {generation.diff.gapAnalysis.recommendations.length > 0 && (
+                <>
+                  <h3 className="mt-3 text-xs font-semibold uppercase text-indigo-700">
+                    Recommendations
+                  </h3>
+                  <TeaserList
+                    items={generation.diff.gapAnalysis.recommendations}
+                    sample={isSample}
+                  />
+                </>
+              )}
+              {isSample && (
+                <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                  🔒 Unlock the full report to read every strength, gap and
+                  recommendation.
+                </p>
+              )}
+            </Card>
+
+            {/* Interview simulation report — visible to everyone, but mostly
+                blurred until Full Prep is owned (see simLocked). */}
+            {generation.simulation &&
+              (generation.simulation.pitch ||
+                generation.simulation.questions.length > 0) && (
+                <Card className="p-5 print:hidden">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h2 className="font-semibold text-slate-900">
+                      Interview simulation report
+                    </h2>
+                    {simLocked && <Badge tone="amber">🔒 Locked</Badge>}
+                  </div>
+
+                  {generation.simulation.pitch && (
+                    <div className="mt-3 rounded-[14px] bg-green-50 p-3 text-sm text-accent-deep">
+                      <p className="text-xs font-bold uppercase">
+                        Your 30-second pitch
+                      </p>
+                      <p
+                        aria-hidden={simLocked}
+                        className={`mt-1 italic ${
+                          simLocked
+                            ? "pointer-events-none select-none blur-[5px]"
+                            : ""
+                        }`}
+                      >
+                        “{generation.simulation.pitch}”
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="mt-3 space-y-3">
+                    {generation.simulation.questions.map((q, i) => {
+                      const tone = TONE_META[q.tone] ?? TONE_META.curious;
+                      const locked = simLocked && i >= SIM_CLEAR_QUESTIONS;
+                      return (
+                        <div
+                          key={i}
+                          aria-hidden={locked}
+                          className={`rounded-[14px] border border-slate-100 p-3 text-sm ${
+                            locked
+                              ? "pointer-events-none select-none blur-[4px]"
+                              : ""
+                          }`}
+                        >
+                          <span
+                            className="rounded-full px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide text-white"
+                            style={{ background: tone.chip }}
+                          >
+                            {tone.label}
+                          </span>
+                          <span className="ml-2 text-[11px] italic text-ink-faint">
+                            {tone.hint}
+                          </span>
+                          <p className="mt-1 font-semibold text-slate-900">
+                            {q.question}
+                          </p>
+                          {q.whyTheyAsk && (
+                            <p className="mt-1 text-xs italic text-slate-500">
+                              Why they ask: {q.whyTheyAsk}
+                            </p>
+                          )}
+                          {q.howToAnswer && (
+                            <p className="mt-1.5 text-[13px] text-slate-600">
+                              {q.howToAnswer}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Unlock CTA — a paid `match` user goes straight to the $1
+                      upgrade; a free sample still has to buy a tier. */}
+                  {simLocked && (
+                    <div className="mt-3 rounded-lg bg-slate-50 px-3 py-2.5">
+                      <p className="text-xs text-slate-600">
+                        🔒 {generation.simulation.questions.length} likely
+                        questions with guidance on how to answer each one.
+                      </p>
+                      {canUpgrade ? (
+                        <Button
+                          size="md"
+                          className="mt-2 w-full"
+                          onClick={() => setUpgradeOpen(true)}
+                        >
+                          Unlock for ${upgradeUsd}
+                        </Button>
+                      ) : (
+                        <button
+                          className="mt-2 cursor-pointer text-xs font-semibold text-accent underline"
+                          onClick={() =>
+                            document
+                              .getElementById("unlock-pricing")
+                              ?.scrollIntoView({ behavior: "smooth" })
+                          }
+                        >
+                          See unlock options →
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </Card>
+              )}
+            </div>
             {/* Version history (milestone snapshots) */}
             {!isSample && versions.length > 1 && (
               <Card className="mt-4 p-5 print:hidden">
@@ -1367,8 +1404,10 @@ export function JobWorkspace({
         </div>
       )}
 
-      {/* Hidden interview-report print target (second download file) */}
-      {generation && !isSample && generation.simulation && (
+      {/* Hidden interview-report print target (second download file). Full
+          Prep only — the simulation is generated for every tier, so gating on
+          `!isSample` alone shipped it to $3 Job Match buyers as well. */}
+      {generation && !isSample && !simLocked && generation.simulation && (
         <ReportPage
           results={{
             cv: generation.cv,

@@ -16,6 +16,62 @@ const BodySchema = z.object({
 });
 
 /**
+ * The signed-in user's jobs, newest first, each flagged with whether it has
+ * a generation yet and whether that generation is a free sample. History
+ * used to read localStorage only, so flows that made it into Supabase — i.e.
+ * every real one — were invisible and could not be reopened.
+ */
+export async function GET() {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { data: jobs, error } = await supabase
+    .from("jobs")
+    .select("id, title, company, status, created_at")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false })
+    .limit(50);
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  const ids = (jobs ?? []).map((j) => j.id);
+  const { data: gens } = ids.length
+    ? await supabase
+        .from("generations")
+        .select("job_id, is_sample")
+        .in("job_id", ids)
+    : { data: [] as { job_id: string; is_sample: boolean }[] };
+  const { data: paid } = ids.length
+    ? await supabase
+        .from("purchases")
+        .select("job_id, tier")
+        .eq("status", "paid")
+        .in("job_id", ids)
+    : { data: [] as { job_id: string; tier: string }[] };
+
+  const genBy = new Map((gens ?? []).map((g) => [g.job_id, g]));
+  const paidBy = new Map((paid ?? []).map((p) => [p.job_id, p.tier]));
+
+  return NextResponse.json({
+    jobs: (jobs ?? []).map((j) => ({
+      id: j.id,
+      title: j.title ?? "",
+      company: j.company ?? "",
+      createdAt: j.created_at,
+      hasResult: genBy.has(j.id),
+      isSample: genBy.get(j.id)?.is_sample ?? false,
+      tier: paidBy.get(j.id) ?? null,
+    })),
+  });
+}
+
+/**
  * Create a job from a JD and immediately run the pre-generation
  * Dealbreaker Scan (PRD §4.3) — BEFORE any credit is spent. The scan
  * result is stored on the job and returned so the UI can show the

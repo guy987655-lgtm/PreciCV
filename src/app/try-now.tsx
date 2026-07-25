@@ -41,6 +41,7 @@ import { findCachedAnswers } from "@/lib/answer-cache";
 import { generateWithRetry } from "@/lib/generate-client";
 import { printBoth } from "@/lib/download";
 import { simMeta, useSimUser } from "@/lib/sim-user";
+import { useSession } from "@/lib/use-session";
 import { Badge, Button, Card, Modal, Spinner, Textarea, Toast } from "@/components/ui";
 import { Paywall } from "@/components/paywall";
 import { ChatFlow } from "@/components/chat-flow";
@@ -105,7 +106,16 @@ function CheckCircle({ size = 26 }: { size?: number }) {
 export function TryNow() {
   const router = useRouter();
   const sim = useSimUser();
-  const meta = simMeta(sim);
+  const simUserMeta = simMeta(sim);
+  const { signedIn } = useSession();
+  /**
+   * A REAL Supabase session always counts as registered. `simMeta` is the
+   * dev-only simulator and reports "guest" in production, which is why a
+   * signed-in user used to be sent back through the register wall — and why
+   * their flow stayed in localStorage instead of landing in Supabase (and so
+   * never showed up in History).
+   */
+  const meta = signedIn ? { ...simUserMeta, registered: true } : simUserMeta;
   const [state, setState] = useState<FunnelState>(EMPTY_FUNNEL);
   const [hydrated, setHydrated] = useState(false);
   const [file, setFile] = useState<File | null>(null);
@@ -590,6 +600,10 @@ export function TryNow() {
       goToSignup("questions_register");
       return;
     }
+    if (signedIn) {
+      goToImport("questions_import");
+      return;
+    }
     goTo("gate");
   }
 
@@ -814,6 +828,24 @@ export function TryNow() {
     stashForSignup(state);
     setLeaving(true);
     router.push("/login?next=/continue");
+  }
+
+  /**
+   * Already signed in: skip the login step, but still import into Supabase.
+   * Showing funnel results in place would leave the flow in localStorage
+   * only — invisible to History and impossible to return to.
+   */
+  function goToImport(source: string) {
+    if (!state.profile) return;
+    trackButtonClick({
+      button_name: source,
+      action: "import_signed_in",
+      button_text: source,
+      click_source: "landing_try_now",
+    });
+    stashForSignup(state);
+    setLeaving(true);
+    router.push("/continue");
   }
 
   /* ---------------- derived ---------------- */

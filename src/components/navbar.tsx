@@ -1,21 +1,63 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { goHome } from "@/lib/funnel";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { goHome, loadFunnel } from "@/lib/funnel";
+import { useSession } from "@/lib/use-session";
 
 /**
- * The shared top navigation: Home (logo + explicit tab), My card and
- * History. Home always shows the homepage hero — the active flow is kept
- * and resumable via the hero's "Continue progress" button (see goHome).
+ * The shared top bar.
+ *
+ * There is no Home tab — the logo is the way home. Signed-in users get an
+ * avatar menu holding History and My card; guests get a Log in link, so the
+ * funnel never has to ask someone who is already signed in to register.
+ * A resumable flow surfaces a Continue button here, so leaving the questions
+ * or results page is recoverable from anywhere.
  */
 export function Navbar() {
   const pathname = usePathname();
-  const tabs = [
-    { href: "/", label: "Home" },
-    { href: "/card", label: "My card" },
+  const router = useRouter();
+  const { signedIn, user } = useSession();
+
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // A flow is resumable when a saved funnel already has a parsed profile.
+  // The homepage has its own "Continue progress" button, so skip it there.
+  const [resumable, setResumable] = useState(false);
+  useEffect(() => {
+    if (pathname === "/") {
+      setResumable(false);
+      return;
+    }
+    const f = loadFunnel();
+    setResumable(Boolean(f?.profile));
+  }, [pathname]);
+
+  // Close the menu on outside click or Escape.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
+
+  const initial = (user?.email?.trim()?.[0] ?? "?").toUpperCase();
+  const menuItems = [
     { href: "/history", label: "History" },
+    { href: "/card", label: "My card" },
   ];
+
   return (
     <nav className="mx-auto flex max-w-[1280px] items-center justify-between px-6 py-5 sm:px-14">
       <Link
@@ -25,7 +67,8 @@ export function Navbar() {
       >
         Spe<span className="text-accent">CV</span>
       </Link>
-      <div className="flex items-center gap-5 text-[15px] font-semibold sm:gap-6">
+
+      <div className="flex items-center gap-4 text-[15px] font-semibold sm:gap-5">
         {pathname === "/" && (
           <a
             href="#how-it-works"
@@ -34,20 +77,60 @@ export function Navbar() {
             How it works
           </a>
         )}
-        {tabs.map((t) => (
-          <Link
-            key={t.href}
-            href={t.href}
-            onClick={t.href === "/" ? goHome : undefined}
-            className={
-              pathname === t.href
-                ? "text-ink underline decoration-accent decoration-2 underline-offset-8"
-                : "text-ink-soft transition-colors hover:text-ink"
-            }
+
+        {resumable && (
+          <button
+            onClick={() => router.push("/")}
+            className="cursor-pointer rounded-full bg-chip px-3.5 py-1.5 text-[13.5px] font-bold text-ink transition-colors hover:bg-selected-bg"
+            title="Pick your flow back up where you left it"
           >
-            {t.label}
+            Continue →
+          </button>
+        )}
+
+        {signedIn ? (
+          <div className="relative" ref={menuRef}>
+            <button
+              onClick={() => setMenuOpen((o) => !o)}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              aria-label="Account menu"
+              title={user?.email ?? "Account"}
+              className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full bg-accent text-[15px] font-extrabold text-white transition-opacity hover:opacity-90"
+            >
+              {initial}
+            </button>
+            {menuOpen && (
+              <div
+                role="menu"
+                className="absolute right-0 z-50 mt-2 w-48 overflow-hidden rounded-2xl border border-border bg-card py-1 shadow-[0_12px_40px_rgba(30,43,36,0.18)]"
+              >
+                {menuItems.map((m) => (
+                  <Link
+                    key={m.href}
+                    href={m.href}
+                    role="menuitem"
+                    onClick={() => setMenuOpen(false)}
+                    className={`block px-4 py-2.5 text-[14.5px] transition-colors hover:bg-chip ${
+                      pathname === m.href ? "font-bold text-ink" : "text-ink-soft"
+                    }`}
+                  >
+                    {m.label}
+                  </Link>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <Link
+            href={`/login?next=${encodeURIComponent(
+              pathname === "/login" ? "/" : pathname
+            )}`}
+            className="text-ink-soft transition-colors hover:text-ink"
+          >
+            Log in
           </Link>
-        ))}
+        )}
       </div>
     </nav>
   );

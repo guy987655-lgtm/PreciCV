@@ -18,8 +18,20 @@ import { Badge, Button, Card } from "@/components/ui";
 import { Navbar } from "@/components/navbar";
 import { CvRenderer } from "@/components/cv-renderer";
 import { ReportPage } from "@/components/report-page";
+import { useSession } from "@/lib/use-session";
 
 type PrintTarget = "cv" | "report" | "both";
+
+/** A flow saved server-side (see GET /api/jobs). */
+type SavedJob = {
+  id: string;
+  title: string;
+  company: string;
+  createdAt: string;
+  hasResult: boolean;
+  isSample: boolean;
+  tier: string | null;
+};
 
 /** Max length for a user-chosen process name (PRD 4.5.6). */
 const MAX_PROCESS_NAME = 50;
@@ -40,6 +52,24 @@ export default function HistoryPage() {
   const [hydrated, setHydrated] = useState(false);
   const [active, setActive] = useState<FunnelState | null>(null);
   const [history, setHistory] = useState<FunnelState[]>([]);
+  // Saved flows live in Supabase once a user is signed in; the localStorage
+  // list below only ever knew about flows that never got that far.
+  const { signedIn } = useSession();
+  const [jobs, setJobs] = useState<SavedJob[] | null>(null);
+  useEffect(() => {
+    if (!signedIn) {
+      setJobs(null);
+      return;
+    }
+    let alive = true;
+    fetch("/api/jobs")
+      .then((r) => (r.ok ? r.json() : { jobs: [] }))
+      .then((d) => alive && setJobs(d.jobs ?? []))
+      .catch(() => alive && setJobs([]));
+    return () => {
+      alive = false;
+    };
+  }, [signedIn]);
   // The flow being printed — rendered into hidden print targets first.
   const [printJob, setPrintJob] = useState<{
     flow: FunnelState;
@@ -300,8 +330,57 @@ export default function HistoryPage() {
           CV. Resume incomplete flows or re-download finished files.
         </p>
 
+        {/* Saved flows (server-side). These are the ones that reached an
+            account — the localStorage list below never knew about them. */}
+        {signedIn && jobs !== null && jobs.length > 0 && (
+          <div className="mt-6">
+            <h2 className="text-[13px] font-bold uppercase tracking-wide text-ink-faint">
+              Saved to your account
+            </h2>
+            <div className="mt-2 space-y-3">
+              {jobs.map((j) => (
+                <Card key={j.id} className="flex flex-wrap items-center gap-3 p-4">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-bold text-ink">
+                      {j.title || "Untitled job"}
+                      {j.company && (
+                        <span className="font-normal text-ink-faint">
+                          {" "}
+                          · {j.company}
+                        </span>
+                      )}
+                    </p>
+                    <p className="mt-0.5 text-[12.5px] text-ink-faint">
+                      {new Date(j.createdAt).toLocaleDateString()}
+                    </p>
+                  </div>
+                  {j.tier ? (
+                    <Badge tone="indigo">Purchased</Badge>
+                  ) : j.isSample ? (
+                    <Badge tone="amber">Free preview</Badge>
+                  ) : !j.hasResult ? (
+                    <Badge tone="amber">Not finished</Badge>
+                  ) : null}
+                  <Button
+                    size="md"
+                    variant="outline"
+                    onClick={() => router.push(`/jobs/${j.id}`)}
+                  >
+                    {j.hasResult ? "Open" : "Continue"}
+                  </Button>
+                </Card>
+              ))}
+            </div>
+            {flows.length > 0 && (
+              <h2 className="mt-8 text-[13px] font-bold uppercase tracking-wide text-ink-faint">
+                On this device
+              </h2>
+            )}
+          </div>
+        )}
+
         <div className="mt-6 space-y-3">
-          {hydrated && flows.length === 0 && (
+          {hydrated && flows.length === 0 && !(jobs && jobs.length > 0) && (
             <Card className="p-10 text-center">
               <span className="text-3xl">🗂️</span>
               <h2 className="mt-3 text-xl font-bold text-ink">No flows yet</h2>

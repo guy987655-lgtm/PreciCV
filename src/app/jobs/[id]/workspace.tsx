@@ -1267,17 +1267,19 @@ export function JobWorkspace({
               >
                 <div
                   ref={cvSheetRef}
-                  /* cv-print-reset is load-bearing (see globals.css). Both
-                     `relative` — needed on screen so the watermark and lock
-                     overlay position against the sheet — and the 0.85 preview
-                     scale make this div the containing block for the
-                     absolutely-positioned .cv-page, which then prints at this
-                     div's offset, shrunk, outside the page: a blank CV file.
+                  /* Both classes are load-bearing for the PDF export (see
+                     globals.css). `relative` — needed on screen so the
+                     watermark and lock overlay position against the sheet —
+                     would make this div the containing block for the
+                     absolutely-positioned .cv-page, printing the A4 sheet at
+                     this div's offset, outside the page: a blank CV file.
+                     cv-print-reset drops it back to static for print.
+                     cv-preview-scale replaces a `scale-[0.85] lg:scale-100`
+                     utility pair, which had the same effect and could not be
+                     reliably undone in print — it now exists only on screen.
                      The print viewport is narrower than `lg`, so the scale
-                     applies there too. An earlier `print:transform-none` did
-                     nothing about it: Tailwind v4 emits `scale: .85`, not a
-                     transform. */
-                  className="cv-print-reset relative origin-top-left scale-[0.85] lg:scale-100"
+                     would otherwise apply there too. */
+                  className="cv-print-reset cv-preview-scale relative origin-top-left"
                 >
                 {isSample && <SampleWatermark />}
                 {isSample && <SampleLockOverlay bands={blurBands} />}

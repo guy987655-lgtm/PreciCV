@@ -216,16 +216,21 @@ body {
      A4 sheet then renders at that ancestor's offset (and at its scale),
      landing outside the printable area: a blank exported file.
 
-     Tailwind v4 compiles `scale-*` to the standalone `scale` property, not
-     to `transform`, so a `print:transform-none` utility does NOT undo it —
-     every property has to be reset by name. Put this class on any wrapper
-     that sits between a print target and <body>. */
+     Put this class on any wrapper that sits between a print target and
+     <body>.
+
+     It resets ONLY position and transform, on purpose. Tailwind v4 compiles
+     `scale-*` to the standalone `scale` property, and adding identity resets
+     for scale/rotate/translate here does NOT survive the build: the minifier
+     folds `transform:none; scale:none; rotate:none; translate:none` into the
+     single shorthand `transform:scale(1)rotate(0)translate(0)`, which cancels
+     nothing — the individual properties still apply and still establish a
+     containing block. (Confirmed by reading a deployed bundle; the dev server
+     does not minify, so this only breaks in production.) A preview scale must
+     therefore never reach print at all — see .cv-preview-scale below. */
   .cv-print-reset {
     position: static !important;
     transform: none !important;
-    scale: none !important;
-    rotate: none !important;
-    translate: none !important;
   }
   /* The CV keeps its full A4 height so its content spreads to fill the
      page (see cv-renderer flex-fill); the report flows to its content. */
@@ -235,5 +240,20 @@ body {
   @page {
     size: A4;
     margin: 0;
+  }
+}
+
+/**
+ * Shrink-to-fit for the workspace CV preview on narrow screens.
+ *
+ * Scoped to `screen` deliberately: this element is an ancestor of the
+ * .cv-page print target, and any `scale` on it makes it that target's
+ * containing block, which drags the printed A4 sheet off the page (see
+ * .cv-print-reset). Print media never sees this rule, so there is nothing to
+ * undo. `lg` in Tailwind is 64rem — keep the two in step.
+ */
+@media screen and (max-width: 63.999rem) {
+  .cv-preview-scale {
+    scale: 0.85;
   }
 }

@@ -35,14 +35,21 @@ export default function ContinuePage() {
           body: JSON.stringify({
             profile: stash.profile,
             rawText: stash.rawText ?? "",
+            // Structured answers when the stash has them (they keep MCQ picks
+            // replayable on future jobs); the flat map is the older shape and
+            // still imports fine.
             answers:
+              stash.storedAnswers ??
               stash.questionnaire?.questions?.map(
                 (q: { id: string; question: string }) => ({
                   question: q.question,
                   answer: stash.answers?.[q.id] ?? "",
                 })
-              ) ?? [],
+              ) ??
+              [],
             jdText: stash.jdText ?? "",
+            jobTitle: stash.jobTitle ?? "",
+            company: stash.company ?? "",
           }),
         });
         const data = await readJson(res);

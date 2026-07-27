@@ -1,7 +1,8 @@
 "use client";
 
 import { FunnelState } from "@/lib/funnel";
-import { ItemStatus, SeqItem, itemStatus } from "@/lib/chat-seq";
+import { ItemStatus, SeqItem, itemStatus, questionView } from "@/lib/chat-seq";
+import { isRtl } from "@/lib/i18n";
 
 const PHASE_LABEL: Record<1 | 2 | 3, string> = {
   1: "Required",
@@ -44,6 +45,9 @@ export function ChatQuestionPanel({
 }) {
   const visible = seq.slice(0, Math.max(0, askedCount));
   const hidden = seq.length - visible.length;
+  // Question text follows the chat's display language; the status labels
+  // around it stay in the product's own UI language.
+  const rtl = isRtl(state.uiLang);
   return (
     <nav aria-label="Your questions" className="flex flex-col gap-1">
       <p className="px-2 pb-1 text-[11px] font-bold uppercase tracking-[0.06em] text-ink-faint">
@@ -71,8 +75,11 @@ export function ChatQuestionPanel({
                 className={`mt-[3px] h-2.5 w-2.5 shrink-0 rounded-full ${meta.dot}`}
               />
               <span className="min-w-0 flex-1">
-                <span className="line-clamp-2 text-[12.5px] leading-snug text-ink-soft">
-                  {i + 1}. {item.q.question}
+                <span
+                  dir={rtl ? "rtl" : undefined}
+                  className="line-clamp-2 text-[12.5px] leading-snug text-ink-soft"
+                >
+                  {i + 1}. {questionView(state, item).question}
                 </span>
                 {meta.label && (
                   <span className={`text-[10.5px] font-semibold ${meta.labelCls}`}>

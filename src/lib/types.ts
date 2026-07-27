@@ -199,20 +199,21 @@ export const DiffReportSchema = z.object({
 export type DiffReport = z.infer<typeof DiffReportSchema>;
 
 /* Interview simulation — the second deliverable file */
+
+/** One simulated interview question. Shared with the strict LLM variants in
+ *  llm.ts, which re-wrap it with minimum counts rather than redeclaring it. */
+export const InterviewQuestionSchema = z.object({
+  question: z.string(),
+  whyTheyAsk: z.string().default(""),
+  howToAnswer: z.string().default(""),
+  /** How the interviewer asks it — drives the comic illustration. */
+  tone: z.enum(["friendly", "curious", "challenging"]).default("curious"),
+});
+
 export const InterviewSimulationSchema = z.object({
   /** 30-second elevator pitch aligned to this job, in the candidate's voice */
   pitch: z.string().default(""),
-  questions: z
-    .array(
-      z.object({
-        question: z.string(),
-        whyTheyAsk: z.string().default(""),
-        howToAnswer: z.string().default(""),
-        /** How the interviewer asks it — drives the comic illustration. */
-        tone: z.enum(["friendly", "curious", "challenging"]).default("curious"),
-      })
-    )
-    .default([]),
+  questions: z.array(InterviewQuestionSchema).default([]),
 });
 export type InterviewSimulation = z.infer<typeof InterviewSimulationSchema>;
 export type InterviewTone = InterviewSimulation["questions"][number]["tone"];
@@ -249,6 +250,12 @@ export const GreetingInfoSchema = z.object({
   /** Short human field label, e.g. "Data Analytics". */
   field: z.string().default(""),
   sameField: z.boolean().default(false),
+  /**
+   * The hiring company named in the JD ("" when it is anonymous or posted by
+   * an agency). Also names the flow in History long before generation runs —
+   * see defaultProcessName in funnel.ts.
+   */
+  company: z.string().default(""),
 });
 export type GreetingInfo = z.infer<typeof GreetingInfoSchema>;
 

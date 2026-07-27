@@ -15,10 +15,16 @@ export const dynamic = "force-dynamic";
 
 export default async function JobPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
   const { id } = await params;
+  // Checkout redirects here with ?paid=1 (or ?paid=dev in DEV_FREE_MODE).
+  // The workspace uses it to unlock without a click and to wait out the
+  // webhook when the purchase row hasn't flipped to 'paid' yet.
+  const justPaid = Boolean((await searchParams).paid);
   const supabase = await createClient();
   const {
     data: { user },
@@ -96,6 +102,7 @@ export default async function JobPage({
           : null
       }
       freeSampleAvailable={freeSampleAvailable}
+      justPaid={justPaid}
     />
   );
 }

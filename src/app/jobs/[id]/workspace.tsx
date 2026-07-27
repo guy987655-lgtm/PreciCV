@@ -81,6 +81,8 @@ type Props = {
     splitView?: boolean;
   } | null;
   freeSampleAvailable?: boolean;
+  /** Arrived here straight from checkout (?paid=…). */
+  justPaid?: boolean;
 };
 
 /**
@@ -191,6 +193,7 @@ export function JobWorkspace({
   purchase,
   generation: initialGen,
   freeSampleAvailable = false,
+  justPaid = false,
 }: Props) {
   const router = useRouter();
   const [generation, setGeneration] = useState(initialGen);
@@ -309,6 +312,12 @@ export function JobWorkspace({
    * +$1 upgrade instead of a feature nobody knows exists.
    */
   const simLocked = isSample || purchase?.tier === "match";
+  /**
+   * What the export button actually produces. Job Match owns the CV only —
+   * its interview report is never mounted as a print target, so promising
+   * "2 PDFs" handed that tier a second, empty file.
+   */
+  const exportLabel = simLocked ? "Export CV (PDF)" : "Export my files (2 PDFs)";
   /** Questions left fully readable while locked; the rest blur. */
   const SIM_CLEAR_QUESTIONS = 1;
   /** Is there simulation content to render a section for? */
@@ -391,7 +400,7 @@ export function JobWorkspace({
         // dropping it here left the report print target out of the DOM, so
         // "download reports" produced an empty page until a page reload.
         simulation: data.simulation,
-        template: generation?.template ?? "classic",
+        template: data.template ?? generation?.template ?? "classic",
         revisionNumber: generation?.revisionNumber ?? 0,
         isSample: data.isSample ?? false,
         reportStale: false,
@@ -429,6 +438,55 @@ export function JobWorkspace({
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * Paying already earned the full version — asking for one more click is
+   * just a toll gate. Whenever a paid job is still showing its watermarked
+   * sample, unlock it automatically: /api/generate flips is_sample in place
+   * and returns the stored CV, so this costs no LLM call and no credit.
+   *
+   * Keyed on the purchase/sample state rather than mount, because arriving
+   * from checkout usually means the purchase lands a moment later (see the
+   * webhook wait below) — the unlock has to fire on that transition too.
+   */
+  const autoUnlockTried = useRef(false);
+  useEffect(() => {
+    if (!purchase || !generation?.isSample || autoUnlockTried.current) return;
+    autoUnlockTried.current = true;
+    // acknowledged: true — red flags were already accepted to reach a
+    // generation, and this path creates no new content to warn about.
+    void generate(true, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [purchase, generation?.isSample]);
+
+  /**
+   * Lemon Squeezy confirms payment out-of-band, so landing on ?paid=1 often
+   * beats the webhook by a second or two. Re-fetch the server component
+   * until the purchase row appears instead of showing the pricing page to
+   * somebody who just paid.
+   */
+  const [awaitingPayment, setAwaitingPayment] = useState(justPaid && !purchase);
+  useEffect(() => {
+    if (!justPaid) return;
+    if (purchase) {
+      setAwaitingPayment(false);
+      // Drop ?paid so a reload can't replay any of this.
+      router.replace(`/jobs/${job.id}`, { scroll: false });
+      return;
+    }
+    let tries = 0;
+    const timer = setInterval(() => {
+      if (++tries > 10) {
+        // ~20s with no webhook: stop spinning and let the page speak for
+        // itself (the sample + pricing, or the fallback unlock banner).
+        clearInterval(timer);
+        setAwaitingPayment(false);
+        return;
+      }
+      router.refresh();
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [justPaid, purchase, router, job.id]);
 
   // Cut every section of the sample in half: its top half stays readable, its
   // bottom half is blurred. Measured per section (and per column, since each
@@ -810,7 +868,7 @@ export function JobWorkspace({
                 title={editing ? "Finish editing (Done) to export" : undefined}
                 onClick={exportPdf}
               >
-                {reportBusy ? "Syncing report…" : "Export PDF"}
+                {reportBusy ? "Syncing report…" : exportLabel}
               </Button>
             )}
           </div>
@@ -818,6 +876,7 @@ export function JobWorkspace({
         {generation && isSample && (
           <div className="flex items-center gap-3">
             <Badge tone="amber">Free sample — preview only</Badge>
+            {!awaitingPayment && (
             <Button
               size="md"
               onClick={() => {
@@ -835,6 +894,7 @@ export function JobWorkspace({
             >
               Unlock full version →
             </Button>
+            )}
           </div>
         )}
       </header>
@@ -844,8 +904,9 @@ export function JobWorkspace({
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border-2 border-emerald-300 bg-emerald-50/60 p-4 print:hidden">
           <p className="text-sm text-emerald-900">
             <strong>Review your tailored CV.</strong> Edit anything inline,
-            keep or remove sections — or approve it as-is. Your final files
-            (CV + simulation report) are created after approval.
+            keep or remove sections — or approve it as-is. Your final{" "}
+            {simLocked ? "CV file is" : "files (CV + simulation report) are"}{" "}
+            created after approval.
           </p>
           <Button
             size="lg"
@@ -868,15 +929,16 @@ export function JobWorkspace({
       {generation && !isSample && approved && (
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-300 bg-emerald-50 p-4 print:hidden">
           <p className="text-sm text-emerald-900">
-            <strong>Approved ✓</strong> Your final files are ready — export
-            the CV as a PDF; the change report alongside it is your
-            simulation report.
+            <strong>Approved ✓</strong>{" "}
+            {simLocked
+              ? "Your tailored CV is ready to export as a PDF."
+              : "Your final files are ready — the tailored CV and your interview simulation report, as two PDFs."}
           </p>
           <div className="flex gap-2">
             <Button variant="ghost" onClick={() => setApproved(false)}>
               Keep editing
             </Button>
-            <Button onClick={exportPdf}>Export PDF</Button>
+            <Button onClick={exportPdf}>{exportLabel}</Button>
           </div>
         </div>
       )}
@@ -965,16 +1027,30 @@ export function JobWorkspace({
         </Card>
       )}
 
-      {/* Paid while a sample exists → unlock banner */}
+      {/* Waiting on the payment provider's webhook right after checkout. */}
+      {awaitingPayment && (
+        <div className="mb-6 rounded-xl border border-indigo-200 bg-indigo-50 p-4 print:hidden">
+          <Spinner label="Confirming your payment… this takes a few seconds." />
+        </div>
+      )}
+
+      {/* Paid while a sample exists → unlocking happens automatically (see the
+          auto-unlock effect). This banner is the post-failure fallback. */}
       {purchase && generation && isSample && (
-        <div className="mb-6 flex items-center justify-between rounded-xl border border-indigo-200 bg-indigo-50 p-4 print:hidden">
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50 p-4 print:hidden">
           <p className="text-sm text-indigo-900">
-            <strong>Payment received.</strong> Unlock your CV to enable
-            editing, templates and PDF export.
+            <strong>Payment received.</strong>{" "}
+            {busy === "generate"
+              ? "Unlocking your full version…"
+              : "Unlock your CV to enable editing, templates and PDF export."}
           </p>
-          <Button disabled={busy === "generate"} onClick={() => generate(true, false)}>
-            {busy === "generate" ? <Spinner /> : "Unlock full version"}
-          </Button>
+          {busy === "generate" ? (
+            <Spinner />
+          ) : (
+            <Button onClick={() => generate(true, false)}>
+              Unlock full version
+            </Button>
+          )}
         </div>
       )}
 
@@ -1191,14 +1267,17 @@ export function JobWorkspace({
               >
                 <div
                   ref={cvSheetRef}
-                  /* print:transform-none is load-bearing. ANY transform here
-                     (even scale(1)) makes this div the containing block for
-                     the absolutely-positioned .cv-page, and the print
-                     viewport is narrower than `lg` so the 0.85 scale applied
-                     too — between them the sheet landed outside the printable
-                     area and the exported CV came out blank. The print path
-                     must have no transform at all. */
-                  className="relative origin-top-left scale-[0.85] lg:scale-100 print:transform-none"
+                  /* cv-print-reset is load-bearing (see globals.css). Both
+                     `relative` — needed on screen so the watermark and lock
+                     overlay position against the sheet — and the 0.85 preview
+                     scale make this div the containing block for the
+                     absolutely-positioned .cv-page, which then prints at this
+                     div's offset, shrunk, outside the page: a blank CV file.
+                     The print viewport is narrower than `lg`, so the scale
+                     applies there too. An earlier `print:transform-none` did
+                     nothing about it: Tailwind v4 emits `scale: .85`, not a
+                     transform. */
+                  className="cv-print-reset relative origin-top-left scale-[0.85] lg:scale-100"
                 >
                 {isSample && <SampleWatermark />}
                 {isSample && <SampleLockOverlay bands={blurBands} />}
@@ -1401,8 +1480,9 @@ export function JobWorkspace({
               </Card>
             )}
 
-            {/* Sample → conversion CTA (pricing) */}
-            {isSample && !purchase && (
+            {/* Sample → conversion CTA (pricing). Never shown to someone whose
+                payment is still being confirmed — they already bought. */}
+            {isSample && !purchase && !awaitingPayment && (
               <div id="unlock-pricing" className="mt-6 scroll-mt-24 print:hidden">
                 <h2 className="mb-3 text-center text-lg font-semibold text-slate-900">
                   Like what you see? Unlock the full version

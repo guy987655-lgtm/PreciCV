@@ -12,6 +12,7 @@ import { readJson } from "@/lib/fetch-json";
 import {
   FunnelState,
   McqAnswer,
+  OTHER_OPTION,
   formatMcqAnswer,
 } from "@/lib/funnel";
 import {
@@ -19,7 +20,9 @@ import {
   buildSequence,
   isPassed,
   itemStatus,
+  questionView,
 } from "@/lib/chat-seq";
+import { LANGUAGES, detectLang, isRtl, langDef } from "@/lib/i18n";
 import { Button, Modal, Spinner, Textarea } from "@/components/ui";
 import { McqOptions } from "@/components/mcq-options";
 import { ChatQuestionPanel } from "@/components/chat-question-panel";
@@ -66,6 +69,9 @@ type ChatFlowProps = {
   onGreetingReply: (reply: string) => void;
   onBranch: (choice: "continue" | "generate") => void;
   onBranchStart: () => void;
+  /** Translate the questionnaire into `lang` ("" restores English). */
+  onTranslate: (lang: string) => void;
+  translating: boolean;
 };
 
 /** Phase 2's old milestone line was replaced by the TransitionBlock script. */
@@ -86,34 +92,90 @@ function AnswerEditor({
   onUpdateMcq: (qId: string, next: McqAnswer) => void;
   onAnswerOpen: (qId: string, text: string) => void;
 }) {
+  const areaRef = useRef<HTMLTextAreaElement>(null);
+  const view = questionView(state, item);
   if (item.kind === "mcq") {
     return (
       <McqOptions
         question={item.q}
         answer={state.mcqAnswers[item.q.id]}
         onChange={(next) => onUpdateMcq(item.q.id, next)}
+        optionLabels={view.optionLabels}
       />
     );
   }
-  const suggestion = state.sharpenSuggestions[item.q.id];
+  const suggestion = view.example;
+  const answer = state.answers[item.q.id] ?? "";
+  /**
+   * The AI example used to live only in the placeholder, where a 3-row box
+   * cut it off and the only way to use it was to retype it. Showing it in
+   * full with a one-click adopt turns it into a starting draft: the value is
+   * written straight into the answer, editable like anything the user typed.
+   */
+  const adopt = () => {
+    onAnswerOpen(item.q.id, suggestion);
+    // Caret at the end, ready to keep writing rather than overwrite.
+    requestAnimationFrame(() => {
+      const el = areaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
+  };
   return (
-    <Textarea
-      autoFocus
-      rows={3}
-      placeholder={
-        suggestion ? `e.g. ${suggestion}` : "Share the details in your own words…"
-      }
-      value={state.answers[item.q.id] ?? ""}
-      onChange={(e) => onAnswerOpen(item.q.id, e.target.value)}
-    />
+    <>
+      {suggestion && (
+        <div className="mb-2.5 rounded-[14px] border border-dashed border-border bg-chip/60 p-3">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-ink-faint">
+            Example answer
+          </p>
+          <p className="mt-0.5 text-[13px] italic leading-snug text-ink-soft">
+            {suggestion}
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            className="mt-2"
+            onClick={adopt}
+            disabled={answer.trim() === suggestion.trim()}
+          >
+            {answer.trim() ? "Replace with this example" : "Use this example →"}
+          </Button>
+        </div>
+      )}
+      <Textarea
+        ref={areaRef}
+        autoFocus
+        rows={3}
+        placeholder={
+          suggestion
+            ? "Use the example above, or write your own…"
+            : "Share the details in your own words…"
+        }
+        value={answer}
+        onChange={(e) => onAnswerOpen(item.q.id, e.target.value)}
+      />
+    </>
   );
 }
 
-/** Renders a completed question's answer as a user bubble. */
+/**
+ * Renders a completed question's answer as a user bubble. Picked options are
+ * shown through the translated labels while the stored answer stays English —
+ * "Other" is left alone because formatMcqAnswer keys off the sentinel to
+ * splice in the free text.
+ */
 function answerText(item: SeqItem, state: FunnelState): string {
   if (item.kind === "mcq") {
     const a = state.mcqAnswers[item.q.id];
-    return a ? formatMcqAnswer(a) : "";
+    if (!a) return "";
+    const labels = questionView(state, item).optionLabels;
+    return formatMcqAnswer({
+      ...a,
+      selected: (a.selected ?? []).map((o) =>
+        o === OTHER_OPTION ? o : (labels[o] ?? o)
+      ),
+    });
   }
   return (state.answers[item.q.id] ?? "").trim();
 }
@@ -125,11 +187,12 @@ function answerText(item: SeqItem, state: FunnelState): string {
  * a mount-time decision, matching TypingBotMessage).
  */
 function QuestionBubble({
-  item,
+  view,
   animate,
   onDone,
 }: {
-  item: SeqItem;
+  /** Translated (or original) text for this question — see questionView. */
+  view: { question: string; why: string };
   animate: boolean;
   onDone?: () => void;
 }) {
@@ -154,21 +217,21 @@ function QuestionBubble({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const why = item.kind === "open" ? item.q.why : "";
+  const why = view.why;
   if (phase === "typing") return <TypingIndicator />;
   return (
     <BotBubble className={phase === "reveal" ? "chat-pop-in" : ""}>
       <span className="font-semibold">
         {phase === "reveal" ? (
           <Typewriter
-            text={item.q.question}
+            text={view.question}
             onDone={() => {
               setPhase("done");
               fireDone();
             }}
           />
         ) : (
-          item.q.question
+          view.question
         )}
       </span>
       {phase === "done" && why && (
@@ -192,12 +255,12 @@ function QuestionBubble({
 function QuestionStep({
   intro,
   animate,
-  item,
+  view,
   children,
 }: {
   intro: string | null;
   animate: boolean;
-  item: SeqItem;
+  view: { question: string; why: string };
   children: ReactNode;
 }) {
   const [introDone, setIntroDone] = useState(!animate || !intro);
@@ -227,12 +290,138 @@ function QuestionStep({
       )}
       {introDone && (
         <QuestionBubble
-          item={item}
+          view={view}
           animate={animate}
           onDone={() => setQuestionDone(true)}
         />
       )}
       {questionDone && children}
+    </div>
+  );
+}
+
+/**
+ * What the user already told us in earlier applications. Those questions are
+ * not asked again (buildSequence drops them) — but they must not vanish
+ * either, or the answers feeding the CV become invisible and uneditable. Each
+ * chip opens the same edit overlay the left panel uses.
+ */
+function KnownRecap({
+  items,
+  state,
+  onEdit,
+}: {
+  items: SeqItem[];
+  state: FunnelState;
+  onEdit: (item: SeqItem) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (items.length === 0) return null;
+  const shown = open ? items : items.slice(0, 3);
+  return (
+    <div className="rounded-[16px] border-[1.5px] border-indigo-200 bg-indigo-50/50 p-4">
+      <p className="text-[13.5px] font-bold text-indigo-900">
+        ⤺ I already know {items.length} thing{items.length === 1 ? "" : "s"} about
+        you
+      </p>
+      <p className="mt-0.5 text-[12.5px] text-indigo-900/70">
+        From your earlier applications — I won’t ask again. Tap any to update it.
+      </p>
+      <div className="mt-2.5 flex flex-wrap gap-1.5">
+        {shown.map((item) => {
+          const answer = answerText(item, state);
+          return (
+            <button
+              key={item.key}
+              onClick={() => onEdit(item)}
+              title={`${questionView(state, item).question} — tap to edit`}
+              className="max-w-full cursor-pointer truncate rounded-full border border-indigo-200 bg-card px-2.5 py-1 text-[12px] text-ink-soft transition-colors hover:border-indigo-400"
+            >
+              <span className="font-semibold text-ink">{answer || "—"}</span>
+              <span className="ms-1.5 text-ink-faint">✎</span>
+            </button>
+          );
+        })}
+      </div>
+      {items.length > 3 && (
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="mt-2 cursor-pointer text-[12px] font-semibold text-indigo-700 underline"
+        >
+          {open ? "Show less" : `Show all ${items.length}`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Flips the questionnaire between English and the reader's own language.
+ * Users were leaving the flow to paste questions into an external translator,
+ * which is where sessions died — so the toggle lives right above the chat.
+ * The browser's language is offered first; anything else is one click away.
+ */
+function TranslateToggle({
+  uiLang,
+  busy,
+  onTranslate,
+}: {
+  uiLang: string;
+  busy: boolean;
+  onTranslate: (lang: string) => void;
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const suggested = useMemo(() => detectLang(), []);
+  // The language the primary button offers: the current one while translated,
+  // otherwise the browser's — falling back to the picker when we can't guess.
+  const primary = langDef(uiLang || suggested);
+
+  if (uiLang) {
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" variant="outline" onClick={() => onTranslate("")}>
+          ↩ Back to English
+        </Button>
+        {busy && <Spinner />}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {primary && (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={busy}
+          onClick={() => onTranslate(primary.code)}
+        >
+          {busy ? <Spinner label="Translating…" /> : `🌐 ${primary.cta}`}
+        </Button>
+      )}
+      <button
+        className="cursor-pointer text-[12.5px] font-semibold text-ink-faint underline hover:text-ink-soft"
+        onClick={() => setPickerOpen((o) => !o)}
+      >
+        {primary ? "Another language" : "🌐 Translate these questions"}
+      </button>
+      {pickerOpen && (
+        <div className="flex flex-wrap gap-1.5">
+          {LANGUAGES.filter((l) => l.code !== primary?.code).map((l) => (
+            <button
+              key={l.code}
+              disabled={busy}
+              onClick={() => {
+                setPickerOpen(false);
+                onTranslate(l.code);
+              }}
+              className="cursor-pointer rounded-full border-[1.5px] border-border px-2.5 py-1 text-[12.5px] font-semibold text-ink-soft hover:border-accent-soft disabled:opacity-50"
+            >
+              {l.label}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -260,13 +449,26 @@ export function ChatFlow({
   onGreetingReply,
   onBranch,
   onBranchStart,
+  onTranslate,
+  translating,
 }: ChatFlowProps) {
   const seq = useMemo(
     () => buildSequence(state),
     // Rebuild only when the question sets change, not on every answer.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [state.mcq, state.questionnaire]
+    [state.mcq, state.questionnaire, state.knownIds]
   );
+
+  // The questions answered in earlier applications, shown as a recap instead
+  // of being asked again (see buildSequence).
+  const knownItems = useMemo(() => {
+    const known = new Set(state.knownIds ?? []);
+    if (known.size === 0) return [];
+    return buildSequence(state, { includeKnown: true }).filter((it) =>
+      known.has(it.q.id)
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.mcq, state.questionnaire, state.knownIds]);
 
   // Open questions the user explicitly skipped this session (MCQ skips live in
   // funnel state; open questions have no such field, so track them locally).
@@ -486,6 +688,9 @@ export function ChatFlow({
       ? Math.min(visibleCount, p1Count)
       : visibleCount;
 
+  /** Right-to-left display language (Hebrew, Arabic) — see i18n.ts. */
+  const rtl = isRtl(state.uiLang);
+
   const transitionEl = (
     <TransitionBlock
       branchChoice={state.branchChoice}
@@ -515,13 +720,22 @@ export function ChatFlow({
       </aside>
 
       <div className="flex min-w-0 flex-col gap-4">
-        {/* Mobile: open the question panel as a drawer */}
-        <button
-          onClick={() => setDrawerOpen(true)}
-          className="self-start rounded-full border-[1.5px] border-border bg-card px-3 py-1 text-[12.5px] font-semibold text-ink-soft lg:hidden"
-        >
-          ☰ Your questions
-        </button>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {/* Mobile: open the question panel as a drawer */}
+          <button
+            onClick={() => setDrawerOpen(true)}
+            className="rounded-full border-[1.5px] border-border bg-card px-3 py-1 text-[12.5px] font-semibold text-ink-soft lg:hidden"
+          >
+            ☰ Your questions
+          </button>
+          <div className="ms-auto">
+            <TranslateToggle
+              uiLang={state.uiLang}
+              busy={translating}
+              onTranslate={onTranslate}
+            />
+          </div>
+        </div>
 
         {/* Standalone chat card (PRD Topic 1) — the transcript and its sticky
             footer live inside one rounded, padded container */}
@@ -534,6 +748,13 @@ export function ChatFlow({
             onReply={onGreetingReply}
             onAckDone={() => setAckDoneFlow(state.flowId)}
           />
+          {greetingReady && (
+            <KnownRecap
+              items={knownItems}
+              state={state}
+              onEdit={setEditingItem}
+            />
+          )}
           {seq.slice(0, shownCount).map((item, i) => {
             const showPhase = i === 0 || seq[i - 1].phase !== item.phase;
             const isCurrent = !done && i === cursor;
@@ -548,6 +769,7 @@ export function ChatFlow({
               showPhase && item.phase !== 2
                 ? PHASE_INTRO[item.phase as 1 | 3]
                 : null;
+            const view = questionView(state, item);
             return (
               <Fragment key={item.key}>
                 {/* Once the continue branch starts, the transition script sits
@@ -555,7 +777,11 @@ export function ChatFlow({
                 {i === p1Count && optionalUnlocked && transitionEl}
                 {/* Phase intro → typing indicator → typewriter question →
                     answer/editor, strictly sequential (PRD Topic 2). */}
-                <QuestionStep intro={introText} animate={animateItem} item={item}>
+                <QuestionStep
+                  intro={introText}
+                  animate={animateItem}
+                  view={view}
+                >
                 {/* Completed items → answer bubble; current item → editor */}
                 {!isCurrent && status === "skipped" && (
                   <UserBubble>
@@ -575,6 +801,9 @@ export function ChatFlow({
 
                 {isCurrent && (
                   <div
+                    /* One dir on the wrapper flips the options, the textarea
+                       and their controls together — no per-child handling. */
+                    dir={rtl ? "rtl" : undefined}
                     className={`rounded-[18px] border-[1.5px] border-border bg-card p-4 ${
                       animateItem ? "chat-pop-in" : ""
                     }`}
@@ -784,9 +1013,9 @@ export function ChatFlow({
         title="Edit your answer"
       >
         {editingItem && (
-          <>
+          <div dir={rtl ? "rtl" : undefined}>
             <p className="mb-3 text-[14.5px] font-semibold text-ink">
-              {editingItem.q.question}
+              {questionView(state, editingItem).question}
             </p>
             <AnswerEditor
               item={editingItem}
@@ -797,7 +1026,7 @@ export function ChatFlow({
             <div className="mt-4 flex justify-end">
               <Button onClick={() => setEditingItem(null)}>Done</Button>
             </div>
-          </>
+          </div>
         )}
       </Modal>
     </div>

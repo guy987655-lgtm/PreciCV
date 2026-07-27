@@ -30,12 +30,41 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { data: jobs, error } = await supabase
+  type JobRow = {
+    id: string;
+    title: string | null;
+    company: string | null;
+    display_name?: string | null;
+    created_at: string;
+  };
+
+  // Soft-deleted rows stay in the database (purchases reference them) but
+  // must never come back into History.
+  const current = await supabase
     .from("jobs")
-    .select("id, title, company, status, created_at")
+    .select("id, title, company, display_name, status, created_at")
     .eq("user_id", user.id)
+    .is("deleted_at", null)
     .order("created_at", { ascending: false })
     .limit(50);
+
+  // Migration 0006 adds display_name/deleted_at. A deploy can land before the
+  // SQL is applied, and History going blank for everyone is a far worse
+  // failure than temporarily missing rename and soft-delete — so fall back to
+  // the pre-0006 column set instead of erroring.
+  let jobs: JobRow[] | null = current.data;
+  let error = current.error;
+  if (error) {
+    console.warn("[api/jobs] falling back to pre-0006 columns:", error.message);
+    const legacy = await supabase
+      .from("jobs")
+      .select("id, title, company, status, created_at")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false })
+      .limit(50);
+    jobs = legacy.data;
+    error = legacy.error;
+  }
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -63,6 +92,8 @@ export async function GET() {
       id: j.id,
       title: j.title ?? "",
       company: j.company ?? "",
+      /** User's rename; "" means fall back to title · company. */
+      displayName: j.display_name ?? "",
       createdAt: j.created_at,
       hasResult: genBy.has(j.id),
       isSample: genBy.get(j.id)?.is_sample ?? false,

@@ -47,10 +47,16 @@ Verified by probing each service directly (`npm run build` + live API calls):
 
 **Blockers before real money can be taken:**
 
-1. **Migration `0005_lemonsqueezy.sql` is not applied to the live database.** It
-   renames `purchases.stripe_session_id` → `provider_ref`, which the webhook
-   writes. Until it runs, a paid order fails to record and the user keeps seeing
-   the blurred sample. **Do this before the first production payment.**
+1. **Migrations `0005_lemonsqueezy.sql` and `0006_history_and_answers.sql` are
+   not applied to the live database.** 0005 renames
+   `purchases.stripe_session_id` → `provider_ref`, which the webhook writes:
+   until it runs, a paid order fails to record and the user keeps seeing the
+   blurred sample. **Do this before the first production payment.** 0006 adds
+   `jobs.display_name` / `jobs.deleted_at` (History rename + soft delete) and
+   the `profile_answers` table (cross-job answer memory); until it runs,
+   `/api/jobs`, `/api/answers` and `/api/answers/match` error against the
+   missing columns, so History and progressive profiling stay broken for
+   signed-in users. The anonymous funnel is unaffected.
 2. **No deploy target** — no Vercel project for this repo (re-verified
    2026-07-25), so pushing to GitHub deploys nothing and no production env var
    exists (`.env.local` is gitignored and local-only).

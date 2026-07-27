@@ -9,6 +9,7 @@ import {
   GenerationResultSchema,
   GreetingInfo,
   GreetingInfoSchema,
+  InterviewQuestionSchema,
   MasterProfile,
   MasterProfileSchema,
   McqQuestionnaire,
@@ -455,6 +456,10 @@ export async function analyzeJdGreeting(
       `req numbers/locations (e.g. "Senior Data Analyst").\n` +
       `- field: a SHORT human label for the job's professional field, 1-3 ` +
       `words (e.g. "Data Analytics", "Product Management").\n` +
+      `- company: the name of the company doing the hiring, as a person would ` +
+      `say it (e.g. "Monday.com", "Wix"). Return "" when the posting is ` +
+      `anonymous, or when the named party is a recruiting agency posting on ` +
+      `behalf of an undisclosed client — never guess.\n` +
       `Then from the CANDIDATE CV infer the candidate's current professional ` +
       `field (their most recent role) and set:\n` +
       `- sameField: true only when the candidate's current field and the ` +
@@ -467,8 +472,9 @@ export async function analyzeJdGreeting(
     schema: GreetingInfoSchema,
     toolName: "save_greeting_info",
     toolDescription:
-      "Save the job title, field label, and same-field verdict for the greeting.",
-    maxTokens: 300,
+      "Save the job title, hiring company, field label, and same-field " +
+      "verdict for the greeting.",
+    maxTokens: 400,
   });
 }
 
@@ -763,6 +769,42 @@ export async function generateTailoredCv(
   }
 
   result.cv = repairCv(result.cv, profile);
+
+  /**
+   * Post-condition: the interview simulation and the change report are
+   * DELIVERABLES, not optional extras — the exported report file is built
+   * from them. Every field of GenerationResultSchema is defaulted, so the
+   * derived JSON schema marks them optional and a response that stops early
+   * (recovered by closeUnbalancedJson) parses happily with an EMPTY
+   * simulation. That is how reports shipped with no questions section at all.
+   *
+   * Deliberately checked here instead of tightening the tailoring schema: a
+   * strict schema turns a missing simulation into a hard failure that also
+   * throws away a perfectly good CV — the one thing the user cannot
+   * regenerate cheaply. regenerateReport already demands a complete,
+   * non-empty report (StrictReportSchema) and costs 8k tokens against the
+   * finished CV, so repairing beats re-tailoring.
+   */
+  const missingSimulation = result.simulation.questions.length === 0;
+  const missingDiff = result.diff.changes.length === 0;
+  if (missingSimulation || missingDiff) {
+    console.warn(
+      `[tailoring] incomplete deliverables (simulation=${result.simulation.questions.length} ` +
+        `questions, diff=${result.diff.changes.length} changes) — rebuilding the report`
+    );
+    try {
+      const report = await regenerateReport(result.cv, jdText, { profile });
+      if (missingSimulation) result.simulation = report.simulation;
+      if (missingDiff) result.diff = report.diff;
+      result.jobTitle = result.jobTitle || report.jobTitle;
+      result.company = result.company || report.company;
+    } catch (e) {
+      // Non-fatal: the CV still ships. The report section stays thin rather
+      // than the whole generation failing.
+      console.error("[tailoring] report rebuild failed:", e);
+    }
+  }
+
   return result;
 }
 
@@ -790,16 +832,7 @@ const StrictReportSchema = z.object({
   }),
   simulation: z.object({
     pitch: z.string().min(1),
-    questions: z
-      .array(
-        z.object({
-          question: z.string(),
-          whyTheyAsk: z.string().default(""),
-          howToAnswer: z.string().default(""),
-          tone: z.enum(["friendly", "curious", "challenging"]).default("curious"),
-        })
-      )
-      .min(3),
+    questions: z.array(InterviewQuestionSchema).min(3),
   }),
   jobTitle: z.string().default(""),
   company: z.string().default(""),
@@ -1018,4 +1051,74 @@ export async function refineAnswer(
     maxTokens: 1200,
   });
   return result.refined.trim();
+}
+
+/* ------------------------------------------------------------------ */
+/* 8. Question translation — display-only, so the user stops leaving   */
+/*    the flow for an external translator                              */
+/* ------------------------------------------------------------------ */
+
+export type TranslatableQuestion = {
+  id: string;
+  question: string;
+  why?: string;
+  /** MCQ choices; returned in the SAME order so callers can map by index. */
+  options?: string[];
+  /** The AI example answer shown above the input, when one was fetched. */
+  example?: string;
+};
+
+const TranslatedQuestionsSchema = z.object({
+  items: z.array(
+    z.object({
+      id: z.string(),
+      question: z.string().default(""),
+      why: z.string().default(""),
+      options: z.array(z.string()).default([]),
+      example: z.string().default(""),
+    })
+  ),
+});
+
+export type TranslatedQuestions = z.infer<
+  typeof TranslatedQuestionsSchema
+>["items"];
+
+/**
+ * Translates the questionnaire for DISPLAY only. The English original stays
+ * the canonical text: answers, de-duplication and the tailoring prompt all
+ * key off it, so nothing here may reorder or drop an option — the client maps
+ * translations back onto the English choices by index.
+ */
+export async function translateQuestions(
+  items: TranslatableQuestion[],
+  targetLanguage: string
+): Promise<TranslatedQuestions> {
+  if (items.length === 0) return [];
+  const result = await structuredCall({
+    tier: "fast",
+    system:
+      `You translate job-application screening questions into ${targetLanguage} ` +
+      `for a candidate filling in a CV questionnaire. Translate naturally, the ` +
+      `way a recruiter would ask in ${targetLanguage} — not word for word. ` +
+      "Keep technical terms, tool names, company names and acronyms (SQL, " +
+      "Tableau, KPI, B2B) in their original form. Preserve the meaning " +
+      "exactly: never answer, expand, shorten or add advice.",
+    prompt:
+      `Translate every field of every item into ${targetLanguage}.\n` +
+      `Rules:\n` +
+      `1. Return one item per input id, with the SAME id.\n` +
+      `2. "options" must come back with EXACTLY the same number of entries in ` +
+      `the same order — they are matched by position. Never merge, drop, ` +
+      `reorder or add one.\n` +
+      `3. Leave a field as "" when the input had it empty.\n\n` +
+      `ITEMS:\n${JSON.stringify(items, null, 1)}`,
+    schema: TranslatedQuestionsSchema,
+    toolName: "save_translations",
+    toolDescription:
+      `Save the ${targetLanguage} translation of each question, its hint, its ` +
+      `options (same order) and its example answer.`,
+    maxTokens: 8000,
+  });
+  return result.items;
 }

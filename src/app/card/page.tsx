@@ -1,21 +1,26 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   FunnelState,
   McqAnswer,
   OTHER_OPTION,
+  flowDisplayName,
+  formatMcqAnswer,
   isMcqAnswered,
   loadFunnel,
   loadHistory,
   saveFunnel,
   stampAnswerTime,
+  updateHistoryEntry,
 } from "@/lib/funnel";
 import { MonthBucket, cumulativeUniqueAnswered } from "@/lib/answer-stats";
 import { McqQuestionnaire, Questionnaire } from "@/lib/types";
+import { isSimilarQuestion } from "@/lib/text";
 import { AnswersChart } from "@/components/answers-chart";
 import { useSimUser } from "@/lib/sim-user";
+import { useSession } from "@/lib/use-session";
 import { Badge, Button, Card, Input, Textarea } from "@/components/ui";
 import { UserCard } from "@/components/user-card";
 import { McqOptions } from "@/components/mcq-options";
@@ -23,6 +28,46 @@ import { Navbar } from "@/components/navbar";
 
 type McqQuestion = McqQuestionnaire["questions"][number];
 type OpenQuestion = Questionnaire["questions"][number];
+
+/** An answer as the account remembers it (GET /api/answers). */
+type ServerAnswer = {
+  question: string;
+  answer: string;
+  kind: "mcq" | "open";
+  selected?: string[];
+  other?: string;
+  options?: string[];
+  selectType?: "single" | "ranked";
+  updatedAt?: number;
+};
+
+/**
+ * Where a card row's answer lives — it decides where an edit is written back.
+ * The card used to read only the ACTIVE flow, so every question from an
+ * earlier application was invisible and uneditable; rows now come from all
+ * three stores and each remembers its own home.
+ */
+type RowSource =
+  | { type: "active" }
+  | { type: "history"; flowId: string; label: string }
+  | { type: "account" };
+
+type CardRow = {
+  /** Unique across sources — the same question can exist in several flows. */
+  key: string;
+  source: RowSource;
+  answeredAt: number;
+} & (
+  | { kind: "mcq"; q: McqQuestion; answer: McqAnswer | undefined }
+  | { kind: "open"; q: OpenQuestion; text: string }
+);
+
+/** Human label for where a row came from, shown next to older answers. */
+function sourceLabel(source: RowSource): string {
+  if (source.type === "history") return source.label;
+  if (source.type === "account") return "Saved to your account";
+  return "";
+}
 
 /** Every selected option as its own display string (multi-select safe). */
 function mcqAnswerParts(a?: McqAnswer): string[] {
@@ -116,7 +161,10 @@ function Section({
  */
 export default function CardPage() {
   const sim = useSimUser();
+  const { signedIn } = useSession();
   const [state, setState] = useState<FunnelState | null>(null);
+  const [historyFlows, setHistoryFlows] = useState<FunnelState[]>([]);
+  const [serverAnswers, setServerAnswers] = useState<ServerAnswer[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -136,16 +184,36 @@ export default function CardPage() {
   useEffect(() => {
     const s = loadFunnel();
     setState(s);
+    setHistoryFlows(loadHistory());
     setChartData(computeChart(s));
     setHydrated(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Simulated states: "registered — no profile" forces the empty state;
-  // "registered/paid with profile" present the card as account-saved.
+  // The account's answer memory — the only source that survives a new device
+  // or cleared storage, and the one progressive profiling matches against.
+  useEffect(() => {
+    if (!signedIn) {
+      setServerAnswers([]);
+      return;
+    }
+    let alive = true;
+    fetch("/api/answers")
+      .then((r) => (r.ok ? r.json() : { answers: [] }))
+      .then((d) => alive && setServerAnswers(d.answers ?? []))
+      .catch(() => alive && setServerAnswers([]));
+    return () => {
+      alive = false;
+    };
+  }, [signedIn]);
+
+  // A REAL session always counts as registered; `simMeta` is the dev-only
+  // simulator and reports "guest" in production, which is what used to show
+  // a signed-in user the "No User Card yet" empty state.
   const simRegistered =
-    sim === "registered_with_profile" || sim === "paid_with_profile";
-  const hasCard = Boolean(state?.profile) && sim !== "registered_no_profile";
+    signedIn || sim === "registered_with_profile" || sim === "paid_with_profile";
+  const hasCard =
+    (Boolean(state?.profile) || historyFlows.length > 0 || serverAnswers.length > 0) &&
+    (signedIn || sim !== "registered_no_profile");
 
   /* ------------- edits persist straight to the funnel state ---------- */
   function update(next: FunnelState) {
@@ -170,64 +238,241 @@ export default function CardPage() {
     });
   }
 
+  /* ------------- every question this user has ever been asked --------
+     The card is the profile hub, so it must show the whole history: the
+     active flow, every archived flow on this device, and the account's
+     answer memory. Same question asked twice → one row, newest answer. */
+  const rows = useMemo<CardRow[]>(() => {
+    const out: CardRow[] = [];
+    const flows: { flow: FunnelState; source: RowSource }[] = [
+      ...(state?.profile ? [{ flow: state, source: { type: "active" as const } }] : []),
+      ...historyFlows
+        .filter((f) => f.flowId !== state?.flowId)
+        .map((f) => ({
+          flow: f,
+          source: {
+            type: "history" as const,
+            flowId: f.flowId,
+            label: flowDisplayName(f),
+          },
+        })),
+    ];
+
+    for (const { flow, source } of flows) {
+      for (const q of flow.mcq?.questions ?? []) {
+        out.push({
+          key: `${source.type}:${"flowId" in source ? source.flowId : ""}:mcq:${q.id}`,
+          source,
+          kind: "mcq",
+          q,
+          answer: flow.mcqAnswers[q.id],
+          answeredAt: flow.answerTimes?.[q.id] ?? flow.savedAt ?? 0,
+        });
+      }
+      for (const q of flow.questionnaire?.questions ?? []) {
+        out.push({
+          key: `${source.type}:${"flowId" in source ? source.flowId : ""}:open:${q.id}`,
+          source,
+          kind: "open",
+          q,
+          text: flow.answers[q.id] ?? "",
+          answeredAt: flow.answerTimes?.[q.id] ?? flow.savedAt ?? 0,
+        });
+      }
+    }
+
+    // Account answers become rows too — on a fresh device they are the ONLY
+    // source, which is exactly the case the old card page couldn't show.
+    serverAnswers.forEach((a, i) => {
+      if (a.kind === "mcq") {
+        out.push({
+          key: `account::mcq:${i}`,
+          source: { type: "account" },
+          kind: "mcq",
+          q: {
+            id: `srv_${i}`,
+            topic: "",
+            question: a.question,
+            options: a.options ?? [],
+            selectType: a.selectType ?? "single",
+            required: false,
+            placeholderText: "",
+          },
+          answer: { selected: a.selected ?? [], other: a.other },
+          answeredAt: a.updatedAt ?? 0,
+        });
+      } else {
+        out.push({
+          key: `account::open:${i}`,
+          source: { type: "account" },
+          kind: "open",
+          q: { id: `srv_${i}`, question: a.question, why: "" },
+          text: a.answer,
+          answeredAt: a.updatedAt ?? 0,
+        });
+      }
+    });
+
+    // De-duplicate semantically (the LLM rewords every flow), newest first so
+    // the surviving row is the most recent answer to that question.
+    const answered = (r: CardRow) =>
+      r.kind === "mcq" ? isMcqAnswered(r.answer) : r.text.trim().length > 0;
+    const sorted = [...out].sort((a, b) => {
+      if (answered(a) !== answered(b)) return answered(a) ? -1 : 1;
+      return b.answeredAt - a.answeredAt;
+    });
+    const kept: CardRow[] = [];
+    for (const row of sorted) {
+      if (
+        kept.some(
+          (k) => k.kind === row.kind && isSimilarQuestion(k.q.question, row.q.question)
+        )
+      ) {
+        continue;
+      }
+      kept.push(row);
+    }
+    return kept;
+  }, [state, historyFlows, serverAnswers]);
+
   /* ------------- search + answered/unanswered partitions ------------- */
   const kw = search.trim().toLowerCase();
   const matches = (...parts: (string | undefined)[]) =>
     !kw || parts.some((p) => (p ?? "").toLowerCase().includes(kw));
 
-  const mcqQs = state?.mcq?.questions ?? [];
-  const openQs = state?.questionnaire?.questions ?? [];
+  const rowAnswered = (r: CardRow) =>
+    r.kind === "mcq" ? isMcqAnswered(r.answer) : r.text.trim().length > 0;
+  const rowMatches = (r: CardRow) =>
+    r.kind === "mcq"
+      ? matches(r.q.question, r.q.topic, ...mcqAnswerParts(r.answer))
+      : matches(r.q.question, r.text);
 
-  const answeredMcq = mcqQs.filter(
-    (q) =>
-      isMcqAnswered(state!.mcqAnswers[q.id]) &&
-      matches(q.question, q.topic, ...mcqAnswerParts(state!.mcqAnswers[q.id]))
-  );
-  const answeredOpen = openQs.filter(
-    (q) =>
-      (state!.answers?.[q.id] ?? "").trim().length > 0 &&
-      matches(q.question, state!.answers[q.id])
-  );
-  const unansweredMcq = mcqQs.filter(
-    (q) => !isMcqAnswered(state!.mcqAnswers[q.id]) && matches(q.question, q.topic)
-  );
-  const unansweredOpen = openQs.filter(
-    (q) =>
-      (state!.answers?.[q.id] ?? "").trim().length === 0 && matches(q.question)
-  );
-  const answeredCount = answeredMcq.length + answeredOpen.length;
-  const unansweredCount = unansweredMcq.length + unansweredOpen.length;
+  const answeredRows = rows.filter((r) => rowAnswered(r) && rowMatches(r));
+  const unansweredRows = rows.filter((r) => !rowAnswered(r) && rowMatches(r));
+  const answeredCount = answeredRows.length;
+  const unansweredCount = unansweredRows.length;
 
   /* ------------- open ⇄ commit ⇄ advance (draft-based editing) -------- */
-  const isMcqId = (qId: string) => mcqQs.some((q) => q.id === qId);
+
+  /**
+   * Mirrors an edit into the account's answer memory, which is what future
+   * jobs are matched against — otherwise correcting an answer here would
+   * leave the old one to be replayed onto the next application.
+   */
+  const syncToAccount = useCallback(
+    (row: CardRow, answer: string, mcq?: McqAnswer) => {
+      if (!signedIn || !answer.trim()) return;
+      void fetch("/api/answers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          answers: [
+            {
+              question: row.q.question,
+              answer,
+              kind: row.kind,
+              ...(row.kind === "mcq"
+                ? {
+                    selected: mcq?.selected ?? [],
+                    other: mcq?.other,
+                    options: row.q.options,
+                    selectType: row.q.selectType,
+                  }
+                : {}),
+            },
+          ],
+        }),
+      }).catch(() => {
+        /* best-effort: the local edit already landed */
+      });
+    },
+    [signedIn]
+  );
+
+  /** Writes an edited row back to whichever store it came from. */
+  function persistRow(row: CardRow, mcq: McqAnswer | null, text: string) {
+    if (row.kind === "mcq" && mcq) {
+      syncToAccount(row, formatMcqAnswer(mcq), mcq);
+      if (row.source.type === "active") updateMcq(row.q.id, mcq);
+      else if (row.source.type === "history") {
+        updateArchivedFlow(row.source.flowId, (f) => ({
+          mcqAnswers: { ...f.mcqAnswers, [row.q.id]: mcq },
+          answerTimes: stampAnswerTime(f, row.q.id, isMcqAnswered(mcq)),
+        }));
+      } else {
+        // Account-only row: the server call above is the whole write.
+        setServerAnswers((as) =>
+          as.map((a) =>
+            a.question === row.q.question
+              ? {
+                  ...a,
+                  answer: formatMcqAnswer(mcq),
+                  selected: mcq.selected,
+                  other: mcq.other,
+                }
+              : a
+          )
+        );
+      }
+      return;
+    }
+    if (row.kind === "open") {
+      syncToAccount(row, text);
+      if (row.source.type === "active") updateOpen(row.q.id, text);
+      else if (row.source.type === "history") {
+        updateArchivedFlow(row.source.flowId, (f) => ({
+          answers: { ...f.answers, [row.q.id]: text },
+          answerTimes: stampAnswerTime(f, row.q.id, text.trim().length > 0),
+        }));
+      } else {
+        setServerAnswers((as) =>
+          as.map((a) => (a.question === row.q.question ? { ...a, answer: text } : a))
+        );
+      }
+    }
+  }
+
+  /** Patches an archived flow in localStorage and refreshes the local copy. */
+  function updateArchivedFlow(
+    flowId: string,
+    patch: (flow: FunnelState) => Partial<FunnelState>
+  ) {
+    const flow = loadHistory().find((f) => f.flowId === flowId);
+    if (!flow) return;
+    const next = patch(flow);
+    updateHistoryEntry(flowId, next);
+    const flows = loadHistory();
+    setHistoryFlows(flows);
+    setChartData(cumulativeUniqueAnswered([...(state ? [state] : []), ...flows]));
+  }
+
+  const rowByKey = (key: string) => rows.find((r) => r.key === key);
 
   /** Open a row for editing, seeding the draft from its saved answer. */
-  function beginEdit(qId: string) {
-    if (!state) return;
-    setExpandedId(qId);
-    if (isMcqId(qId)) {
-      setDraftMcq(state.mcqAnswers[qId] ?? { selected: [] });
+  function beginEdit(key: string) {
+    const row = rowByKey(key);
+    if (!row) return;
+    setExpandedId(key);
+    if (row.kind === "mcq") {
+      setDraftMcq(row.answer ?? { selected: [] });
       setDraftText("");
     } else {
-      setDraftText(state.answers[qId] ?? "");
+      setDraftText(row.text);
       setDraftMcq(null);
     }
   }
 
-  /** Persist the draft of a given row to the funnel state. */
-  function commitEdit(qId: string) {
-    if (!state) return;
-    if (isMcqId(qId)) {
-      if (draftMcq) updateMcq(qId, draftMcq);
-    } else {
-      updateOpen(qId, draftText);
-    }
+  /** Persist the draft of a given row to its source store. */
+  function commitEdit(key: string) {
+    const row = rowByKey(key);
+    if (!row) return;
+    persistRow(row, draftMcq, draftText);
   }
 
   /** Clicking another collapsed row saves the currently-open one first. */
-  function expandRow(qId: string) {
-    if (expandedId && expandedId !== qId) commitEdit(expandedId);
-    beginEdit(qId);
+  function expandRow(key: string) {
+    if (expandedId && expandedId !== key) commitEdit(expandedId);
+    beginEdit(key);
   }
 
   /** The collapse arrow: save and close, staying put (no advance). */
@@ -238,34 +483,35 @@ export default function CardPage() {
 
   /** "Done": save this answer, close the row, and open the next question
    *  in the order they're shown on screen (so the flow reads top-to-bottom). */
-  function doneRow(qId: string) {
-    commitEdit(qId);
-    const shown = [
-      ...answeredMcq,
-      ...answeredOpen,
-      ...unansweredMcq,
-      ...unansweredOpen,
-    ].map((q) => q.id);
-    const nextId = shown[shown.indexOf(qId) + 1];
-    if (nextId) beginEdit(nextId);
+  function doneRow(key: string) {
+    commitEdit(key);
+    const shown = [...answeredRows, ...unansweredRows].map((r) => r.key);
+    const nextKey = shown[shown.indexOf(key) + 1];
+    if (nextKey) beginEdit(nextKey);
     else setExpandedId(null);
   }
 
   /* ------------- one row = one question (collapsed ⇄ expanded) -------
      Render functions (not components): a new component type per render
      would remount the row and drop textarea focus on every keystroke. */
-  function mcqRow(q: McqQuestion, answered: boolean) {
-    const expanded = expandedId === q.id;
+  function cardRow(row: CardRow) {
+    const expanded = expandedId === row.key;
+    const answered = rowAnswered(row);
+    const origin = sourceLabel(row.source);
+    const q = row.q;
+    const topic = row.kind === "mcq" ? row.q.topic || "General" : "";
     return (
-      <div key={q.id} className="border-b border-border last:border-b-0">
+      <div key={row.key} className="border-b border-border last:border-b-0">
         {!expanded ? (
           <button
             className="flex w-full cursor-pointer items-center gap-2 px-5 py-3 text-left"
-            onClick={() => expandRow(q.id)}
+            onClick={() => expandRow(row.key)}
           >
-            <span className="shrink-0 rounded bg-chip px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
-              {q.topic || "General"}
-            </span>
+            {topic && (
+              <span className="shrink-0 rounded bg-chip px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
+                {topic}
+              </span>
+            )}
             {/* faded, light-gray preview snippet of the question */}
             <span className="min-w-0 truncate text-sm text-muted">
               {q.question}
@@ -279,71 +525,55 @@ export default function CardPage() {
         ) : (
           <div className="px-5 py-4">
             <div className="flex items-center justify-between gap-3">
-              <span className="inline-block rounded bg-chip px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
-                {q.topic || "General"}
-              </span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {topic && (
+                  <span className="inline-block rounded bg-chip px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
+                    {topic}
+                  </span>
+                )}
+                {origin && (
+                  <span
+                    className="inline-block max-w-[220px] truncate rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700"
+                    title={`Answered in: ${origin}`}
+                  >
+                    {origin}
+                  </span>
+                )}
+              </div>
               <CollapseArrow onClick={closeRow} />
             </div>
             <p className="mt-1.5 text-[15px] font-semibold text-ink">
               {q.question}
             </p>
-            {(draftMcq?.selected.length ?? 0) > 0 && (
-              <div className="mt-2">
-                <AnswerChips answer={draftMcq ?? undefined} />
-              </div>
+            {row.kind === "open" && row.q.why && (
+              <p className="mt-0.5 text-[12.5px] text-ink-faint">{row.q.why}</p>
             )}
-            <div className="mt-3">
-              <McqOptions
-                question={q}
-                answer={draftMcq ?? { selected: [] }}
-                onChange={(next) => setDraftMcq(next)}
+            {row.kind === "mcq" ? (
+              <>
+                {(draftMcq?.selected.length ?? 0) > 0 && (
+                  <div className="mt-2">
+                    <AnswerChips answer={draftMcq ?? undefined} />
+                  </div>
+                )}
+                <div className="mt-3">
+                  <McqOptions
+                    question={row.q}
+                    answer={draftMcq ?? { selected: [] }}
+                    onChange={(next) => setDraftMcq(next)}
+                  />
+                </div>
+              </>
+            ) : (
+              <Textarea
+                rows={2}
+                className="mt-2.5"
+                placeholder="Your answer — any language works…"
+                value={draftText}
+                onChange={(e) => setDraftText(e.target.value)}
               />
-            </div>
-            <div className="mt-3 text-right">
-              <Button size="sm" onClick={() => doneRow(q.id)}>
-                Done
-              </Button>
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  function openRow(q: OpenQuestion, answered: boolean) {
-    const expanded = expandedId === q.id;
-    return (
-      <div key={q.id} className="border-b border-border last:border-b-0">
-        {!expanded ? (
-          <button
-            className="flex w-full cursor-pointer items-center gap-2 px-5 py-3 text-left"
-            onClick={() => expandRow(q.id)}
-          >
-            <span className="min-w-0 truncate text-sm text-muted">
-              {q.question}
-            </span>
-            {answered && (
-              <span className="ml-auto shrink-0 text-xs font-bold text-accent">
-                ✓
-              </span>
             )}
-          </button>
-        ) : (
-          <div className="px-5 py-4">
-            <div className="flex items-start justify-between gap-3">
-              <p className="text-[15px] font-semibold text-ink">{q.question}</p>
-              <CollapseArrow onClick={closeRow} />
-            </div>
-            {q.why && <p className="mt-0.5 text-[12.5px] text-ink-faint">{q.why}</p>}
-            <Textarea
-              rows={2}
-              className="mt-2.5"
-              placeholder="Your answer — any language works…"
-              value={draftText}
-              onChange={(e) => setDraftText(e.target.value)}
-            />
             <div className="mt-3 text-right">
-              <Button size="sm" onClick={() => doneRow(q.id)}>
+              <Button size="sm" onClick={() => doneRow(row.key)}>
                 Done
               </Button>
             </div>
@@ -376,7 +606,10 @@ export default function CardPage() {
           </Card>
         )}
 
-        {hydrated && hasCard && state && (
+        {/* The card no longer requires an ACTIVE flow: a returning user on a
+            new device has answers in their account and archived flows on this
+            one, and both must be manageable here. */}
+        {hydrated && hasCard && (
           <>
             <div className="flex items-center gap-3">
               <h1 className="text-2xl font-bold text-ink">Your User Card</h1>
@@ -388,9 +621,15 @@ export default function CardPage() {
                 : "Stored in this browser — it powers every CV and report you generate. Clearing site data resets it."}
             </p>
 
-            <div className="mt-5">
-              <UserCard state={state} compact />
-            </div>
+            {state?.profile && (
+              <div className="mt-5">
+                <UserCard
+                  state={state}
+                  compact
+                  answerCount={rows.filter(rowAnswered).length}
+                />
+              </div>
+            )}
 
             {/* Progress chart — unique questions answered, cumulative/month */}
             {chartData.length > 0 && (
@@ -429,8 +668,7 @@ export default function CardPage() {
                     {kw ? `No answers match “${search}”.` : "No answers yet."}
                   </p>
                 )}
-                {answeredMcq.map((q) => mcqRow(q, true))}
-                {answeredOpen.map((q) => openRow(q, true))}
+                {answeredRows.map((r) => cardRow(r))}
               </Section>
 
               <Section
@@ -446,8 +684,7 @@ export default function CardPage() {
                       : "Nothing left — you answered everything 🎉"}
                   </p>
                 )}
-                {unansweredMcq.map((q) => mcqRow(q, false))}
-                {unansweredOpen.map((q) => openRow(q, false))}
+                {unansweredRows.map((r) => cardRow(r))}
               </Section>
             </div>
           </>

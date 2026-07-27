@@ -9,6 +9,7 @@ import {
   MAX_REPORT_REGENS,
   MAX_REWRITES,
   McqQuestionnaire,
+  Questionnaire,
   RewriteLength,
   TailoredCv,
 } from "@/lib/types";
@@ -27,6 +28,7 @@ import {
   HOME_EVENT,
   McqAnswer,
   STEP_ORDER,
+  TranslatedQuestion,
   clearFunnel,
   isMcqAnswered,
   loadFunnel,
@@ -38,8 +40,9 @@ import {
   stashForSignup,
 } from "@/lib/funnel";
 import { findCachedAnswers } from "@/lib/answer-cache";
+import { EMPTY_MATCH, MatchedAnswers, mergeMatches } from "@/lib/answer-match";
 import { generateWithRetry } from "@/lib/generate-client";
-import { printBoth } from "@/lib/download";
+import { printBoth, printFile } from "@/lib/download";
 import { simMeta, useSimUser } from "@/lib/sim-user";
 import { useSession } from "@/lib/use-session";
 import { Badge, Button, Card, Modal, Spinner, Textarea, Toast } from "@/components/ui";
@@ -153,6 +156,8 @@ export function TryNow() {
   } | null>(null);
   // Fetching AI example answers for the Sharpen-step placeholders.
   const [sharpenBusy, setSharpenBusy] = useState(false);
+  // Translating the questionnaire into the user's language (Topic 1).
+  const [translating, setTranslating] = useState(false);
   // Rebuilding the interview report around the edited CV.
   const [reportBusy, setReportBusy] = useState(false);
   // Deferred print request — fired after a smart-download report refresh so the
@@ -180,6 +185,17 @@ export function TryNow() {
   // Split view honoring per-template constraints (mono/timeline/grid = never;
   // columnrule = always) regardless of the user's toggle.
   const shownSplit = effectiveSplit(template, splitView);
+  /**
+   * The download bundle is two files: the CV and the interview report. The
+   * report's centerpiece is the simulation, which the model occasionally
+   * omits (a truncated response still parses — see generateTailoredCv), so
+   * the button must not promise a second file that would come out hollow.
+   */
+  const simulationMissing =
+    results !== null && results.simulation.questions.length === 0;
+  const downloadLabel = simulationMissing
+    ? "Download my CV (PDF)"
+    : "Download my files (2 PDFs)";
   // §2.2 isDirty — true from the first change relative to lastSavedState.
   const isDirty =
     editing &&
@@ -219,10 +235,17 @@ export function TryNow() {
       });
       return { ...s, ...flags, versions: appendVersion(s.versions, version) };
     });
-    printBoth({
+    const meta = {
       name: state.profile?.contact.fullName,
       company: state.results?.company,
-    });
+    };
+    // No simulation → no second file worth handing over (its questions are
+    // the entire point of the report), so print the CV alone.
+    if (state.results && state.results.simulation.questions.length === 0) {
+      printFile("cv", meta);
+    } else {
+      printBoth(meta);
+    }
     setPrintRequest(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [printRequest, reportBusy]);
@@ -361,11 +384,27 @@ export function TryNow() {
       if (state.profile) pushToHistory(state);
       const mcqPool = { questions: normalizeMcqPool(data.mcq?.questions ?? []) };
       const questionnaire = data.questionnaire ?? null;
-      // Topic 1: pre-fill questions the user answered in a recent flow.
+      /**
+       * Progressive profiling: cross-reference this job's questions against
+       * everything the user has already answered — on this device (the
+       * localStorage cache) and, when signed in, on their account. Matches
+       * are answered up front and never asked again, so an active user gets
+       * a short questionnaire instead of the same one every time.
+       */
       const cached = findCachedAnswers(mcqPool, questionnaire, Date.now());
+      const remembered = signedIn
+        ? await matchServerAnswers(mcqPool, questionnaire)
+        : EMPTY_MATCH;
+      // The account is the stronger source: it survives devices and cleared
+      // storage, and holds the answers the user curated in My Card.
+      const known = mergeMatches(remembered, cached);
       const hasQuestions =
         mcqPool.questions.length > 0 ||
         (questionnaire?.questions?.length ?? 0) > 0;
+      // Still the chat step even when everything is already known: the chat
+      // is where the recap and the generate CTA live, and the gate branches
+      // below only render for specific user states. The user simply has
+      // nothing left to answer there.
       const nextStep: FunnelStep = hasQuestions ? "chat" : "gate";
       setState((s) => ({
         ...s,
@@ -374,17 +413,18 @@ export function TryNow() {
         rawText: data.rawText ?? "",
         questionnaire,
         mcq: mcqPool,
-        mcqAnswers: cached.mcqAnswers,
-        answers: cached.answers,
+        mcqAnswers: known.mcqAnswers,
+        answers: known.answers,
         // Fresh flow — timestamps start over; auto-filled answers count from
         // now (their earlier originals live on in the archived flow).
         answerTimes: Object.fromEntries(
           [
-            ...Object.keys(cached.mcqAnswers),
-            ...Object.keys(cached.answers),
+            ...Object.keys(known.mcqAnswers),
+            ...Object.keys(known.answers),
           ].map((id) => [id, Date.now()])
         ),
-        autoFilledIds: cached.autoFilledIds,
+        autoFilledIds: known.knownIds,
+        knownIds: known.knownIds,
         processName: "",
         roleQuestionsLoaded: false,
         mcqIndex: 0,
@@ -408,6 +448,33 @@ export function TryNow() {
       setError(e instanceof Error ? e.message : "Something went wrong");
     } finally {
       setBusy(false);
+    }
+  }
+
+  /**
+   * The account-wide half of progressive profiling. Non-fatal by design: if
+   * it fails the user simply answers a question they had answered before,
+   * which is far better than blocking the upload.
+   */
+  async function matchServerAnswers(
+    mcqPool: McqQuestionnaire,
+    questionnaire: Questionnaire | null
+  ): Promise<MatchedAnswers> {
+    try {
+      const res = await fetch("/api/answers/match", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mcq: mcqPool, questionnaire }),
+      });
+      if (!res.ok) return EMPTY_MATCH;
+      const data = await readJson(res);
+      return {
+        mcqAnswers: data.mcqAnswers ?? {},
+        answers: data.answers ?? {},
+        knownIds: data.knownIds ?? [],
+      };
+    } catch {
+      return EMPTY_MATCH;
     }
   }
 
@@ -518,6 +585,76 @@ export function TryNow() {
       // Non-fatal — the generic placeholder remains.
     } finally {
       setSharpenBusy(false);
+    }
+  }
+
+  /**
+   * Switches the questionnaire's display language. Translations are cached in
+   * the funnel state per language, so this hits the API once and every later
+   * toggle is instant and free. `lang === ""` restores the English originals,
+   * which never left — only the display layer changes (see questionView), so
+   * answers, de-duplication and the tailoring payload stay in English.
+   */
+  async function translateTo(lang: string) {
+    if (!lang) {
+      patch({ uiLang: "" });
+      return;
+    }
+    if (state.translations[lang]) {
+      patch({ uiLang: lang });
+      return;
+    }
+    setTranslating(true);
+    setError("");
+    trackButtonClick({
+      button_name: `translate_questions_${lang}`,
+      action: "translate",
+      button_text: `Translate questions to ${lang}`,
+      click_source: "landing_try_now",
+    });
+    try {
+      const items = [
+        ...(state.mcq?.questions ?? []).map((q) => ({
+          id: q.id,
+          question: q.question,
+          options: q.options,
+        })),
+        ...(state.questionnaire?.questions ?? []).map((q) => ({
+          id: q.id,
+          question: q.question,
+          why: q.why,
+          example: state.sharpenSuggestions[q.id] ?? "",
+        })),
+      ];
+      const res = await fetch("/api/try/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lang, items }),
+      });
+      const data = await readJson(res);
+      if (!res.ok) throw new Error(data.error ?? "Translation failed");
+      const map: Record<string, TranslatedQuestion> = {};
+      for (const it of (data.items ?? []) as (TranslatedQuestion & {
+        id: string;
+      })[]) {
+        map[it.id] = {
+          question: it.question ?? "",
+          why: it.why ?? "",
+          options: it.options ?? [],
+          example: it.example ?? "",
+        };
+      }
+      setState((s) => ({
+        ...s,
+        uiLang: lang,
+        translations: { ...s.translations, [lang]: map },
+      }));
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : "Couldn't translate the questions"
+      );
+    } finally {
+      setTranslating(false);
     }
   }
 
@@ -1263,6 +1400,8 @@ export function TryNow() {
               patch({ branchChoice: choice });
             }}
             onBranchStart={() => patch({ branchStarted: true })}
+            onTranslate={translateTo}
+            translating={translating}
           />
         </div>
       )}
@@ -1368,9 +1507,28 @@ export function TryNow() {
                   }
                   onClick={exportBoth}
                 >
-                  {reportBusy ? "Syncing report…" : "Download my files (2 PDFs)"}
+                  {reportBusy ? "Syncing report…" : downloadLabel}
                 </Button>
               </div>
+              {/* The interview simulation is the whole second file. When the
+                  model returned none, say so and offer the rebuild instead of
+                  handing over a report file with its main section missing. */}
+              {simulationMissing && !editing && (
+                <div className="flex flex-wrap items-center justify-end gap-2 text-[12px] text-ink-faint">
+                  <span>
+                    Your interview simulation didn’t come through — rebuild it
+                    to get the full report.
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={reportBusy || state.regensUsed >= MAX_REPORT_REGENS}
+                    onClick={() => regenerateReportNow()}
+                  >
+                    {reportBusy ? "Rebuilding…" : "Rebuild my report"}
+                  </Button>
+                </div>
+              )}
               {state.reportStale && !editing && (
                 <p className="text-[11px] text-ink-faint">
                   You edited your CV — the interview report will refresh
@@ -1435,7 +1593,10 @@ export function TryNow() {
               </CvToolbar>
               <div
                 ref={cvPreviewRef}
-                className="overflow-auto bg-chip p-4 print:bg-white print:p-0"
+                /* cv-print-reset guards the print path: nothing here may
+                   become the containing block of the absolutely-positioned
+                   .cv-page, or the exported CV prints blank (globals.css). */
+                className="cv-print-reset overflow-auto bg-chip p-4 print:bg-white print:p-0"
               >
                 <CvRenderer
                   cv={results.cv}
@@ -1715,9 +1876,7 @@ export function TryNow() {
               "Syncing report…"
             ) : (
               <>
-                <span className="hidden sm:inline">
-                  Download my files (2 PDFs)
-                </span>
+                <span className="hidden sm:inline">{downloadLabel}</span>
                 <span className="sm:hidden">Download</span>
               </>
             )}

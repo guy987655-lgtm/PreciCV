@@ -85,7 +85,7 @@ export async function POST(request: Request) {
 
   const { data: existing } = await supabase
     .from("generations")
-    .select("id, cv, diff, is_sample, template")
+    .select("id, cv, diff, simulation, is_sample, template")
     .eq("job_id", jobId)
     .eq("revision_number", 0)
     .maybeSingle();
@@ -96,10 +96,23 @@ export async function POST(request: Request) {
         .from("generations")
         .update({ is_sample: false })
         .eq("id", existing.id);
+      const { data: jobMeta } = await supabase
+        .from("jobs")
+        .select("title, company")
+        .eq("id", jobId)
+        .maybeSingle();
       return NextResponse.json({
         generationId: existing.id,
         cv: existing.cv,
         diff: existing.diff,
+        // The simulation is persisted with every generation and MUST come
+        // back on this path too: the client mounts the printable report only
+        // when it holds one, so omitting it here exported an empty report
+        // file until the user happened to reload the page.
+        simulation: existing.simulation ?? { pitch: "", questions: [] },
+        template: existing.template ?? "classic",
+        jobTitle: jobMeta?.title ?? "",
+        company: jobMeta?.company ?? "",
         isSample: false,
         unlocked: true,
       });

@@ -7,9 +7,23 @@ const BodySchema = z.object({
   profile: MasterProfileSchema,
   rawText: z.string().default(""),
   answers: z
-    .array(z.object({ question: z.string(), answer: z.string() }))
+    .array(
+      z.object({
+        question: z.string(),
+        answer: z.string(),
+        /** Structure kept for MCQ answers so they can be replayed later. */
+        kind: z.enum(["mcq", "open"]).default("open"),
+        selected: z.array(z.string()).optional(),
+        other: z.string().optional(),
+        options: z.array(z.string()).optional(),
+        selectType: z.enum(["single", "ranked"]).optional(),
+      })
+    )
     .default([]),
   jdText: z.string().default(""),
+  /** JD-derived naming captured during upload — see stashForSignup. */
+  jobTitle: z.string().default(""),
+  company: z.string().default(""),
 });
 
 /**
@@ -31,7 +45,7 @@ export async function POST(request: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
   }
-  const { profile, rawText, answers, jdText } = parsed.data;
+  const { profile, rawText, answers, jdText, jobTitle, company } = parsed.data;
 
   const { data: existing } = await supabase
     .from("profiles")
@@ -69,6 +83,10 @@ export async function POST(request: Request) {
       .insert({
         user_id: user.id,
         jd_text: jdText,
+        // Named from the JD upfront so History shows the employer straight
+        // away; generation overwrites both with its own extraction later.
+        title: jobTitle.trim() || null,
+        company: company.trim() || null,
         dealbreaker_hits: [],
         status: "created",
       })
@@ -78,6 +96,40 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
     jobId = job.id;
+  }
+
+  /**
+   * Persist every answer into the cross-job memory. Folding them into
+   * master_data.additionalFacts (above) makes them available to the tailoring
+   * prompt but NOT matchable against a future job's questions — which is why
+   * returning users used to be re-asked everything. Best-effort: a failure
+   * here must not cost the user the import they just completed.
+   */
+  const memoryRows = answers
+    .filter((a) => a.question.trim() && a.answer.trim())
+    .map((a) => ({
+      user_id: user.id,
+      question: a.question.trim(),
+      answer: a.answer.trim(),
+      kind: a.kind,
+      payload:
+        a.kind === "mcq"
+          ? {
+              selected: a.selected ?? [],
+              ...(a.other ? { other: a.other } : {}),
+              options: a.options ?? [],
+              selectType: a.selectType ?? "single",
+            }
+          : null,
+      source_job_id: jobId,
+    }));
+  if (memoryRows.length > 0) {
+    const { error: answersError } = await supabase
+      .from("profile_answers")
+      .upsert(memoryRows, { onConflict: "user_id,question" });
+    if (answersError) {
+      console.error("try/import: storing answers failed:", answersError.message);
+    }
   }
 
   return NextResponse.json({ ok: true, jobId });

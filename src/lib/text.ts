@@ -39,3 +39,31 @@ export function isSimilarQuestion(a: string, b: string, threshold = 0.6): boolea
   if (looseMatch(a, b)) return true;
   return tokenOverlap(a, b) >= threshold;
 }
+
+/** Boilerplate that reads like a company name but never is one. */
+const NOT_A_COMPANY =
+  /^(us|we|our|the (team|company|role|position|client)|you|your|a |an |this )/i;
+
+/**
+ * Best-effort hiring-company guess straight from the JD text — the fallback
+ * for when the LLM greeting call (which normally supplies it) failed or
+ * returned nothing. Deliberately conservative: a wrong company name on a
+ * History row is worse than the neutral date fallback, so anything that
+ * doesn't look like a proper noun is rejected.
+ */
+export function companyFromJd(jdText: string): string {
+  const head = jdText.slice(0, 1500);
+  const patterns = [
+    /\b(?:join|about)\s+([A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*){0,2})/,
+    /\bat\s+([A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*){0,2})\s*,?\s+(?:we|you|our)\b/,
+    /\b([A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*){0,2})\s+is\s+(?:looking|hiring|seeking)\b/,
+    /\bcompany\s*:\s*([^\n]{2,40})/i,
+  ];
+  for (const re of patterns) {
+    const hit = re.exec(head)?.[1]?.trim().replace(/[.,;:]+$/, "");
+    if (hit && hit.length >= 2 && hit.length <= 40 && !NOT_A_COMPANY.test(hit)) {
+      return hit;
+    }
+  }
+  return "";
+}

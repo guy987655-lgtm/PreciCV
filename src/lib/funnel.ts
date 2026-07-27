@@ -8,6 +8,7 @@ import {
   Questionnaire,
 } from "./types";
 import type { CvVersion } from "./cv-session";
+import { companyFromJd } from "./text";
 
 type McqQuestion = McqQuestionnaire["questions"][number];
 
@@ -172,6 +173,14 @@ export type FunnelState = {
   sharpenSuggestions: Record<string, string>;
   /** Question ids whose answer was auto-filled from a recent flow (Topic 1). */
   autoFilledIds: string[];
+  /**
+   * Question ids already answered in an earlier application, so this flow
+   * does NOT ask them again — they are recapped instead (see ChatFlow). Their
+   * questions stay in `mcq`/`questionnaire` and their answers in
+   * `mcqAnswers`/`answers`, so they still reach generation; only the asking
+   * is skipped.
+   */
+  knownIds: string[];
   /** User-chosen display name for this flow/process (Topic 4). Empty = derive. */
   processName: string;
   /** JD-derived greeting data — null when the LLM call failed/skipped. */
@@ -184,6 +193,23 @@ export type FunnelState = {
   branchChoice: "" | "continue" | "generate";
   /** In the continue branch, the user clicked [Let's Start]. */
   branchStarted: boolean;
+  /** Language the questions are DISPLAYED in. "" = the English original. */
+  uiLang: string;
+  /**
+   * Cached translations: language code → question id → translated strings.
+   * Persisted so flipping back and forth is instant and costs no LLM call.
+   */
+  translations: Record<string, Record<string, TranslatedQuestion>>;
+};
+
+/** Display-only translation of one question (see /api/try/translate). */
+export type TranslatedQuestion = {
+  question: string;
+  why: string;
+  /** Aligned by INDEX with the question's English options. */
+  options: string[];
+  /** The AI example answer, translated alongside its question. */
+  example: string;
 };
 
 export const EMPTY_FUNNEL: FunnelState = {
@@ -213,12 +239,15 @@ export const EMPTY_FUNNEL: FunnelState = {
   reportStale: false,
   sharpenSuggestions: {},
   autoFilledIds: [],
+  knownIds: [],
   processName: "",
   greetingInfo: null,
   greetingReply: "",
   greetingDone: false,
   branchChoice: "",
   branchStarted: false,
+  uiLang: "",
+  translations: {},
 };
 
 /** Topic 10 — records when a question was FIRST genuinely answered. */
@@ -405,15 +434,27 @@ export function activateFlow(flow: FunnelState) {
 }
 
 /**
- * Default display name for a flow: "[Company] - [Job Title]", with "General"
- * standing in when the JD named no company, falling back to
- * "New Application - [date]" for flows that haven't generated yet. Used until
- * the user renames the flow on the History dashboard.
+ * Default display name for a flow: "[Company] - [Job Title]".
+ *
+ * Generation used to be the only source of those two facts, so every flow
+ * read "New Application - [date]" until it finished — History was a list of
+ * indistinguishable rows. The JD greeting analysis (`greetingInfo`, extracted
+ * during upload) knows both from the start, so it names the flow the moment
+ * the job description is pasted; `companyFromJd` covers a failed greeting
+ * call. Results still win once they exist — they are the authoritative
+ * extraction. Used until the user renames the flow on the History dashboard.
  */
 export function defaultProcessName(state: FunnelState): string {
-  const job = state.results?.jobTitle?.trim();
-  const company = state.results?.company?.trim();
-  if (job) return `${company || "General"} - ${job}`;
+  const job =
+    state.results?.jobTitle?.trim() ||
+    state.greetingInfo?.targetJobTitle?.trim() ||
+    "";
+  const company =
+    state.results?.company?.trim() ||
+    state.greetingInfo?.company?.trim() ||
+    companyFromJd(state.jdText ?? "");
+  if (job) return company ? `${company} - ${job}` : job;
+  if (company) return company;
   const date = new Date(state.savedAt || Date.now()).toLocaleDateString("en-GB", {
     day: "numeric",
     month: "short",
@@ -473,6 +514,31 @@ export function stashForSignup(state: FunnelState) {
   }
   for (const [k, v] of Object.entries(state.answers)) answers[k] = v;
 
+  /**
+   * The same answers in structured form. The flat map above is what the
+   * profile's additionalFacts are built from; this is what the cross-job
+   * memory needs — an MCQ answer has to keep its picks to be replayable on a
+   * differently-worded question later (see answer-match.ts).
+   */
+  const storedAnswers = [
+    ...mcqAnswered.map((q) => ({
+      question: q.question,
+      answer: formatMcqAnswer(state.mcqAnswers[q.id]),
+      kind: "mcq" as const,
+      selected: state.mcqAnswers[q.id].selected,
+      other: state.mcqAnswers[q.id].other,
+      options: q.options,
+      selectType: q.selectType,
+    })),
+    ...(state.questionnaire?.questions ?? [])
+      .filter((q) => (state.answers[q.id] ?? "").trim())
+      .map((q) => ({
+        question: q.question,
+        answer: (state.answers[q.id] ?? "").trim(),
+        kind: "open" as const,
+      })),
+  ];
+
   localStorage.setItem(
     PENDING_KEY,
     JSON.stringify({
@@ -480,7 +546,13 @@ export function stashForSignup(state: FunnelState) {
       rawText: state.rawText,
       questionnaire: { questions },
       answers,
+      storedAnswers,
       jdText: state.jdText,
+      // Names the imported job right away — otherwise its History row reads
+      // "Untitled job" until a generation finally writes these back.
+      jobTitle: state.greetingInfo?.targetJobTitle?.trim() ?? "",
+      company:
+        state.greetingInfo?.company?.trim() || companyFromJd(state.jdText ?? ""),
       savedAt: Date.now(),
     })
   );

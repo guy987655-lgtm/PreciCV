@@ -109,12 +109,15 @@ export function mockFunnelState(opts?: { withJob?: boolean }): FunnelState {
     reportStale: false,
     sharpenSuggestions: {},
     autoFilledIds: [],
+    knownIds: [],
     processName: "",
     greetingInfo: null,
     greetingReply: "",
     greetingDone: true,
     branchChoice: "continue",
     branchStarted: true,
+    uiLang: "",
+    translations: {},
     profile: {
       contact: {
         fullName: "Dana Levi",

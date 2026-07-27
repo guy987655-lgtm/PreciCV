@@ -6,6 +6,7 @@ import {
   FunnelState,
   STEP_ORDER,
   activateFlow,
+  clearFunnel,
   flowDisplayName,
   loadFunnel,
   loadHistory,
@@ -14,7 +15,7 @@ import {
   updateHistoryEntry,
 } from "@/lib/funnel";
 import { printBoth, printFile } from "@/lib/download";
-import { Badge, Button, Card } from "@/components/ui";
+import { Badge, Button, Card, Toast } from "@/components/ui";
 import { Navbar } from "@/components/navbar";
 import { CvRenderer } from "@/components/cv-renderer";
 import { ReportPage } from "@/components/report-page";
@@ -27,6 +28,8 @@ type SavedJob = {
   id: string;
   title: string;
   company: string;
+  /** User's rename; "" falls back to the derived title · company label. */
+  displayName: string;
   createdAt: string;
   hasResult: boolean;
   isSample: boolean;
@@ -39,6 +42,94 @@ const MAX_PROCESS_NAME = 50;
 /** Human title for a flow: an explicit rename wins, else the derived default. */
 function flowTitle(f: FunnelState): string {
   return flowDisplayName(f);
+}
+
+/** History order — newest first, matching what the server returns. */
+function sortJobs(js: SavedJob[]): SavedJob[] {
+  return [...js].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/** Same rule for an account-saved job: rename → company · title → fallback. */
+function jobTitle(j: SavedJob): string {
+  if (j.displayName.trim()) return j.displayName.trim();
+  const parts = [j.company.trim(), j.title.trim()].filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : "Untitled job";
+}
+
+/**
+ * The shared inline rename input, used by both the account-saved list and the
+ * on-device list. Enter commits, clicking away commits, Escape reverts.
+ *
+ * Enter commits DIRECTLY rather than by calling blur() and letting the blur
+ * handler do it: a programmatic blur does not reliably fire a blur event when
+ * the window itself isn't focused, which silently swallowed the rename. The
+ * `done` flag then stops the blur that follows from committing a second time.
+ */
+function InlineRename({
+  initial,
+  onCommit,
+  onCancel,
+}: {
+  initial: string;
+  onCommit: (name: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initial);
+  const done = useRef(false);
+  const finish = (commit: boolean) => {
+    if (done.current) return;
+    done.current = true;
+    if (commit) onCommit(value);
+    else onCancel();
+  };
+  return (
+    <input
+      autoFocus
+      maxLength={MAX_PROCESS_NAME}
+      aria-label="Process name"
+      className="min-w-0 max-w-full rounded-md border border-indigo-400 bg-surface px-2 py-0.5 text-[15.5px] font-bold text-ink outline-none focus:ring-2 focus:ring-indigo-300"
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      onBlur={() => finish(true)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          finish(true);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          finish(false);
+        }
+      }}
+    />
+  );
+}
+
+/** The ✎ affordance that opens an inline rename. */
+function RenameButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      aria-label="Rename this process"
+      title="Rename"
+      className="shrink-0 cursor-pointer rounded-full px-1.5 py-0.5 text-sm text-muted transition-colors hover:text-indigo-600"
+      onClick={onClick}
+    >
+      ✎
+    </button>
+  );
+}
+
+/** The ✕ affordance that deletes a row. */
+function DeleteButton({ onClick, label }: { onClick: () => void; label: string }) {
+  return (
+    <button
+      aria-label={label}
+      title={label}
+      className="cursor-pointer rounded-full px-2 py-1 text-sm text-muted transition-colors hover:text-red-700"
+      onClick={onClick}
+    >
+      ✕
+    </button>
+  );
 }
 
 /**
@@ -76,13 +167,13 @@ export default function HistoryPage() {
     target: PrintTarget;
   } | null>(null);
 
-  // Inline process renaming (PRD Topic 4).
-  const [editing, setEditing] = useState<{ id: string; value: string } | null>(
-    null
-  );
+  // Inline process renaming (PRD Topic 4) — one id at a time across both
+  // lists; local flow ids and job uuids never collide.
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
-  // Set on Esc so the input's blur handler doesn't also commit the revert.
-  const cancelledRef = useRef(false);
+  // A soft-deleted account job, held for the Undo window.
+  const [deletedJob, setDeletedJob] = useState<SavedJob | null>(null);
+  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function refresh() {
     const f = loadFunnel();
@@ -90,9 +181,11 @@ export default function HistoryPage() {
     setHistory(loadHistory());
   }
 
-  function startRename(flow: FunnelState) {
-    setRenameError(null);
-    setEditing({ id: flow.flowId, value: flowDisplayName(flow) });
+  /** PRD 4.5.6 — an empty name flashes a warning and keeps the old one. */
+  function rejectEmptyName(id: string) {
+    setRenameError(id);
+    setTimeout(() => setRenameError(null), 1600);
+    setEditingId(null);
   }
 
   /** Persists to the active flow or the archived entry, whichever holds it. */
@@ -106,28 +199,83 @@ export default function HistoryPage() {
     refresh();
   }
 
-  function commitRename(flow: FunnelState) {
-    if (cancelledRef.current) {
-      cancelledRef.current = false;
-      return;
-    }
-    if (!editing || editing.id !== flow.flowId) return;
-    const name = editing.value.trim().slice(0, MAX_PROCESS_NAME);
+  function commitRename(flow: FunnelState, raw: string) {
+    const name = raw.trim().slice(0, MAX_PROCESS_NAME);
     if (!name) {
-      // PRD 4.5.6 — flash a warning and revert to the previous valid name.
-      setRenameError(flow.flowId);
-      setTimeout(() => setRenameError(null), 1600);
-      setEditing(null);
+      rejectEmptyName(flow.flowId);
       return;
     }
     persistName(flow, name);
-    setEditing(null);
+    setEditingId(null);
   }
 
-  function cancelRename() {
-    cancelledRef.current = true;
-    setEditing(null);
+  /* ---------------- account-saved jobs: rename + soft delete --------- */
+
+  /** Optimistic rename; the server is the source of truth on reload. */
+  async function commitJobRename(job: SavedJob, raw: string) {
+    const name = raw.trim().slice(0, MAX_PROCESS_NAME);
+    if (!name) {
+      rejectEmptyName(job.id);
+      return;
+    }
+    setEditingId(null);
+    setJobs((js) =>
+      (js ?? []).map((j) => (j.id === job.id ? { ...j, displayName: name } : j))
+    );
+    try {
+      await fetch(`/api/jobs/${job.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ displayName: name }),
+      });
+    } catch {
+      // Network hiccup — put the old name back rather than lie about it.
+      setJobs((js) =>
+        (js ?? []).map((j) => (j.id === job.id ? { ...j, displayName: job.displayName } : j))
+      );
+    }
   }
+
+  /**
+   * Deletion is soft server-side, so this is reversible: the row goes away
+   * immediately and an Undo toast can restore it for a few seconds.
+   */
+  async function removeJob(job: SavedJob) {
+    const paid = Boolean(job.tier);
+    if (
+      paid &&
+      !confirm(
+        `"${jobTitle(job)}" is a job you paid for. Remove it from your History? ` +
+          `Your purchase record is kept, and you can undo this right away.`
+      )
+    ) {
+      return;
+    }
+    setJobs((js) => (js ?? []).filter((j) => j.id !== job.id));
+    setDeletedJob(job);
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    undoTimer.current = setTimeout(() => setDeletedJob(null), 6000);
+    try {
+      await fetch(`/api/jobs/${job.id}`, { method: "DELETE" });
+    } catch {
+      setJobs((js) => sortJobs([...(js ?? []), job]));
+      setDeletedJob(null);
+    }
+  }
+
+  async function undoRemoveJob() {
+    const job = deletedJob;
+    if (!job) return;
+    setDeletedJob(null);
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    setJobs((js) => sortJobs([...(js ?? []), job]));
+    await fetch(`/api/jobs/${job.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deletedAt: null }),
+    }).catch(() => setJobs((js) => (js ?? []).filter((j) => j.id !== job.id)));
+  }
+
   useEffect(() => {
     refresh();
     setHydrated(true);
@@ -175,8 +323,22 @@ export default function HistoryPage() {
     router.push("/");
   }
 
-  function remove(flow: FunnelState) {
-    if (!confirm(`Delete "${flowTitle(flow)}" from your history?`)) return;
+  /**
+   * Deleting the ACTIVE flow used to be impossible — the ✕ was hidden for it,
+   * so the one row a user most often wants gone was the one they were stuck
+   * with. Clearing the funnel is the equivalent operation for that row.
+   */
+  function remove(flow: FunnelState, isActive: boolean) {
+    if (
+      !confirm(
+        isActive
+          ? `Delete "${flowTitle(flow)}"? This clears the flow in progress on this device.`
+          : `Delete "${flowTitle(flow)}" from your history?`
+      )
+    ) {
+      return;
+    }
+    if (isActive) clearFunnel();
     removeFromHistory(flow.flowId);
     refresh();
   }
@@ -188,31 +350,17 @@ export default function HistoryPage() {
     const bothDownloaded = flow.downloadedCv && flow.downloadedReport;
     const stepNum =
       Math.min(flow.furthestStep ?? 0, STEP_ORDER.length - 1) + 1;
-    const isEditing = editing?.id === flow.flowId;
+    const isEditing = editingId === flow.flowId;
     return (
       <Card key={flow.flowId || "active"} className="p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               {isEditing ? (
-                <input
-                  autoFocus
-                  maxLength={MAX_PROCESS_NAME}
-                  className="min-w-0 max-w-full rounded-md border border-indigo-400 bg-surface px-2 py-0.5 text-[15.5px] font-bold text-ink outline-none focus:ring-2 focus:ring-indigo-300"
-                  value={editing?.value ?? ""}
-                  onChange={(e) =>
-                    setEditing({ id: flow.flowId, value: e.target.value })
-                  }
-                  onBlur={() => commitRename(flow)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      (e.target as HTMLInputElement).blur();
-                    } else if (e.key === "Escape") {
-                      e.preventDefault();
-                      cancelRename();
-                    }
-                  }}
+                <InlineRename
+                  initial={flowTitle(flow)}
+                  onCommit={(name) => commitRename(flow, name)}
+                  onCancel={() => setEditingId(null)}
                 />
               ) : (
                 <button
@@ -226,14 +374,12 @@ export default function HistoryPage() {
                 </button>
               )}
               {!isEditing && (
-                <button
-                  aria-label="Rename this process"
-                  title="Rename"
-                  className="shrink-0 cursor-pointer rounded-full px-1.5 py-0.5 text-sm text-muted transition-colors hover:text-indigo-600"
-                  onClick={() => startRename(flow)}
-                >
-                  ✎
-                </button>
+                <RenameButton
+                  onClick={() => {
+                    setRenameError(null);
+                    setEditingId(flow.flowId);
+                  }}
+                />
               )}
               {isActive && <Badge tone="indigo">Active</Badge>}
               {completed ? (
@@ -296,15 +442,10 @@ export default function HistoryPage() {
                 Resume →
               </Button>
             )}
-            {!isActive && (
-              <button
-                aria-label="Delete from history"
-                className="cursor-pointer rounded-full px-2 py-1 text-sm text-muted transition-colors hover:text-red-700"
-                onClick={() => remove(flow)}
-              >
-                ✕
-              </button>
-            )}
+            <DeleteButton
+              label="Delete from history"
+              onClick={() => remove(flow, isActive)}
+            />
           </div>
         </div>
       </Card>
@@ -341,15 +482,36 @@ export default function HistoryPage() {
               {jobs.map((j) => (
                 <Card key={j.id} className="flex flex-wrap items-center gap-3 p-4">
                   <div className="min-w-0 flex-1">
-                    <p className="truncate font-bold text-ink">
-                      {j.title || "Untitled job"}
-                      {j.company && (
-                        <span className="font-normal text-ink-faint">
-                          {" "}
-                          · {j.company}
-                        </span>
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      {editingId === j.id ? (
+                        <InlineRename
+                          initial={jobTitle(j)}
+                          onCommit={(name) => commitJobRename(j, name)}
+                          onCancel={() => setEditingId(null)}
+                        />
+                      ) : (
+                        <>
+                          <button
+                            className="min-w-0 cursor-pointer truncate text-left font-bold text-ink hover:underline"
+                            onClick={() => router.push(`/jobs/${j.id}`)}
+                            title="Open this job"
+                          >
+                            {jobTitle(j)}
+                          </button>
+                          <RenameButton
+                            onClick={() => {
+                              setRenameError(null);
+                              setEditingId(j.id);
+                            }}
+                          />
+                        </>
                       )}
-                    </p>
+                    </div>
+                    {renameError === j.id && (
+                      <p className="mt-1 text-[12px] font-medium text-red-600">
+                        Name can’t be empty — reverted to the previous name.
+                      </p>
+                    )}
                     <p className="mt-0.5 text-[12.5px] text-ink-faint">
                       {new Date(j.createdAt).toLocaleDateString()}
                     </p>
@@ -368,6 +530,10 @@ export default function HistoryPage() {
                   >
                     {j.hasResult ? "Open" : "Continue"}
                   </Button>
+                  <DeleteButton
+                    label="Remove from history"
+                    onClick={() => removeJob(j)}
+                  />
                 </Card>
               ))}
             </div>
@@ -397,10 +563,18 @@ export default function HistoryPage() {
         </div>
       </div>
 
+      {deletedJob && (
+        <Toast
+          message={`"${jobTitle(deletedJob)}" removed`}
+          actionLabel="Undo"
+          onAction={undoRemoveJob}
+        />
+      )}
+
       {/* Hidden print targets for the flow being downloaded */}
       {printJob?.flow.results && (
         <>
-          <div className="print-cv-holder">
+          <div className="print-cv-holder cv-print-reset">
             <CvRenderer
               cv={printJob.flow.results.cv}
               template={printJob.flow.template || "classic"}

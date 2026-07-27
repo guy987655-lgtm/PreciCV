@@ -209,6 +209,24 @@ body {
     box-shadow: none !important;
     margin: 0 !important;
   }
+  /* The print targets above are pulled to the page origin with position:
+     absolute, which only works while their containing block is the page
+     itself. ANY positioned ancestor — or one carrying transform / scale /
+     rotate / translate — becomes their containing block instead, and the
+     A4 sheet then renders at that ancestor's offset (and at its scale),
+     landing outside the printable area: a blank exported file.
+
+     Tailwind v4 compiles `scale-*` to the standalone `scale` property, not
+     to `transform`, so a `print:transform-none` utility does NOT undo it —
+     every property has to be reset by name. Put this class on any wrapper
+     that sits between a print target and <body>. */
+  .cv-print-reset {
+    position: static !important;
+    transform: none !important;
+    scale: none !important;
+    rotate: none !important;
+    translate: none !important;
+  }
   /* The CV keeps its full A4 height so its content spreads to fill the
      page (see cv-renderer flex-fill); the report flows to its content. */
   .report-page {

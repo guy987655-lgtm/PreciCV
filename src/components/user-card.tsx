@@ -12,10 +12,17 @@ import { Badge, Card } from "@/components/ui";
 export function UserCard({
   state,
   compact = false,
+  answerCount,
 }: {
   state: FunnelState;
   /** hides the Q&A lists — used when a full answer list is shown elsewhere */
   compact?: boolean;
+  /**
+   * Total answers to show in the summary. My Card counts across every flow
+   * and the account, so without this the header would contradict the list
+   * right beneath it by counting only the active flow.
+   */
+  answerCount?: number;
 }) {
   const p = state.profile;
   if (!p) return null;
@@ -51,7 +58,10 @@ export function UserCard({
         {[
           { n: p.experience.length, label: "roles" },
           { n: p.skills.length, label: "skills" },
-          { n: mcqAnswered.length + openAnswered.length, label: "answers" },
+          {
+            n: answerCount ?? mcqAnswered.length + openAnswered.length,
+            label: "answers",
+          },
         ].map((s) => (
           <div key={s.label} className="px-2 py-3">
             <p className="text-xl font-bold text-slate-900">{s.n}</p>

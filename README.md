@@ -1,7 +1,7 @@
-# PreciCV — AI-Powered Career Agent & CV Tailoring Platform
+# SpeCV — AI-Powered Career Agent & CV Tailoring Platform
 
 Generate precise, custom-tailored, **one-page** resumes and gap-analysis
-reports for every job application. Built per the PreciCV PRD v2.0.
+reports for every job application. Built per the PreciCV PRD v2.0 (the product ships as SpeCV; PreciCV is the internal repo name).
 
 ## Stack
 

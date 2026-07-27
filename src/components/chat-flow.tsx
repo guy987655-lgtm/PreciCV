@@ -22,7 +22,6 @@ import {
   itemStatus,
   questionView,
 } from "@/lib/chat-seq";
-import { LANGUAGES, detectLang, isRtl, langDef } from "@/lib/i18n";
 import { Button, Modal, Spinner, Textarea } from "@/components/ui";
 import { McqOptions } from "@/components/mcq-options";
 import { ChatQuestionPanel } from "@/components/chat-question-panel";
@@ -69,9 +68,6 @@ type ChatFlowProps = {
   onGreetingReply: (reply: string) => void;
   onBranch: (choice: "continue" | "generate") => void;
   onBranchStart: () => void;
-  /** Translate the questionnaire into `lang` ("" restores English). */
-  onTranslate: (lang: string) => void;
-  translating: boolean;
 };
 
 /** Phase 2's old milestone line was replaced by the TransitionBlock script. */
@@ -100,7 +96,6 @@ function AnswerEditor({
         question={item.q}
         answer={state.mcqAnswers[item.q.id]}
         onChange={(next) => onUpdateMcq(item.q.id, next)}
-        optionLabels={view.optionLabels}
       />
     );
   }
@@ -159,23 +154,12 @@ function AnswerEditor({
   );
 }
 
-/**
- * Renders a completed question's answer as a user bubble. Picked options are
- * shown through the translated labels while the stored answer stays English —
- * "Other" is left alone because formatMcqAnswer keys off the sentinel to
- * splice in the free text.
- */
+/** Renders a completed question's answer as a user bubble. */
 function answerText(item: SeqItem, state: FunnelState): string {
   if (item.kind === "mcq") {
     const a = state.mcqAnswers[item.q.id];
     if (!a) return "";
-    const labels = questionView(state, item).optionLabels;
-    return formatMcqAnswer({
-      ...a,
-      selected: (a.selected ?? []).map((o) =>
-        o === OTHER_OPTION ? o : (labels[o] ?? o)
-      ),
-    });
+    return formatMcqAnswer(a);
   }
   return (state.answers[item.q.id] ?? "").trim();
 }
@@ -191,7 +175,7 @@ function QuestionBubble({
   animate,
   onDone,
 }: {
-  /** Translated (or original) text for this question — see questionView. */
+  /** Display text for this question — see questionView. */
   view: { question: string; why: string };
   animate: boolean;
   onDone?: () => void;
@@ -356,77 +340,6 @@ function KnownRecap({
 }
 
 /**
- * Flips the questionnaire between English and the reader's own language.
- * Users were leaving the flow to paste questions into an external translator,
- * which is where sessions died — so the toggle lives right above the chat.
- * The browser's language is offered first; anything else is one click away.
- */
-function TranslateToggle({
-  uiLang,
-  busy,
-  onTranslate,
-}: {
-  uiLang: string;
-  busy: boolean;
-  onTranslate: (lang: string) => void;
-}) {
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const suggested = useMemo(() => detectLang(), []);
-  // The language the primary button offers: the current one while translated,
-  // otherwise the browser's — falling back to the picker when we can't guess.
-  const primary = langDef(uiLang || suggested);
-
-  if (uiLang) {
-    return (
-      <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" variant="outline" onClick={() => onTranslate("")}>
-          ↩ Back to English
-        </Button>
-        {busy && <Spinner />}
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      {primary && (
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={busy}
-          onClick={() => onTranslate(primary.code)}
-        >
-          {busy ? <Spinner label="Translating…" /> : `🌐 ${primary.cta}`}
-        </Button>
-      )}
-      <button
-        className="cursor-pointer text-[12.5px] font-semibold text-ink-faint underline hover:text-ink-soft"
-        onClick={() => setPickerOpen((o) => !o)}
-      >
-        {primary ? "Another language" : "🌐 Translate these questions"}
-      </button>
-      {pickerOpen && (
-        <div className="flex flex-wrap gap-1.5">
-          {LANGUAGES.filter((l) => l.code !== primary?.code).map((l) => (
-            <button
-              key={l.code}
-              disabled={busy}
-              onClick={() => {
-                setPickerOpen(false);
-                onTranslate(l.code);
-              }}
-              className="cursor-pointer rounded-full border-[1.5px] border-border px-2.5 py-1 text-[12.5px] font-semibold text-ink-soft hover:border-accent-soft disabled:opacity-50"
-            >
-              {l.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
  * The unified conversational data-entry surface (PRD Topic 2). A deterministic
  * bot walks the user through required MCQs → milestone → optional MCQs → open
  * questions, with an LLM confirmation loop on longer open answers. The chat
@@ -449,8 +362,6 @@ export function ChatFlow({
   onGreetingReply,
   onBranch,
   onBranchStart,
-  onTranslate,
-  translating,
 }: ChatFlowProps) {
   const seq = useMemo(
     () => buildSequence(state),
@@ -689,7 +600,6 @@ export function ChatFlow({
       : visibleCount;
 
   /** Right-to-left display language (Hebrew, Arabic) — see i18n.ts. */
-  const rtl = isRtl(state.uiLang);
 
   const transitionEl = (
     <TransitionBlock
@@ -720,22 +630,13 @@ export function ChatFlow({
       </aside>
 
       <div className="flex min-w-0 flex-col gap-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          {/* Mobile: open the question panel as a drawer */}
-          <button
-            onClick={() => setDrawerOpen(true)}
-            className="rounded-full border-[1.5px] border-border bg-card px-3 py-1 text-[12.5px] font-semibold text-ink-soft lg:hidden"
-          >
-            ☰ Your questions
-          </button>
-          <div className="ms-auto">
-            <TranslateToggle
-              uiLang={state.uiLang}
-              busy={translating}
-              onTranslate={onTranslate}
-            />
-          </div>
-        </div>
+        {/* Mobile: open the question panel as a drawer */}
+        <button
+          onClick={() => setDrawerOpen(true)}
+          className="self-start rounded-full border-[1.5px] border-border bg-card px-3 py-1 text-[12.5px] font-semibold text-ink-soft lg:hidden"
+        >
+          ☰ Your questions
+        </button>
 
         {/* Standalone chat card (PRD Topic 1) — the transcript and its sticky
             footer live inside one rounded, padded container */}
@@ -801,9 +702,6 @@ export function ChatFlow({
 
                 {isCurrent && (
                   <div
-                    /* One dir on the wrapper flips the options, the textarea
-                       and their controls together — no per-child handling. */
-                    dir={rtl ? "rtl" : undefined}
                     className={`rounded-[18px] border-[1.5px] border-border bg-card p-4 ${
                       animateItem ? "chat-pop-in" : ""
                     }`}
@@ -1013,7 +911,7 @@ export function ChatFlow({
         title="Edit your answer"
       >
         {editingItem && (
-          <div dir={rtl ? "rtl" : undefined}>
+          <div>
             <p className="mb-3 text-[14.5px] font-semibold text-ink">
               {questionView(state, editingItem).question}
             </p>

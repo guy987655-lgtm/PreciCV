@@ -54,9 +54,13 @@ export function Navbar() {
   }, [menuOpen]);
 
   const initial = (user?.email?.trim()?.[0] ?? "?").toUpperCase();
+  // Settings holds account deletion, and the privacy policy tells users to go
+  // there. It used to be linked only from /dashboard, so removing that page
+  // would have left the right-to-erasure control reachable by URL alone.
   const menuItems = [
     { href: "/history", label: "History" },
     { href: "/card", label: "My card" },
+    { href: "/settings", label: "Settings" },
   ];
 
   async function signOut() {

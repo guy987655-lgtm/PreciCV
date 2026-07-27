@@ -33,7 +33,7 @@ function LoginForm() {
     // dead — no redirect, no message, nothing to debug.
     try {
       const supabase = createClient();
-      const next = searchParams.get("next") ?? "/dashboard";
+      const next = searchParams.get("next") ?? "/";
       const { error } = await supabase.auth.signInWithOAuth({
         provider: provider.id,
         options: {

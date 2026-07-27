@@ -12,7 +12,7 @@ import { mockFunnelState } from "./mock-data";
  * the homepage. Rendered only in development (or NEXT_PUBLIC_DEV_TOOLS=true).
  */
 
-export const SIM_KEY = "precicv_sim_user";
+const SIM_KEY = "precicv_sim_user";
 const SIM_EVENT = "precicv-sim-change";
 
 /**
@@ -71,7 +71,7 @@ export function simEnabled(): boolean {
   );
 }
 
-export function getSimStatus(): SimStatus {
+function getSimStatus(): SimStatus {
   if (typeof window === "undefined" || !simEnabled()) return "guest";
   const v = localStorage.getItem(SIM_KEY);
   return SIM_STATUSES.some((s) => s.id === v) ? (v as SimStatus) : "guest";

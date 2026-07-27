@@ -4,7 +4,7 @@ import { z } from "zod";
 /* Master Data Lake — the single immutable source of truth per user    */
 /* ------------------------------------------------------------------ */
 
-export const ContactSchema = z.object({
+const ContactSchema = z.object({
   fullName: z.string().default(""),
   email: z.string().default(""),
   phone: z.string().default(""),
@@ -13,7 +13,7 @@ export const ContactSchema = z.object({
   website: z.string().default(""),
 });
 
-export const ExperienceSchema = z.object({
+const ExperienceSchema = z.object({
   company: z.string().default(""),
   title: z.string().default(""),
   location: z.string().default(""),
@@ -24,7 +24,7 @@ export const ExperienceSchema = z.object({
   technologies: z.array(z.string()).default([]),
 });
 
-export const EducationSchema = z.object({
+const EducationSchema = z.object({
   institution: z.string().default(""),
   degree: z.string().default(""),
   field: z.string().default(""),
@@ -33,7 +33,7 @@ export const EducationSchema = z.object({
   notes: z.string().default(""),
 });
 
-export const ProjectSchema = z.object({
+const ProjectSchema = z.object({
   name: z.string().default(""),
   description: z.string().default(""),
   link: z.string().default(""),
@@ -74,7 +74,7 @@ export const DealbreakerSchema = z.object({
 });
 export type Dealbreaker = z.infer<typeof DealbreakerSchema>;
 
-export const DealbreakerHitSchema = z.object({
+const DealbreakerHitSchema = z.object({
   dealbreakerId: z.string(),
   dealbreakerText: z.string(),
   evidence: z.string(),
@@ -92,7 +92,7 @@ export type DealbreakerScan = z.infer<typeof DealbreakerScanSchema>;
 /* CV to verify it is current, adapted to the detected role            */
 /* ------------------------------------------------------------------ */
 
-export const McqQuestionSchema = z.object({
+const McqQuestionSchema = z.object({
   id: z.string(),
   /** e.g. "SQL", "Visualization", "Leadership" */
   topic: z.string().default(""),
@@ -117,8 +117,6 @@ export type McqQuestionnaire = z.infer<typeof McqQuestionnaireSchema>;
 
 /** Hard cap on questions a user MUST answer before continuing. */
 export const MAX_REQUIRED_QUESTIONS = 10;
-/** Soft cap for the dynamically generated question pool. */
-export const MAX_MCQ_POOL = 50;
 
 /* ------------------------------------------------------------------ */
 /* Dynamic questionnaire                                               */
@@ -140,7 +138,7 @@ export type Questionnaire = z.infer<typeof QuestionnaireSchema>;
 /* editor work off one shape                                           */
 /* ------------------------------------------------------------------ */
 
-export const CvItemSchema = z.object({
+const CvItemSchema = z.object({
   id: z.string(),
   /** e.g. job title / degree / project name */
   primary: z.string().default(""),
@@ -151,7 +149,7 @@ export const CvItemSchema = z.object({
   bullets: z.array(z.string()).default([]),
 });
 
-export const CvSectionSchema = z.object({
+const CvSectionSchema = z.object({
   id: z.string(),
   title: z.string(),
   items: z.array(CvItemSchema).default([]),

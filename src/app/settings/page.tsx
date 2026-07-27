@@ -36,8 +36,8 @@ export default function SettingsPage() {
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-12">
-      <Link href="/dashboard" className="text-sm text-indigo-600 hover:underline">
-        ← Dashboard
+      <Link href="/" className="text-sm text-accent hover:underline">
+        ← Back to start
       </Link>
       <h1 className="mt-2 text-2xl font-bold text-slate-900">Settings</h1>
 

@@ -21,17 +21,10 @@ export function McqOptions({
   question,
   answer,
   onChange,
-  optionLabels,
 }: {
   question: McqQuestion;
   answer?: McqAnswer;
   onChange: (next: McqAnswer) => void;
-  /**
-   * Display-only labels keyed by the English option (see questionView).
-   * Selections always store the ENGLISH string: the answer cache, the
-   * de-duplication matcher and the tailoring prompt all key off it.
-   */
-  optionLabels?: Record<string, string>;
 }) {
   const selected = answer?.selected ?? [];
   const ranked = question.selectType === "ranked";
@@ -79,7 +72,7 @@ export function McqOptions({
                   isSel ? "font-semibold text-ink" : "text-ink-soft"
                 }`}
               >
-                {optionLabels?.[opt] ?? (opt === OTHER_OPTION ? "Other…" : opt)}
+                {opt === OTHER_OPTION ? "Other…" : opt}
               </span>
             </button>
           );

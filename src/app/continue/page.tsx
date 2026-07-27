@@ -9,7 +9,7 @@ import { PENDING_KEY, clearFunnel } from "@/lib/funnel";
 /**
  * Landing spot after OAuth for users who started anonymously on the
  * landing page: imports the stashed profile + answers + JD, then jumps
- * straight to the created job (or the dashboard).
+ * straight to the created job (or home, when there is nothing to import).
  */
 export default function ContinuePage() {
   const router = useRouter();
@@ -22,7 +22,7 @@ export default function ContinuePage() {
 
     const raw = localStorage.getItem(PENDING_KEY);
     if (!raw) {
-      router.replace("/dashboard");
+      router.replace("/");
       return;
     }
 
@@ -56,7 +56,7 @@ export default function ContinuePage() {
         if (!res.ok) throw new Error(data.error ?? "Import failed");
         localStorage.removeItem(PENDING_KEY);
         clearFunnel();
-        router.replace(data.jobId ? `/jobs/${data.jobId}` : "/dashboard");
+        router.replace(data.jobId ? `/jobs/${data.jobId}` : "/");
       } catch (e) {
         setError(e instanceof Error ? e.message : "Something went wrong");
       }
@@ -70,10 +70,10 @@ export default function ContinuePage() {
           <>
             <p className="text-sm text-red-600">{error}</p>
             <button
-              className="mt-4 text-sm text-indigo-600 underline cursor-pointer"
-              onClick={() => router.replace("/dashboard")}
+              className="mt-4 text-sm text-accent underline cursor-pointer"
+              onClick={() => router.replace("/")}
             >
-              Go to dashboard
+              Back to start
             </button>
           </>
         ) : (

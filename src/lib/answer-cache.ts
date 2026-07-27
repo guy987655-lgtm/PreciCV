@@ -25,10 +25,10 @@ import {
 } from "./answer-match";
 
 /** Answers older than this are ignored (PRD 1.4 — "within the last 14 days"). */
-export const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
 /** Every answer this browser remembers, newest-first (the matcher's order). */
-export function localAnswerSources(
+function localAnswerSources(
   now: number = Date.now(),
   excludeFlowId?: string
 ): StoredAnswer[] {

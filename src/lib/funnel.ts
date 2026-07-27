@@ -13,7 +13,7 @@ import { companyFromJd } from "./text";
 type McqQuestion = McqQuestionnaire["questions"][number];
 
 /** Max segments in the questionnaire mini-navigation. */
-export const MAX_MCQ_SEGMENTS = 6;
+const MAX_MCQ_SEGMENTS = 6;
 
 /**
  * Guards the segmented mini-navigation against over-fragmented topics
@@ -193,23 +193,6 @@ export type FunnelState = {
   branchChoice: "" | "continue" | "generate";
   /** In the continue branch, the user clicked [Let's Start]. */
   branchStarted: boolean;
-  /** Language the questions are DISPLAYED in. "" = the English original. */
-  uiLang: string;
-  /**
-   * Cached translations: language code → question id → translated strings.
-   * Persisted so flipping back and forth is instant and costs no LLM call.
-   */
-  translations: Record<string, Record<string, TranslatedQuestion>>;
-};
-
-/** Display-only translation of one question (see /api/try/translate). */
-export type TranslatedQuestion = {
-  question: string;
-  why: string;
-  /** Aligned by INDEX with the question's English options. */
-  options: string[];
-  /** The AI example answer, translated alongside its question. */
-  example: string;
 };
 
 export const EMPTY_FUNNEL: FunnelState = {
@@ -246,8 +229,6 @@ export const EMPTY_FUNNEL: FunnelState = {
   greetingDone: false,
   branchChoice: "",
   branchStarted: false,
-  uiLang: "",
-  translations: {},
 };
 
 /** Topic 10 — records when a question was FIRST genuinely answered. */
@@ -367,7 +348,7 @@ export function clearFunnel() {
 /* History — every CV upload starts a flow; old flows are never lost   */
 /* ------------------------------------------------------------------ */
 
-export const HISTORY_KEY = "specv_history_v1";
+const HISTORY_KEY = "specv_history_v1";
 const HISTORY_MAX = 20;
 
 export function loadHistory(): FunnelState[] {

@@ -155,7 +155,7 @@ export function recommendTemplates(jdText: string, limit = 4): CvTemplate[] {
 }
 
 /** Designs each catalog row opens up for a free-sample viewer. */
-export const SAMPLE_UNLOCKED_PER_ROW = 2;
+const SAMPLE_UNLOCKED_PER_ROW = 2;
 
 /**
  * The designs a free sample may be viewed in: the first

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
+import { llmFailureResponse } from "@/lib/api-errors";
 import {
   generateTailoredCv,
   llmConfigured,
@@ -123,8 +124,31 @@ export async function POST(request: Request) {
     );
   }
 
-  const profile = MasterProfileSchema.parse(profileRow?.master_data ?? {});
-  const result = await generateTailoredCv(profile, job.jd_text);
+  const profileParsed = MasterProfileSchema.safeParse(
+    profileRow?.master_data ?? {}
+  );
+  if (!profileParsed.success) {
+    console.error(
+      "[api/generate] stored profile failed validation:",
+      profileParsed.error
+    );
+    return NextResponse.json(
+      {
+        error:
+          "We could not read your saved profile. Re-upload your CV and try again.",
+      },
+      { status: 422 }
+    );
+  }
+
+  let result: Awaited<ReturnType<typeof generateTailoredCv>>;
+  try {
+    result = await generateTailoredCv(profileParsed.data, job.jd_text);
+  } catch (e) {
+    // A failed run must not consume the job's free sample, and it does not:
+    // nothing is written before this point.
+    return llmFailureResponse("api/generate", e);
+  }
 
   const { data: generation, error } = await supabase
     .from("generations")

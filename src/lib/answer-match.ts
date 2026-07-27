@@ -48,7 +48,7 @@ export const EMPTY_MATCH: MatchedAnswers = {
  * when the options are incompatible (a documented edge case — no auto-fill
  * then), so we never inject an option the new question can't render.
  */
-export function adaptMcqAnswer(
+function adaptMcqAnswer(
   cached: McqAnswer,
   target: McqQuestion
 ): McqAnswer | null {

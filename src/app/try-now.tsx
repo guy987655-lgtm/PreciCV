@@ -28,7 +28,6 @@ import {
   HOME_EVENT,
   McqAnswer,
   STEP_ORDER,
-  TranslatedQuestion,
   clearFunnel,
   isMcqAnswered,
   loadFunnel,
@@ -156,8 +155,6 @@ export function TryNow() {
   } | null>(null);
   // Fetching AI example answers for the Sharpen-step placeholders.
   const [sharpenBusy, setSharpenBusy] = useState(false);
-  // Translating the questionnaire into the user's language (Topic 1).
-  const [translating, setTranslating] = useState(false);
   // Rebuilding the interview report around the edited CV.
   const [reportBusy, setReportBusy] = useState(false);
   // Deferred print request — fired after a smart-download report refresh so the
@@ -588,76 +585,6 @@ export function TryNow() {
     }
   }
 
-  /**
-   * Switches the questionnaire's display language. Translations are cached in
-   * the funnel state per language, so this hits the API once and every later
-   * toggle is instant and free. `lang === ""` restores the English originals,
-   * which never left — only the display layer changes (see questionView), so
-   * answers, de-duplication and the tailoring payload stay in English.
-   */
-  async function translateTo(lang: string) {
-    if (!lang) {
-      patch({ uiLang: "" });
-      return;
-    }
-    if (state.translations[lang]) {
-      patch({ uiLang: lang });
-      return;
-    }
-    setTranslating(true);
-    setError("");
-    trackButtonClick({
-      button_name: `translate_questions_${lang}`,
-      action: "translate",
-      button_text: `Translate questions to ${lang}`,
-      click_source: "landing_try_now",
-    });
-    try {
-      const items = [
-        ...(state.mcq?.questions ?? []).map((q) => ({
-          id: q.id,
-          question: q.question,
-          options: q.options,
-        })),
-        ...(state.questionnaire?.questions ?? []).map((q) => ({
-          id: q.id,
-          question: q.question,
-          why: q.why,
-          example: state.sharpenSuggestions[q.id] ?? "",
-        })),
-      ];
-      const res = await fetch("/api/try/translate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lang, items }),
-      });
-      const data = await readJson(res);
-      if (!res.ok) throw new Error(data.error ?? "Translation failed");
-      const map: Record<string, TranslatedQuestion> = {};
-      for (const it of (data.items ?? []) as (TranslatedQuestion & {
-        id: string;
-      })[]) {
-        map[it.id] = {
-          question: it.question ?? "",
-          why: it.why ?? "",
-          options: it.options ?? [],
-          example: it.example ?? "",
-        };
-      }
-      setState((s) => ({
-        ...s,
-        uiLang: lang,
-        translations: { ...s.translations, [lang]: map },
-      }));
-    } catch (e) {
-      setError(
-        e instanceof Error ? e.message : "Couldn't translate the questions"
-      );
-    } finally {
-      setTranslating(false);
-    }
-  }
-
   function startOver() {
     if (!confirm("Start over? Your uploaded CV analysis and answers will be cleared.")) return;
     clearFunnel();
@@ -1012,8 +939,8 @@ export function TryNow() {
         cls: "border-border bg-chip text-ink-soft",
         body: (
           <>
-            <strong className="text-ink">Welcome back!</strong> Your dashboard
-            is empty — upload your CV and complete the quick questionnaire.
+            <strong className="text-ink">Welcome back!</strong> Your profile is
+            empty — upload your CV and complete the quick questionnaire.
             Job matching and interview simulations unlock once your base
             profile exists.
           </>
@@ -1400,8 +1327,6 @@ export function TryNow() {
               patch({ branchChoice: choice });
             }}
             onBranchStart={() => patch({ branchStarted: true })}
-            onTranslate={translateTo}
-            translating={translating}
           />
         </div>
       )}

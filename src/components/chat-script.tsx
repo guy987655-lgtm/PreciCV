@@ -187,7 +187,7 @@ export function TypingBotMessage({
 }
 
 /** Chains several TypingBotMessages sequentially; `onDone` fires after the last. */
-export function ScriptedBotMessages({
+function ScriptedBotMessages({
   messages,
   animate,
   onDone,

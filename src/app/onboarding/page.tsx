@@ -97,7 +97,7 @@ export default function OnboardingPage() {
       const data = await readJson(res);
       if (!res.ok) throw new Error(data.error ?? "Failed to save");
       setStep("done");
-      setTimeout(() => router.push("/dashboard"), 1200);
+      setTimeout(() => router.push("/"), 1200);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong");
     } finally {
@@ -315,7 +315,7 @@ export default function OnboardingPage() {
             Your Master Data Lake is ready
           </h2>
           <p className="mt-1 text-[14.5px] text-ink-soft">
-            Taking you to your dashboard…
+            Taking you back to start…
           </p>
         </Card>
       )}

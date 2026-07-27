@@ -1,4 +1,5 @@
 import { Navbar } from "@/components/navbar";
+import { SiteFooter } from "@/components/site-footer";
 import { TryNow } from "./try-now";
 
 const STEPS = [
@@ -44,10 +45,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      <footer className="border-t border-border py-8 text-center text-sm text-ink-faint">
-        SpeCV — free during launch · English CVs only for now · Your CV
-        data stays in your browser.
-      </footer>
+      <SiteFooter />
     </main>
   );
 }

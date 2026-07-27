@@ -1,13 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-const PROTECTED_PREFIXES = [
-  "/dashboard",
-  "/onboarding",
-  "/jobs",
-  "/settings",
-  "/continue",
-];
+const PROTECTED_PREFIXES = ["/onboarding", "/jobs", "/settings", "/continue"];
 
 export async function proxy(request: NextRequest) {
   // Not configured yet (fresh clone without .env.local): let pages through
@@ -58,7 +52,7 @@ export async function proxy(request: NextRequest) {
 
   if (user && path === "/login") {
     // An already-signed-in user redoing the funnel arrives with
-    // ?next=/continue — honour it, or they'd be dumped on /dashboard and
+    // ?next=/continue — honour it, or they'd be dumped on the homepage and
     // their new job (and its free sample) would never be created. Only
     // same-origin relative paths, so this can't become an open redirect.
     const next = request.nextUrl.searchParams.get("next");
@@ -67,7 +61,7 @@ export async function proxy(request: NextRequest) {
       return NextResponse.redirect(new URL(next, request.url));
     }
     const url = request.nextUrl.clone();
-    url.pathname = "/dashboard";
+    url.pathname = "/";
     url.search = "";
     return NextResponse.redirect(url);
   }

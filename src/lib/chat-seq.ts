@@ -4,8 +4,7 @@
  * derives each question's status flag. Kept React-free so both the chat surface
  * and the left navigation panel work off exactly one model.
  */
-import { FunnelState, OTHER_OPTION, isMcqAnswered } from "./funnel";
-import { langDef } from "./i18n";
+import { FunnelState, isMcqAnswered } from "./funnel";
 import { McqQuestionnaire } from "./types";
 
 export type McqQ = McqQuestionnaire["questions"][number];
@@ -54,50 +53,22 @@ export function buildSequence(
 }
 
 /**
- * How one question should be DISPLAYED — translated when the user flipped the
- * language, the English original otherwise. Every surface (chat bubble, left
- * panel, edit modal) reads through here so they can never disagree, and so
- * the stored answer keeps referring to the English text underneath.
+ * How one question should be DISPLAYED. Every surface (chat bubble, left
+ * panel, edit modal) reads through here so they can never disagree about a
+ * question's text or its example answer.
  */
 export type QuestionView = {
   question: string;
   why: string;
-  /** English option → label to show. Empty when untranslated. */
-  optionLabels: Record<string, string>;
-  /** Example answer for open questions, translated when available. */
+  /** Example answer for open questions. */
   example: string;
 };
 
 export function questionView(state: FunnelState, item: SeqItem): QuestionView {
-  const original = {
+  return {
     question: item.q.question,
     why: item.kind === "open" ? item.q.why : "",
-    optionLabels: {} as Record<string, string>,
     example: state.sharpenSuggestions[item.q.id] ?? "",
-  };
-  const lang = state.uiLang;
-  if (!lang) return original;
-  const t = state.translations?.[lang]?.[item.q.id];
-  if (!t) return original;
-
-  const optionLabels: Record<string, string> = {};
-  if (item.kind === "mcq") {
-    // Position-matched (see translateQuestions). A model that returned the
-    // wrong count would silently mislabel choices, so mismatches are ignored
-    // and that question simply stays in English.
-    if (t.options.length === item.q.options.length) {
-      item.q.options.forEach((opt, i) => {
-        if (t.options[i]?.trim()) optionLabels[opt] = t.options[i];
-      });
-    }
-    const other = langDef(lang)?.otherLabel;
-    if (other) optionLabels[OTHER_OPTION] = other;
-  }
-  return {
-    question: t.question.trim() || original.question,
-    why: t.why.trim() || original.why,
-    optionLabels,
-    example: t.example.trim() || original.example,
   };
 }
 

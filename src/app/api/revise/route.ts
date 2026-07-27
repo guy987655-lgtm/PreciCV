@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
+import { llmFailureResponse } from "@/lib/api-errors";
 import {
   generateTailoredCv,
   llmConfigured,
@@ -121,13 +122,32 @@ export async function POST(request: Request) {
     .select("master_data")
     .eq("user_id", user.id)
     .single();
-  const profile = MasterProfileSchema.parse(profileRow?.master_data ?? {});
-  const previousCv = TailoredCvSchema.parse(latest.cv);
+  const profileParsed = MasterProfileSchema.safeParse(
+    profileRow?.master_data ?? {}
+  );
+  const previousParsed = TailoredCvSchema.safeParse(latest.cv);
+  if (!profileParsed.success || !previousParsed.success) {
+    console.error(
+      "[api/revise] stored data failed validation:",
+      profileParsed.error ?? previousParsed.error
+    );
+    return NextResponse.json(
+      { error: "We could not read this application's saved data." },
+      { status: 422 }
+    );
+  }
 
-  const result = await generateTailoredCv(profile, jdText, {
-    revisionInstructions: instructions,
-    previousCv,
-  });
+  let result: Awaited<ReturnType<typeof generateTailoredCv>>;
+  try {
+    result = await generateTailoredCv(profileParsed.data, jdText, {
+      revisionInstructions: instructions,
+      previousCv: previousParsed.data,
+    });
+  } catch (e) {
+    // The revision counter is only incremented after a successful insert
+    // below, so a failure here costs the user nothing.
+    return llmFailureResponse("api/revise", e);
+  }
 
   const revisionNumber = (latest.revision_number as number) + 1;
   const { data: generation, error } = await supabase

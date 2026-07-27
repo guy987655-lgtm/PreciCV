@@ -116,8 +116,6 @@ export function mockFunnelState(opts?: { withJob?: boolean }): FunnelState {
     greetingDone: true,
     branchChoice: "continue",
     branchStarted: true,
-    uiLang: "",
-    translations: {},
     profile: {
       contact: {
         fullName: "Dana Levi",

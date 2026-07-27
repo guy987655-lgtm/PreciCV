@@ -21,7 +21,7 @@ export function looseMatch(a: string, b: string): boolean {
  * Token-set overlap (Jaccard) on normalized words — robust to reordering and
  * minor wording changes ("Do you use SQL?" vs "SQL — do you use it daily?").
  */
-export function tokenOverlap(a: string, b: string): number {
+function tokenOverlap(a: string, b: string): number {
   const ta = new Set(norm(a).split(" ").filter(Boolean));
   const tb = new Set(norm(b).split(" ").filter(Boolean));
   if (ta.size === 0 || tb.size === 0) return 0;

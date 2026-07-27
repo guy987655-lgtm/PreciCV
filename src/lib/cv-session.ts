@@ -33,7 +33,7 @@ export type CvVersion = {
 };
 
 /** Human label for a milestone, e.g. "Original draft", "Regenerated · 14:03". */
-export function versionLabel(kind: VersionKind, savedAt: number): string {
+function versionLabel(kind: VersionKind, savedAt: number): string {
   const t = new Date(savedAt).toLocaleTimeString([], {
     hour: "2-digit",
     minute: "2-digit",

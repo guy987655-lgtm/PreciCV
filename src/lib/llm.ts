@@ -587,7 +587,7 @@ export async function scanDealbreakers(
  */
 const ONE_PAGE_CHAR_BUDGET = 3600;
 
-export function estimateCvChars(cv: TailoredCv): number {
+function estimateCvChars(cv: TailoredCv): number {
   let n = cv.headline.length + cv.summary.length + cv.skills.join(", ").length;
   for (const section of cv.sections) {
     n += section.title.length + 10;
@@ -1051,74 +1051,4 @@ export async function refineAnswer(
     maxTokens: 1200,
   });
   return result.refined.trim();
-}
-
-/* ------------------------------------------------------------------ */
-/* 8. Question translation — display-only, so the user stops leaving   */
-/*    the flow for an external translator                              */
-/* ------------------------------------------------------------------ */
-
-export type TranslatableQuestion = {
-  id: string;
-  question: string;
-  why?: string;
-  /** MCQ choices; returned in the SAME order so callers can map by index. */
-  options?: string[];
-  /** The AI example answer shown above the input, when one was fetched. */
-  example?: string;
-};
-
-const TranslatedQuestionsSchema = z.object({
-  items: z.array(
-    z.object({
-      id: z.string(),
-      question: z.string().default(""),
-      why: z.string().default(""),
-      options: z.array(z.string()).default([]),
-      example: z.string().default(""),
-    })
-  ),
-});
-
-export type TranslatedQuestions = z.infer<
-  typeof TranslatedQuestionsSchema
->["items"];
-
-/**
- * Translates the questionnaire for DISPLAY only. The English original stays
- * the canonical text: answers, de-duplication and the tailoring prompt all
- * key off it, so nothing here may reorder or drop an option — the client maps
- * translations back onto the English choices by index.
- */
-export async function translateQuestions(
-  items: TranslatableQuestion[],
-  targetLanguage: string
-): Promise<TranslatedQuestions> {
-  if (items.length === 0) return [];
-  const result = await structuredCall({
-    tier: "fast",
-    system:
-      `You translate job-application screening questions into ${targetLanguage} ` +
-      `for a candidate filling in a CV questionnaire. Translate naturally, the ` +
-      `way a recruiter would ask in ${targetLanguage} — not word for word. ` +
-      "Keep technical terms, tool names, company names and acronyms (SQL, " +
-      "Tableau, KPI, B2B) in their original form. Preserve the meaning " +
-      "exactly: never answer, expand, shorten or add advice.",
-    prompt:
-      `Translate every field of every item into ${targetLanguage}.\n` +
-      `Rules:\n` +
-      `1. Return one item per input id, with the SAME id.\n` +
-      `2. "options" must come back with EXACTLY the same number of entries in ` +
-      `the same order — they are matched by position. Never merge, drop, ` +
-      `reorder or add one.\n` +
-      `3. Leave a field as "" when the input had it empty.\n\n` +
-      `ITEMS:\n${JSON.stringify(items, null, 1)}`,
-    schema: TranslatedQuestionsSchema,
-    toolName: "save_translations",
-    toolDescription:
-      `Save the ${targetLanguage} translation of each question, its hint, its ` +
-      `options (same order) and its example answer.`,
-    maxTokens: 8000,
-  });
-  return result.items;
 }

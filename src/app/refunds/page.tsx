@@ -43,9 +43,9 @@ export default function RefundsPage() {
       <h2>We normally do not refund</h2>
       <ul>
         <li>
-          A CV that was delivered as described but that you did not like. Use
-          the revisions included in your tier, or write to us — we would rather
-          fix the output than take your money for nothing.
+          A CV that was delivered as described but that you did not like. Edit
+          it inline, regenerate the report, or write to us — we would rather fix
+          the output than take your money for nothing.
         </li>
         <li>
           The outcome of your application. We cannot promise interviews or

@@ -303,11 +303,10 @@ export const TIERS = {
     requiresJob: true,
     description:
       "Everything in Job Match + an interview simulation report",
-    includes: [
-      "Everything in Job Match",
-      "Interview simulation report",
-      "Up to 10 AI revisions",
-    ],
+    // No AI-revisions bullet: the revision UI was removed, so promising it
+    // here would sell a feature the workspace no longer exposes. maxRevisions
+    // stays as-is — it still bounds /api/revise if the UI ever comes back.
+    includes: ["Everything in Job Match", "Interview simulation report"],
   },
 } as const;
 export type TierId = keyof typeof TIERS;

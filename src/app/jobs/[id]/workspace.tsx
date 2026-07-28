@@ -1092,8 +1092,8 @@ export function JobWorkspace({
                   Get interview-ready
                 </h2>
                 <p className="mt-1 text-sm text-slate-600">
-                  Add the interview simulation report and up to{" "}
-                  {TIERS.full.maxRevisions} AI revisions.
+                  Add the interview simulation report — the questions they are
+                  likely to ask, and how to answer each one.
                 </p>
                 <Button
                   variant="primary"
@@ -1551,7 +1551,7 @@ export function JobWorkspace({
           </p>
           <ul className="mt-3 space-y-1.5 text-sm text-ink-soft">
             <li>✓ Interview simulation report</li>
-            <li>✓ Up to {TIERS.full.maxRevisions} AI revisions</li>
+            <li>✓ Likely questions, with guidance on how to answer</li>
             <li>✓ Keeps everything you already unlocked</li>
           </ul>
         </Card>

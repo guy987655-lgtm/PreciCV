@@ -294,7 +294,7 @@ const CONTINUE_MSG =
 const GENERATE_MSG =
   "No problem. Just say the word and I'll start generating your CV.";
 const REGISTER_MSG =
-  "Perfect — register free to save your answers and unlock your tailored CV and reports.";
+  "Perfect — register to save your answers and unlock your tailored CV and reports.";
 
 /**
  * Post-mandatory transition (PRD 1.5.5-1.5.7): milestone message, side-by-side

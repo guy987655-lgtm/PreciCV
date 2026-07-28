@@ -14,7 +14,7 @@ export default function DemoPage() {
         🎭 Demo mode — this is the <strong>paid (Full Prep)</strong> workspace with sample
         data. Inline edits won&apos;t persist.{" "}
         <Link href="/demo/sample" className="underline">
-          See the free-sample view
+          See the sample view
         </Link>{" "}
         ·{" "}
         <Link href="/" className="underline">

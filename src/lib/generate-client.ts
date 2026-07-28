@@ -63,7 +63,7 @@ export async function generateWithRetry(
 
       // Daily free limit — terminal, surfaced to the user (not an error).
       if (res.status === 429) {
-        return { quota: data.message ?? "Daily free limit reached." };
+        return { quota: data.message ?? "Daily limit reached." };
       }
       if (res.ok) return data as GenerateData;
 

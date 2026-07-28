@@ -250,7 +250,7 @@ export function RewriteTooltip({
             e.preventDefault();
             browse("undo");
           }}
-          title="Previous version (free)"
+          title="Previous version — no rewrite used"
         >
           ↶
         </button>
@@ -261,7 +261,7 @@ export function RewriteTooltip({
             e.preventDefault();
             browse("redo");
           }}
-          title="Next version (free)"
+          title="Next version — no rewrite used"
         >
           ↷
         </button>

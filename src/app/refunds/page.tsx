@@ -76,9 +76,9 @@ export default function RefundsPage() {
         business days.
       </p>
 
-      <h2>Free samples</h2>
+      <h2>Samples</h2>
       <p>
-        The free sample costs nothing and is watermarked and partly hidden by
+        The sample costs nothing and is watermarked and partly hidden by
         design, so there is nothing to refund. It exists so you can see the real
         quality of the output before paying.
       </p>

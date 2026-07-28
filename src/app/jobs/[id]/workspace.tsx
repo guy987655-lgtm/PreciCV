@@ -246,6 +246,11 @@ export function JobWorkspace({
   }, []);
   const [reportBusy, setReportBusy] = useState(false);
   const [printRequest, setPrintRequest] = useState(false);
+  // Busy from the click until the last print dialog is handed over. The ref
+  // rejects clicks the browser queued while a blocking print() was open,
+  // synchronously — before React can re-render the disabled button.
+  const [printing, setPrinting] = useState(false);
+  const exportInFlight = useRef(false);
   const [reportStale, setReportStale] = useState(
     Boolean(initialGen?.reportStale)
   );
@@ -371,7 +376,7 @@ export function JobWorkspace({
     trackButtonClick({
       button_name: asSample ? "generate_free_sample" : "generate_cv",
       action: "generate",
-      button_text: asSample ? "Generate my free sample" : "Generate tailored CV",
+      button_text: asSample ? "Generate my sample" : "Generate tailored CV",
       click_source: "job_workspace",
       job_id: job.id,
     });
@@ -646,8 +651,7 @@ export function JobWorkspace({
     return () => clearTimeout(t);
   }, [generation]);
 
-  // Deferred print: fire only once any smart-download report refresh has
-  // finished AND rendered, so the printed report reflects the latest CV.
+  // Deferred print: runs once the requested files have rendered.
   useEffect(() => {
     if (!printRequest || reportBusy) return;
     if (generation && !isSample) {
@@ -669,8 +673,15 @@ export function JobWorkspace({
       name: generation?.cv.contact.fullName,
       company: job.company,
     };
-    if (simLocked) printFile("cv", meta);
-    else printBoth(meta);
+    const job2 = simLocked
+      ? Promise.resolve(printFile("cv", meta))
+      : printBoth(meta);
+    // Stay busy until the last dialog is handed over, so clicks queued behind
+    // a blocking print() cannot stack a burst of dialogs (see printBoth).
+    void job2.finally(() => {
+      exportInFlight.current = false;
+      setPrinting(false);
+    });
     setPrintRequest(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [printRequest, reportBusy]);
@@ -814,11 +825,17 @@ export function JobWorkspace({
   }
 
   /**
-   * Smart download: if the CV was edited since the last report build, refresh
-   * the report FIRST so both files match, then print (CV + report bundle). The
-   * print fires from an effect once the fresh report has rendered.
+   * Download what is on screen, immediately.
+   *
+   * This used to rebuild the interview report first whenever the CV had been
+   * edited — an unrequested 15–45s LLM call that also burned one of the
+   * tier's limited regenerations, during which the button looked dead. The
+   * rebuild is now only ever an explicit click.
    */
-  async function exportPdf() {
+  function exportPdf() {
+    if (exportInFlight.current) return;
+    exportInFlight.current = true;
+    setPrinting(true);
     trackButtonClick({
       button_name: "export_pdf",
       action: "export",
@@ -826,9 +843,6 @@ export function JobWorkspace({
       click_source: "job_workspace",
       job_id: job.id,
     });
-    if (reportStale && regensUsed < maxRegens && !isSample) {
-      await regenerateReportNow();
-    }
     setPrintRequest(true);
   }
 
@@ -864,18 +878,24 @@ export function JobWorkspace({
             {approved && (
               <Button
                 data-tour="download"
-                disabled={reportBusy || editing}
+                disabled={reportBusy || editing || printing}
                 title={editing ? "Finish editing (Done) to export" : undefined}
                 onClick={exportPdf}
               >
-                {reportBusy ? "Syncing report…" : exportLabel}
+                {printing ? (
+                  <Spinner label="Opening your print dialog…" />
+                ) : reportBusy ? (
+                  "Rebuilding report…"
+                ) : (
+                  exportLabel
+                )}
               </Button>
             )}
           </div>
         )}
         {generation && isSample && (
           <div className="flex items-center gap-3">
-            <Badge tone="amber">Free sample — preview only</Badge>
+            <Badge tone="amber">Sample — preview only</Badge>
             {!awaitingPayment && (
             <Button
               size="md"
@@ -965,20 +985,20 @@ export function JobWorkspace({
         <div className="mx-auto max-w-3xl space-y-6 print:hidden">
           {busy === "generate" ? (
             <Card className="p-10 text-center">
-              <Spinner label="Building your free preview… (30–90 seconds)" />
+              <Spinner label="Building your preview… (30–90 seconds)" />
             </Card>
           ) : (
             <>
               {freeSampleAvailable && (
                 <Card className="border-2 border-emerald-300 bg-emerald-50/40 p-6 text-center">
-                  <Badge tone="green">Free sample for this job</Badge>
+                  <Badge tone="green">Sample for this job</Badge>
                   <h2 className="mt-2 text-lg font-semibold text-slate-900">
                     See it before you pay
                   </h2>
                   <p className="mx-auto mt-1 max-w-md text-sm text-slate-600">
                     Generate a real tailored CV for this job, shown as a
                     watermarked preview (not downloadable). Every job you add
-                    gets one free preview.
+                    gets one preview.
                   </p>
                   <Button
                     size="lg"
@@ -986,7 +1006,7 @@ export function JobWorkspace({
                     className="mt-4"
                     onClick={() => generate(false, true)}
                   >
-                    Generate my free sample
+                    Generate my sample
                   </Button>
                 </Card>
               )}
@@ -1160,7 +1180,7 @@ export function JobWorkspace({
             <div className="mb-3 flex flex-col gap-3 print:hidden">
               <p className="text-xs font-semibold text-ink-faint">
                 {isSample
-                  ? "Try 6 designs free — 🔒 unlock for the rest"
+                  ? "Try 6 designs — 🔒 unlock for the rest"
                   : "Choose a design"}
               </p>
               <div data-tour="design">
@@ -1171,9 +1191,10 @@ export function JobWorkspace({
                 />
               </div>
               {!isSample && reportStale && !editing && (
-                <p className="text-[11px] text-ink-faint">
-                  You edited your CV — the report refreshes automatically on
-                  export, or refresh it now.
+                <p className="text-[11px] text-ink-soft">
+                  You edited your CV since the report was built. Export works
+                  either way — rebuild the report first only if you want it to
+                  match.
                 </p>
               )}
               {!isSample && editing && (
@@ -1547,7 +1568,7 @@ export function JobWorkspace({
           ))}
           <p className="pt-2 font-medium text-slate-800">
             {pendingSample
-              ? "Are you sure you want to use this job's free sample on it?"
+              ? "Are you sure you want to use this job's sample on it?"
               : "Are you sure you want to proceed and spend a credit?"}
           </p>
         </div>

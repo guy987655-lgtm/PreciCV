@@ -47,7 +47,7 @@ export default function PrivacyPage() {
         <li>
           <strong>Basic usage data</strong> — aggregate page and event
           analytics, plus standard server logs (IP address, browser, timestamps)
-          which we also use to cap free generations and prevent abuse.
+          which we also use to enforce usage limits and prevent abuse.
         </li>
       </ul>
 
@@ -95,7 +95,7 @@ export default function PrivacyPage() {
       <h2>Cookies</h2>
       <p>
         We use a session cookie to keep you signed in, and a signed cookie that
-        counts free generations so the free tier can be limited. Both are
+        counts generations so usage limits can be enforced. Both are
         necessary for the service to work; neither is used for advertising and
         we do not sell cookie data to anyone.
       </p>

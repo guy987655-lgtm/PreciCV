@@ -237,6 +237,21 @@ body {
   .report-page {
     min-height: auto !important;
   }
+  /* The CV is a ONE-page deliverable, so pin the sheet to exactly one page.
+     `min-height: 297mm` alone let the box GROW past the page whenever the
+     content did — which printed as two pages while the on-screen preview, one
+     continuous element, still looked like a single sheet. A fixed height also
+     removes the sub-pixel rounding that can emit a trailing blank page.
+
+     cv-renderer's shrink-to-fit is what actually makes the content fit. This
+     deliberately does NOT clip: a CV whose content still overflows at the
+     legibility floor should visibly run onto a second page rather than have
+     its last role silently cut off — the user would not notice until after
+     they had applied. */
+  body:not(.print-report) .cv-page {
+    height: 297mm !important;
+    min-height: 297mm !important;
+  }
   @page {
     size: A4;
     margin: 0;

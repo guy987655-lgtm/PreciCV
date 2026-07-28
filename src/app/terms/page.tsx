@@ -94,7 +94,7 @@ export default function TermsPage() {
         granted once their confirmation reaches us, which is normally immediate.
       </p>
       <p>
-        Free samples are watermarked and partly hidden on purpose — they are a
+        Samples are watermarked and partly hidden on purpose — they are a
         preview, not a deliverable. See the{" "}
         <Link href="/refunds">refund policy</Link> for cancellations and
         failures.

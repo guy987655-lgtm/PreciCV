@@ -157,9 +157,15 @@ export function TryNow() {
   const [sharpenBusy, setSharpenBusy] = useState(false);
   // Rebuilding the interview report around the edited CV.
   const [reportBusy, setReportBusy] = useState(false);
-  // Deferred print request — fired after a smart-download report refresh so the
-  // printed DOM reflects the freshly regenerated report (see effect below).
+  // Deferred print request — the print fires from an effect so the DOM it
+  // captures is the one React has already committed.
   const [printRequest, setPrintRequest] = useState(false);
+  // True from the click until the last print dialog has been handed over.
+  // A ref as well as state: `window.print()` blocks, and every click made
+  // while a dialog was open is replayed on dismiss — the ref rejects those
+  // replays synchronously, before React can re-render the disabled button.
+  const [printing, setPrinting] = useState(false);
+  const exportInFlight = useRef(false);
   // Undo window for the (now instant) Reset — holds the discarded edits for
   // a few seconds so a misclick is recoverable (PRD v2 Topic 6).
   const [resetUndo, setResetUndo] = useState<{
@@ -216,9 +222,8 @@ export function TryNow() {
     if (hydrated) window.scrollTo({ top: 0 });
   }, [state.step, hydrated]);
 
-  // Deferred print: only once any smart-download report refresh has finished
-  // AND its result has rendered do we print, so the printed report file always
-  // reflects the latest CV. Records the "download" milestone version.
+  // Deferred print: runs once the requested files have rendered. Records the
+  // "download" milestone version.
   useEffect(() => {
     if (!printRequest || reportBusy) return;
     setState((s) => {
@@ -238,11 +243,16 @@ export function TryNow() {
     };
     // No simulation → no second file worth handing over (its questions are
     // the entire point of the report), so print the CV alone.
-    if (state.results && state.results.simulation.questions.length === 0) {
-      printFile("cv", meta);
-    } else {
-      printBoth(meta);
-    }
+    const job =
+      state.results && state.results.simulation.questions.length === 0
+        ? Promise.resolve(printFile("cv", meta))
+        : printBoth(meta);
+    // The button stays busy until the last dialog has been handed over, so a
+    // second click cannot stack another burst of dialogs behind this one.
+    void job.finally(() => {
+      exportInFlight.current = false;
+      setPrinting(false);
+    });
     setPrintRequest(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [printRequest, reportBusy]);
@@ -365,7 +375,7 @@ export function TryNow() {
     trackButtonClick({
       button_name: "try_now_analyze",
       action: "upload",
-      button_text: "Analyze my CV — free",
+      button_text: "Analyze my CV",
       click_source: "landing_try_now",
     });
     try {
@@ -615,7 +625,7 @@ export function TryNow() {
       const data = await generateWithRetry(profile, state.jdText);
       if (data.quota) {
         setQuotaMessage(
-          data.quota ?? "Daily free limit reached. Please come back tomorrow."
+          data.quota ?? "Daily limit reached. Please come back tomorrow."
         );
         return;
       }
@@ -864,20 +874,24 @@ export function TryNow() {
   }
 
   /**
-   * Smart download: if the CV was edited after the last report build, refresh
-   * the report FIRST so the two files always match, then print. The actual
-   * print fires from an effect once the regenerated report has rendered.
+   * Download what is on screen, immediately.
+   *
+   * This used to silently rebuild the interview report first whenever the CV
+   * had been edited — a 15–45s LLM call the user never asked for, during which
+   * the button looked unresponsive. Downloading is now instant and never
+   * spends a regeneration; if the report is behind the CV, the notice under
+   * the button says so and offers the rebuild as an explicit choice.
    */
-  async function exportBoth() {
+  function exportBoth() {
+    if (exportInFlight.current) return;
+    exportInFlight.current = true;
+    setPrinting(true);
     trackButtonClick({
       button_name: "anon_export_bundle",
       action: "export",
       button_text: "Download my files",
       click_source: "landing_try_now",
     });
-    if (state.reportStale && state.regensUsed < MAX_REPORT_REGENS) {
-      await regenerateReportNow();
-    }
     setPrintRequest(true);
   }
 
@@ -923,7 +937,7 @@ export function TryNow() {
         cls: "border-green-100 bg-green-50 text-accent-deep",
         body: (
           <>
-            <strong>We found ways to improve your CV!</strong> Register free
+            <strong>We found ways to improve your CV!</strong> Register
             to save your progress and see the results.
           </>
         ),
@@ -1149,7 +1163,7 @@ export function TryNow() {
             {busy ? (
               <Spinner label="Analyzing your CV… (up to a minute)" />
             ) : (
-              "Analyze my CV — free"
+              "Analyze my CV"
             )}
           </Button>
         </div>
@@ -1385,11 +1399,11 @@ export function TryNow() {
               (Supabase) via /continue → /api/try/import. */}
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border-[1.5px] border-green-100 bg-green-50 px-5 py-4 text-[14.5px] text-accent-deep print:hidden">
             <p>
-              <strong>Love your new CV?</strong> Register free to save it to
+              <strong>Love your new CV?</strong> Register to save it to
               your account and unlock job-by-job tailoring.
             </p>
             <Button size="md" onClick={() => goToSignup("results_register")}>
-              Register free to save →
+              Register to save →
             </Button>
           </div>
           {/* ---- 1. Tailored CV ---- */}
@@ -1424,7 +1438,7 @@ export function TryNow() {
                 <Button
                   data-tour="download"
                   size="md"
-                  disabled={reportBusy || editing}
+                  disabled={reportBusy || editing || printing}
                   title={
                     editing
                       ? "Finish editing (Done) to download"
@@ -1432,7 +1446,13 @@ export function TryNow() {
                   }
                   onClick={exportBoth}
                 >
-                  {reportBusy ? "Syncing report…" : downloadLabel}
+                  {printing ? (
+                    <Spinner label="Opening your print dialog…" />
+                  ) : reportBusy ? (
+                    "Rebuilding report…"
+                  ) : (
+                    downloadLabel
+                  )}
                 </Button>
               </div>
               {/* The interview simulation is the whole second file. When the
@@ -1455,9 +1475,10 @@ export function TryNow() {
                 </div>
               )}
               {state.reportStale && !editing && (
-                <p className="text-[11px] text-ink-faint">
-                  You edited your CV — the interview report will refresh
-                  automatically when you download, or refresh it now.
+                <p className="text-[11px] text-ink-soft">
+                  You edited your CV since the interview report was built.
+                  Download works either way — rebuild the report first only if
+                  you want it to match.
                 </p>
               )}
             </div>
@@ -1542,7 +1563,7 @@ export function TryNow() {
             />
             <p className="mt-3 text-center text-xs text-ink-faint print:hidden">
               {remaining !== null
-                ? `${remaining} free CV${remaining === 1 ? "" : "s"} left today.`
+                ? `${remaining} CV${remaining === 1 ? "" : "s"} left today.`
                 : ""}
             </p>
           </div>
@@ -1792,13 +1813,15 @@ export function TryNow() {
         <div className="fixed right-6 top-20 z-40 print:hidden">
           <Button
             size="md"
-            disabled={reportBusy || editing}
+            disabled={reportBusy || editing || printing}
             title={editing ? "Finish editing (Done) to download" : undefined}
             onClick={exportBoth}
             className="shadow-[0_12px_32px_rgba(30,43,36,0.28)]"
           >
-            {reportBusy ? (
-              "Syncing report…"
+            {printing ? (
+              <Spinner label="Opening…" />
+            ) : reportBusy ? (
+              "Rebuilding report…"
             ) : (
               <>
                 <span className="hidden sm:inline">{downloadLabel}</span>

@@ -519,7 +519,7 @@ export default function HistoryPage() {
                   {j.tier ? (
                     <Badge tone="indigo">Purchased</Badge>
                   ) : j.isSample ? (
-                    <Badge tone="amber">Free preview</Badge>
+                    <Badge tone="amber">Preview</Badge>
                   ) : !j.hasResult ? (
                     <Badge tone="amber">Not finished</Badge>
                   ) : null}

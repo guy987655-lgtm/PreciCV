@@ -482,40 +482,85 @@ export function CvRenderer({
         ? { borderColor: pal.rule, color: accent }
         : { color: t.sectionUsesSubtle ? pal.subtle : accent };
 
-  /* ---------------- dynamic page-fill (single column, read-only) ----------
-     If the generated CV leaves more than 25% of the page blank, gently grow
-     the body font and line spacing so the text fills the sheet naturally
-     instead of stranding a large empty strip at the foot. Disabled in split
-     view and while editing (the editor stays WYSIWYG). */
+  /* ---------------- dynamic page fit ------------------------------------
+     Two jobs, and the second one is what keeps the promise of a one-page CV:
+
+     GROW — if the CV leaves more than 25% of the sheet blank, gently raise
+     the body font and line spacing so the text fills the page instead of
+     stranding an empty strip at the foot. Single column, read-only.
+
+     SHRINK — if the content is TALLER than the sheet, scale it down until it
+     fits. Without this the page simply grew past 297mm: on screen that still
+     looks like one continuous sheet, so the preview promised one page while
+     the PDF came out as two. Applies in split view too, since the export is
+     what matters; only the editor is left alone so it stays WYSIWYG. */
   const baseSize = t.baseSize ?? 11;
   const baseLeading = t.baseLeading ?? 1.5;
+  /** Smallest shrink allowed before a one-page CV stops being legible. */
+  const MIN_PAGE_FILL = 0.72;
   const pageRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [fill, setFill] = useState(1);
   const measuredSig = useRef("");
+  /** Shrink is iterative — see the loop guard below. */
+  const fitPass = useRef(0);
+  const MAX_FIT_PASSES = 5;
   const sig = `${template}|${theme}|${split}|${editable}|${JSON.stringify(cv)}`;
 
   useLayoutEffect(() => {
-    if (split || editable) {
+    if (editable) {
       if (fill !== 1) setFill(1);
       return;
     }
-    if (measuredSig.current === sig) return;
-    if (fill !== 1) {
-      setFill(1); // measure at natural size first
-      return;
+    // A new CV/template/theme restarts the fit from natural size.
+    if (measuredSig.current !== sig) {
+      measuredSig.current = sig;
+      fitPass.current = 0;
+      if (fill !== 1) {
+        setFill(1); // measure at natural size first
+        return;
+      }
     }
-    measuredSig.current = sig;
     const page = pageRef.current;
     const content = contentRef.current;
     if (!page || !content) return;
     const cs = getComputedStyle(page);
     const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
-    const pageInner = page.clientHeight - padY;
+    /* The A4 box must be computed from the CSS unit, NOT from the element.
+       `clientHeight` is useless here — once the content overflows, the box has
+       already grown past 297mm, so it would report a ratio of ~1 and hide the
+       overflow. Deriving px-per-mm from `clientWidth` is wrong too: the sheet
+       is only 210mm wide when nothing constrains it, and inside a narrower
+       container the derived scale drifts, moving the target between passes so
+       the loop never settles. 1mm is exactly 96/25.4 CSS px. */
+    const pxPerMm = 96 / 25.4;
+    const pageInner = 297 * pxPerMm - padY;
     const contentH = content.scrollHeight;
-    if (contentH > 0 && pageInner > 0) {
-      const ratio = contentH / pageInner;
-      if (ratio < 0.75) setFill(Math.min(0.94 / ratio, 1.35));
+    if (contentH <= 0 || pageInner <= 0) return;
+    const ratio = contentH / pageInner;
+
+    if (ratio > 1.002) {
+      /* Iterate rather than solve in one step: height does not scale linearly
+         with font size. Margins, borders and leading rounding stay put, so a
+         single ratio-derived guess lands short — measured at 297mm of content
+         against a 276mm box on the first pass. Each pass corrects against a
+         fresh measurement and converges in two or three.
+
+         The floor stops at ~8pt body text; past that a CV is unreadable, and
+         spilling to a second page is the better failure. */
+      const next = Math.max(fill * (0.99 / ratio), MIN_PAGE_FILL);
+      // Only ever step DOWN, and only a bounded number of times: both guards
+      // are load-bearing, since a shrink can reflow text in ways that make the
+      // measurement non-monotonic and an unguarded loop then never settles.
+      if (fitPass.current < MAX_FIT_PASSES && next < fill - 0.001) {
+        fitPass.current++;
+        setFill(next);
+      }
+      return;
+    }
+    // Grow only from the untouched natural size, and never in split view.
+    if (fitPass.current === 0 && !split && ratio < 0.75) {
+      setFill(Math.min(0.94 / ratio, 1.35));
     }
   }, [sig, fill, split, editable]);
 

@@ -47,7 +47,7 @@ export async function POST(request: Request) {
       {
         error: "quota_exceeded",
         message:
-          `You've used your free ${quota.limit === 1 ? "CV" : `${quota.limit} CVs`} for today. ` +
+          `You've used your ${quota.limit === 1 ? "CV" : `${quota.limit} CVs`} for today. ` +
           `Come back after ${quota.resetAt.toLocaleString()} for another.`,
         resetAt: quota.resetAt.toISOString(),
       },

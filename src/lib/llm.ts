@@ -194,7 +194,7 @@ async function geminiRequest(
   }
   if (last.status === 429 || last.status === 503) {
     throw new Error(
-      "The free AI engine is briefly overloaded. Please try again in a minute."
+      "The AI engine is briefly overloaded. Please try again in a minute."
     );
   }
   throw new Error(`Gemini API error ${last.status}: ${last.body.slice(0, 300)}`);

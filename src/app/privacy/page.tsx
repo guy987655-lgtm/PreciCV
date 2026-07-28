@@ -36,7 +36,8 @@ export default function PrivacyPage() {
         </li>
         <li>
           <strong>Account details</strong> if you sign in: your email address
-          and name, received from Google or GitHub through our authentication
+          and name, received from Google, LinkedIn or GitHub through our
+          authentication
           provider. We never receive your password.
         </li>
         <li>

@@ -29,8 +29,9 @@ reports for every job application. Built per the PreciCV PRD v2.0 (the product s
    red strikethrough removals, pastel green additions), WYSIWYG inline-editable
    CV on the right (edits are free, saved automatically, no API calls).
    3 ATS templates (classic / modern / compact). Export as PDF.
-4. **Premium revisions** — up to 10 AI revisions locked to the same `job_id`;
-   JD updates must pass an **>85% cosine-similarity** anti-fraud check.
+4. **Report refresh** — edited a CV? Rebuild the diff and interview
+   simulation around it, bounded per job. (`/api/revise`, the older
+   instruction-driven revision endpoint, still exists but has no UI.)
 5. **Privacy** — "Delete My Account & Data" performs a hard cascade delete.
 
 ## Setup
@@ -105,8 +106,8 @@ npm run dev
 - **Layout replication** — the original CV's section order is captured at
   ingestion (`originalSectionOrder`) and the tailoring prompt preserves it;
   rendering falls back to 3 pre-built ATS templates.
-- **Anti-fraud** — one purchase per `job_id` (DB unique constraint), revision
-  count enforced server-side, JD swaps blocked below 85% term-frequency
+- **Anti-fraud** — one purchase per `job_id` (DB unique constraint), usage
+  counts enforced server-side, JD swaps blocked below 85% term-frequency
   cosine similarity (`src/lib/similarity.ts`).
 - **PDF export** — print-to-PDF with a dedicated A4 print stylesheet (only
   the CV pane prints). Serverless-friendly; a headless-Chromium render

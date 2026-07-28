@@ -52,7 +52,8 @@ export default function TermsPage() {
 
       <h2>Your account</h2>
       <p>
-        You sign in with Google or GitHub. Keep that account secure — anything
+        You sign in with Google, LinkedIn or GitHub. Keep that account secure
+        — anything
         done through it counts as done by you. You must be 18 or older to make a
         purchase.
       </p>

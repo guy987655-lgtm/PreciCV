@@ -93,3 +93,51 @@ export function LoadingAnnounce({ label }: { label: string }) {
     </span>
   );
 }
+
+/**
+ * Placeholder for the report cards (Change report / Match analysis /
+ * Interview simulation) while a refresh rebuilds them.
+ *
+ * Refreshing used to just fade the OLD sections to 25% opacity, which reads
+ * as a frozen screen: the same text, still there, just dimmer — nothing says
+ * work is happening. Replacing them with moving skeletons plus a visible
+ * caption makes the wait legible.
+ */
+export function ReportSectionsSkeleton({
+  cards = 2,
+  label = "Rebuilding your report…",
+  hint = "Re-reading your edited CV against the job description.",
+}: {
+  cards?: number;
+  label?: string;
+  hint?: string;
+}) {
+  return (
+    <div className="space-y-4">
+      <div
+        role="status"
+        aria-live="polite"
+        className="flex items-center gap-2.5 text-[13px] font-semibold text-accent"
+      >
+        <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-border border-t-accent" />
+        <span>{label}</span>
+      </div>
+      <p className="-mt-2 text-[12.5px] text-ink-faint">{hint}</p>
+      <SkeletonRows
+        className="space-y-4"
+        count={cards}
+        render={() => (
+          <div className="rounded-[18px] border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+            <div className="flex items-center justify-between gap-3">
+              <Skeleton className="h-4 w-36" />
+              <Skeleton className="h-6 w-14 rounded-full" />
+            </div>
+            <Skeleton className="mt-4 h-2 w-full rounded-full" />
+            <SkeletonText className="mt-4" lines={3} />
+            <SkeletonText className="mt-4" lines={2} />
+          </div>
+        )}
+      />
+    </div>
+  );
+}

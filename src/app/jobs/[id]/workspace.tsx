@@ -25,7 +25,8 @@ import {
 } from "@/lib/cv-session";
 import { effectiveSplit } from "@/lib/templates";
 import { printBoth, printFile } from "@/lib/download";
-import { Badge, Button, Card, Modal, Spinner, Textarea, Toast } from "@/components/ui";
+import { Badge, Button, Card, Modal, Spinner, Toast } from "@/components/ui";
+import { ReportSectionsSkeleton } from "@/components/skeleton";
 import { Navbar } from "@/components/navbar";
 import { CvRenderer, CvTheme } from "@/components/cv-renderer";
 import { DiffChangeLines } from "@/components/diff-change";
@@ -201,16 +202,13 @@ export function JobWorkspace({
   // so the loading spinner shows immediately (no flash of the intro card).
   // Mirrors the auto-run below, so the spinner is up on first paint instead
   // of flashing the intro/"ready to tailor" card first.
-  const [busy, setBusy] = useState<"" | "checkout" | "generate" | "revise">(
+  const [busy, setBusy] = useState<"" | "checkout" | "generate">(
     !initialGen && (purchase || freeSampleAvailable) ? "generate" : ""
   );
   const [error, setError] = useState("");
   const [redFlagModal, setRedFlagModal] = useState(false);
   const [pendingSample, setPendingSample] = useState(false);
-  const [reviseOpen, setReviseOpen] = useState(false);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
-  const [reviseText, setReviseText] = useState("");
-  const [revisionsUsed, setRevisionsUsed] = useState(purchase?.revisionsUsed ?? 0);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
   // The user reviews + edits first; files (PDF export) unlock on approval.
   const [approved, setApproved] = useState(false);
@@ -530,49 +528,6 @@ export function JobWorkspace({
       window.removeEventListener("resize", measure);
     };
   }, [isSample, generation?.cv, generation?.template, cvTheme, splitView]);
-
-  /* ---------------- AI revisions (premium) ---------------- */
-  async function revise() {
-    setBusy("revise");
-    setError("");
-    trackButtonClick({
-      button_name: "request_revision",
-      action: "revise",
-      button_text: "Apply revision",
-      click_source: "job_workspace",
-      job_id: job.id,
-    });
-    try {
-      const res = await fetch("/api/revise", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobId: job.id, instructions: reviseText }),
-      });
-      const data = await readJson(res);
-      if (!res.ok) throw new Error(data.message ?? data.error ?? "Revision failed");
-      setGeneration({
-        id: data.generationId,
-        cv: data.cv,
-        diff: data.diff,
-        // Same as in generate(): keep the simulation so the report print
-        // target stays mounted.
-        simulation: data.simulation,
-        template: generation?.template ?? "classic",
-        revisionNumber: data.revisionNumber,
-        isSample: false,
-        reportStale: false,
-        cvTheme: generation?.cvTheme,
-        splitView: generation?.splitView,
-      });
-      setRevisionsUsed((n) => n + 1);
-      setReviseOpen(false);
-      setReviseText("");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong");
-    } finally {
-      setBusy("");
-    }
-  }
 
   /* ---------------- inline edits: debounced save, no credits ---------- */
   const saveCv = useCallback(
@@ -1077,15 +1032,18 @@ export function JobWorkspace({
       {/* State 3: the Side-by-Side Review Workspace (PRD §5) */}
       {generation && (
         <div className="grid gap-6 lg:grid-cols-[minmax(320px,2fr)_3fr]">
-          {/* Left pane: Diff Report — faded + inert while refreshing (Topic 8) */}
+          {/* Left pane: Diff Report. While a refresh runs the real sections
+              are replaced by skeletons — dimming the stale ones instead just
+              looked like a frozen screen (Topic 8). */}
           <div
             ref={reportSectionsRef}
-            className={`scroll-mt-20 space-y-4 transition-opacity duration-300 print:hidden ${
-              reportBusy ? "pointer-events-none select-none opacity-25" : ""
-            }`}
+            className="scroll-mt-20 space-y-4 print:hidden"
             aria-busy={reportBusy}
           >
+            {reportBusy && <ReportSectionsSkeleton cards={1} />}
 
+            {!reportBusy && (
+              <>
             <Card className="p-5">
               <h2 className="font-semibold text-slate-900">
                 Change report{" "}
@@ -1124,27 +1082,6 @@ export function JobWorkspace({
               </div>
             </Card>
 
-
-            {/* AI revisions (Full Prep tier) */}
-            {purchase && purchase.maxRevisions > 0 && !isSample && (
-              <Card className="p-5">
-                <div className="flex items-center justify-between">
-                  <h2 className="font-semibold text-slate-900">AI revisions</h2>
-                  <span className="text-xs text-slate-500">
-                    {revisionsUsed}/{purchase.maxRevisions} used
-                  </span>
-                </div>
-                <Button
-                  variant="secondary"
-                  className="mt-3 w-full"
-                  disabled={revisionsUsed >= purchase.maxRevisions}
-                  onClick={() => setReviseOpen(true)}
-                >
-                  Request a revision
-                </Button>
-              </Card>
-            )}
-
             {/* Upgrade match → full for the $1 difference (anchored to $2).
                 Only when the simulation section below the CV is absent — that
                 section carries the same CTA and shows what you actually get,
@@ -1170,6 +1107,8 @@ export function JobWorkspace({
                   ${upgradeUsd}
                 </Button>
               </Card>
+            )}
+              </>
             )}
           </div>
 
@@ -1331,14 +1270,18 @@ export function JobWorkspace({
             )}
 
             {/* Under the CV: match analysis first, then the interview
-                simulation. Shares the report-refresh fade with the change
-                report in the left column. */}
-            <div
-              className={`mt-4 space-y-4 transition-opacity duration-300 print:hidden ${
-                reportBusy ? "pointer-events-none select-none opacity-25" : ""
-              }`}
-              aria-busy={reportBusy}
-            >
+                simulation. Swaps to skeletons during a refresh, same as the
+                change report in the left column. */}
+            <div className="mt-4 space-y-4 print:hidden" aria-busy={reportBusy}>
+            {reportBusy && (
+              <ReportSectionsSkeleton
+                cards={2}
+                label="Rebuilding match analysis and simulation…"
+                hint="This takes a few seconds — both sections reappear when they are ready."
+              />
+            )}
+            {!reportBusy && (
+              <>
             <Card className="p-5">
               <div className="flex items-center justify-between">
                 <h2 className="font-semibold text-slate-900">Match analysis</h2>
@@ -1495,6 +1438,8 @@ export function JobWorkspace({
                   )}
                 </Card>
               )}
+              </>
+            )}
             </div>
             {/* Version history (milestone snapshots) */}
             {!isSample && versions.length > 1 && (
@@ -1578,33 +1523,6 @@ export function JobWorkspace({
           </Button>
           <Button variant="danger" onClick={() => generate(true, pendingSample)}>
             Proceed anyway
-          </Button>
-        </div>
-      </Modal>
-
-      {/* Premium revision modal */}
-      <Modal
-        open={reviseOpen}
-        onClose={() => setReviseOpen(false)}
-        title="Request an AI revision"
-      >
-        <p className="text-sm text-slate-600">
-          Tell Claude what to change. Revisions are locked to this job (
-          {purchase ? purchase.maxRevisions - revisionsUsed : 0} remaining).
-        </p>
-        <Textarea
-          rows={4}
-          className="mt-3"
-          placeholder="e.g. Emphasize my leadership experience more, and shorten the education section…"
-          value={reviseText}
-          onChange={(e) => setReviseText(e.target.value)}
-        />
-        <div className="mt-4 flex justify-end gap-3">
-          <Button variant="ghost" onClick={() => setReviseOpen(false)}>
-            Cancel
-          </Button>
-          <Button disabled={busy === "revise" || reviseText.trim().length < 3} onClick={revise}>
-            {busy === "revise" ? <Spinner label="Revising…" /> : "Apply revision"}
           </Button>
         </div>
       </Modal>

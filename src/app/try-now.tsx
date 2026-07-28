@@ -45,6 +45,7 @@ import { printBoth, printFile } from "@/lib/download";
 import { simMeta, useSimUser } from "@/lib/sim-user";
 import { useSession } from "@/lib/use-session";
 import { Badge, Button, Card, Modal, Spinner, Textarea, Toast } from "@/components/ui";
+import { ReportSectionsSkeleton } from "@/components/skeleton";
 import { Paywall } from "@/components/paywall";
 import { ChatFlow } from "@/components/chat-flow";
 import { CvRenderer } from "@/components/cv-renderer";
@@ -1568,14 +1569,23 @@ export function TryNow() {
             </p>
           </div>
 
-          {/* ---- 2-4. Report sections — faded + inert while refreshing ---- */}
+          {/* ---- 2-4. Report sections. During a refresh these are replaced
+               by skeletons: fading the stale sections to 25% left the same
+               text on screen and read as a frozen page. ---- */}
           <div
             ref={reportSectionsRef}
-            className={`flex scroll-mt-20 flex-col gap-6 transition-opacity duration-300 ${
-              reportBusy ? "pointer-events-none select-none opacity-25" : ""
-            }`}
+            className="flex scroll-mt-20 flex-col gap-6"
             aria-busy={reportBusy}
           >
+          {reportBusy && (
+            <ReportSectionsSkeleton
+              cards={3}
+              label="Rebuilding your report…"
+              hint="Re-reading your edited CV against the job description. The match analysis, simulation and change report all come back together."
+            />
+          )}
+          {!reportBusy && (
+            <>
           {/* ---- 2. Match analysis ---- */}
           <Card className="p-6 print:hidden">
             <div className="flex items-center justify-between">
@@ -1699,6 +1709,8 @@ export function TryNow() {
               ))}
             </div>
           </Card>
+            </>
+          )}
           </div>
 
           {/* ---- 5. Version history (milestone snapshots) ---- */}

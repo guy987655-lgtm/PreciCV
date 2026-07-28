@@ -1,8 +1,17 @@
 /**
  * Print-to-PDF download helpers. The browser names the saved PDF after
- * document.title, so a unique timestamped title per file prevents the OS
- * "replace existing file?" prompt. The body class picks which print
- * target (.cv-page vs .report-page) becomes visible — see globals.css.
+ * document.title, so the title IS the filename:
+ *
+ *   CV     → SpeCV-Guy-Ratzon-PayPal
+ *   Report → SpeCV-Guy-Ratzon-PayPal-Interview-Report
+ *
+ * This deliberately carries no timestamp. An earlier version appended one to
+ * dodge the OS "replace existing file?" prompt, but the noise meant users
+ * renamed the file by hand before attaching it to an application — a
+ * predictable name is worth the occasional replace prompt on re-download.
+ * The report keeps its suffix so "download both" cannot emit two files with
+ * the same name. The body class picks which print target (.cv-page vs
+ * .report-page) becomes visible — see globals.css.
  */
 
 function slug(s: string): string {
@@ -13,16 +22,12 @@ export function printFile(
   target: "cv" | "report",
   meta: { name?: string; company?: string }
 ) {
-  const stamp = new Date()
-    .toISOString()
-    .slice(0, 19)
-    .replace(/[:T]/g, "-"); // e.g. 2026-07-06-14-32-08 — unique per second
   const parts = [
     "SpeCV",
-    target === "cv" ? "CV" : "Interview-Report",
     slug(meta.name || "candidate"),
     meta.company ? slug(meta.company) : "",
-    stamp,
+    // Only the report is qualified; the CV gets the bare, expected name.
+    target === "report" ? "Interview-Report" : "",
   ].filter(Boolean);
 
   const prevTitle = document.title;

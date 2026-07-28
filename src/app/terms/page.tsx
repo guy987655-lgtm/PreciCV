@@ -119,7 +119,8 @@ export default function TermsPage() {
 
       <h2>Ending the agreement</h2>
       <p>
-        You can stop at any time and delete your account and data from Settings.
+        You can stop at any time and delete your account and data from My
+        Account.
         We may end your access if you break these terms. Deleting your account
         does not entitle you to a refund of a completed purchase, except as set
         out in the refund policy.

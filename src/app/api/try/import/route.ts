@@ -17,6 +17,8 @@ const BodySchema = z.object({
         other: z.string().optional(),
         options: z.array(z.string()).optional(),
         selectType: z.enum(["single", "ranked"]).optional(),
+        /** Category — My Card groups its filter chips by this. */
+        topic: z.string().max(120).optional(),
       })
     )
     .default([]),
@@ -119,8 +121,11 @@ export async function POST(request: Request) {
               ...(a.other ? { other: a.other } : {}),
               options: a.options ?? [],
               selectType: a.selectType ?? "single",
+              ...(a.topic?.trim() ? { topic: a.topic.trim() } : {}),
             }
-          : null,
+          : a.topic?.trim()
+            ? { topic: a.topic.trim() }
+            : null,
       source_job_id: jobId,
     }));
   if (memoryRows.length > 0) {

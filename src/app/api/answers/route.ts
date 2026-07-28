@@ -14,6 +14,9 @@ const AnswerSchema = z.object({
   options: z.array(z.string()).optional(),
   /** Kept so My Card can re-render the question with the right input. */
   selectType: z.enum(["single", "ranked"]).optional(),
+  /** Category (McqQuestionSchema.topic) — powers My Card's filter chips.
+   *  Without it every account-restored answer came back uncategorized. */
+  topic: z.string().max(120).optional(),
   jobId: z.string().uuid().optional(),
 });
 
@@ -26,6 +29,7 @@ type StoredPayload = {
   other?: string;
   options?: string[];
   selectType?: "single" | "ranked";
+  topic?: string;
 };
 
 type PayloadRow = {
@@ -59,6 +63,7 @@ export async function GET() {
   const answers: (StoredAnswer & {
     options?: string[];
     selectType?: "single" | "ranked";
+    topic?: string;
   })[] = ((data ?? []) as PayloadRow[]).map((r) => ({
     question: r.question,
     answer: r.answer,
@@ -69,6 +74,8 @@ export async function GET() {
     // question the answer was given to, not just the answer text.
     options: r.payload?.options,
     selectType: r.payload?.selectType,
+    // Empty on rows written before topics were stored — My Card infers one.
+    topic: r.payload?.topic ?? "",
     updatedAt: new Date(r.updated_at).getTime(),
   }));
   return NextResponse.json({ answers });
@@ -104,6 +111,8 @@ export async function POST(request: Request) {
       question: a.question.trim(),
       answer: a.answer.trim(),
       kind: a.kind,
+      // Open answers used to store no payload at all; they now carry the
+      // topic so My Card can categorize them on a fresh device too.
       payload:
         a.kind === "mcq"
           ? {
@@ -111,8 +120,11 @@ export async function POST(request: Request) {
               ...(a.other ? { other: a.other } : {}),
               options: a.options ?? [],
               selectType: a.selectType ?? "single",
+              ...(a.topic?.trim() ? { topic: a.topic.trim() } : {}),
             }
-          : null,
+          : a.topic?.trim()
+            ? { topic: a.topic.trim() }
+            : null,
       source_job_id: a.jobId ?? null,
     }));
   if (rows.length === 0) return NextResponse.json({ ok: true, saved: 0 });

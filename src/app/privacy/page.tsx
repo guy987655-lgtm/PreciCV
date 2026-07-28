@@ -112,7 +112,7 @@ export default function PrivacyPage() {
       <p>
         You can access, correct, export or delete your data at any time.{" "}
         <strong>
-          Settings &rarr; &ldquo;Delete My Account &amp; Data&rdquo;
+          My Account &rarr; &ldquo;Delete My Account &amp; Data&rdquo;
         </strong>{" "}
         removes your profile, jobs, answers and generated CVs permanently and
         immediately. For anything you cannot do yourself — a copy of your data,

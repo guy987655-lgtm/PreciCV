@@ -9,6 +9,7 @@ import {
 } from "./types";
 import type { CvVersion } from "./cv-session";
 import { companyFromJd } from "./text";
+import { resolveTopic } from "./topics";
 
 type McqQuestion = McqQuestionnaire["questions"][number];
 
@@ -510,6 +511,9 @@ export function stashForSignup(state: FunnelState) {
       other: state.mcqAnswers[q.id].other,
       options: q.options,
       selectType: q.selectType,
+      // Carried through so My Card can group these by category on a device
+      // that only ever sees the account copy.
+      topic: resolveTopic(q.topic, q.question),
     })),
     ...(state.questionnaire?.questions ?? [])
       .filter((q) => (state.answers[q.id] ?? "").trim())
@@ -517,6 +521,7 @@ export function stashForSignup(state: FunnelState) {
         question: q.question,
         answer: (state.answers[q.id] ?? "").trim(),
         kind: "open" as const,
+        topic: resolveTopic(q.topic, q.question),
       })),
   ];
 

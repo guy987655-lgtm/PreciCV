@@ -18,10 +18,13 @@ import {
 import { MonthBucket, cumulativeUniqueAnswered } from "@/lib/answer-stats";
 import { McqQuestionnaire, Questionnaire } from "@/lib/types";
 import { isSimilarQuestion } from "@/lib/text";
+import { buildTopicBuckets, matchesTopic, resolveTopic } from "@/lib/topics";
 import { AnswersChart } from "@/components/answers-chart";
 import { useSimUser } from "@/lib/sim-user";
 import { useSession } from "@/lib/use-session";
 import { Badge, Button, Card, Input, Textarea } from "@/components/ui";
+import { LoadingAnnounce, Skeleton, SkeletonRows } from "@/components/skeleton";
+import { TopicFilter } from "@/components/topic-filter";
 import { UserCard } from "@/components/user-card";
 import { McqOptions } from "@/components/mcq-options";
 import { Navbar } from "@/components/navbar";
@@ -38,6 +41,8 @@ type ServerAnswer = {
   other?: string;
   options?: string[];
   selectType?: "single" | "ranked";
+  /** "" on rows stored before topics were persisted — inferred on display. */
+  topic?: string;
   updatedAt?: number;
 };
 
@@ -161,12 +166,18 @@ function Section({
  */
 export default function CardPage() {
   const sim = useSimUser();
-  const { signedIn } = useSession();
+  const { signedIn, loading: sessionLoading } = useSession();
   const [state, setState] = useState<FunnelState | null>(null);
   const [historyFlows, setHistoryFlows] = useState<FunnelState[]>([]);
   const [serverAnswers, setServerAnswers] = useState<ServerAnswer[]>([]);
   const [hydrated, setHydrated] = useState(false);
+  // Distinct from `serverAnswers.length === 0`, which cannot tell an empty
+  // account from an unfinished fetch — that ambiguity is what flashed the
+  // "No User Card yet" empty state at users who do have a card.
+  const [answersLoading, setAnswersLoading] = useState(true);
   const [search, setSearch] = useState("");
+  /** "" = All. Category chips under the search box. */
+  const [activeTopic, setActiveTopic] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // Draft answers for the open row. Edits stay local while the row is open
   // (so typing/selecting never re-partitions the list and collapses the row);
@@ -194,13 +205,16 @@ export default function CardPage() {
   useEffect(() => {
     if (!signedIn) {
       setServerAnswers([]);
+      setAnswersLoading(false);
       return;
     }
     let alive = true;
+    setAnswersLoading(true);
     fetch("/api/answers")
       .then((r) => (r.ok ? r.json() : { answers: [] }))
       .then((d) => alive && setServerAnswers(d.answers ?? []))
-      .catch(() => alive && setServerAnswers([]));
+      .catch(() => alive && setServerAnswers([]))
+      .finally(() => alive && setAnswersLoading(false));
     return () => {
       alive = false;
     };
@@ -291,7 +305,7 @@ export default function CardPage() {
           kind: "mcq",
           q: {
             id: `srv_${i}`,
-            topic: "",
+            topic: a.topic ?? "",
             question: a.question,
             options: a.options ?? [],
             selectType: a.selectType ?? "single",
@@ -306,7 +320,7 @@ export default function CardPage() {
           key: `account::open:${i}`,
           source: { type: "account" },
           kind: "open",
-          q: { id: `srv_${i}`, question: a.question, why: "" },
+          q: { id: `srv_${i}`, question: a.question, why: "", topic: a.topic ?? "" },
           text: a.answer,
           answeredAt: a.updatedAt ?? 0,
         });
@@ -335,17 +349,34 @@ export default function CardPage() {
     return kept;
   }, [state, historyFlows, serverAnswers]);
 
-  /* ------------- search + answered/unanswered partitions ------------- */
+  /* ------------- category + search + answered/unanswered partitions --
+     Topics come from the question when it has one and from a keyword pass
+     otherwise, so rows predating the topic field still land in a real
+     bucket instead of all piling into "General". */
+  const rowTopic = useCallback(
+    (r: CardRow) => resolveTopic(r.q.topic, r.q.question),
+    []
+  );
+
+  // Buckets are derived from ALL rows, not the filtered ones, so the counts
+  // on the chips don't collapse the moment you pick one.
+  const topicBuckets = useMemo(
+    () => buildTopicBuckets(rows.map(rowTopic)),
+    [rows, rowTopic]
+  );
+
   const kw = search.trim().toLowerCase();
   const matches = (...parts: (string | undefined)[]) =>
     !kw || parts.some((p) => (p ?? "").toLowerCase().includes(kw));
 
   const rowAnswered = (r: CardRow) =>
     r.kind === "mcq" ? isMcqAnswered(r.answer) : r.text.trim().length > 0;
-  const rowMatches = (r: CardRow) =>
-    r.kind === "mcq"
-      ? matches(r.q.question, r.q.topic, ...mcqAnswerParts(r.answer))
-      : matches(r.q.question, r.text);
+  const rowMatches = (r: CardRow) => {
+    if (!matchesTopic(rowTopic(r), activeTopic, topicBuckets)) return false;
+    return r.kind === "mcq"
+      ? matches(r.q.question, rowTopic(r), ...mcqAnswerParts(r.answer))
+      : matches(r.q.question, rowTopic(r), r.text);
+  };
 
   const answeredRows = rows.filter((r) => rowAnswered(r) && rowMatches(r));
   const unansweredRows = rows.filter((r) => !rowAnswered(r) && rowMatches(r));
@@ -371,6 +402,8 @@ export default function CardPage() {
               question: row.q.question,
               answer,
               kind: row.kind,
+              // Sent for both kinds so the category survives to a new device.
+              topic: resolveTopic(row.q.topic, row.q.question),
               ...(row.kind === "mcq"
                 ? {
                     selected: mcq?.selected ?? [],
@@ -499,7 +532,9 @@ export default function CardPage() {
     const answered = rowAnswered(row);
     const origin = sourceLabel(row.source);
     const q = row.q;
-    const topic = row.kind === "mcq" ? row.q.topic || "General" : "";
+    // Both kinds get a chip now — it is the same value the filter groups by,
+    // so a row always shows which bucket it lives in.
+    const topic = rowTopic(row);
     return (
       <div key={row.key} className="border-b border-border last:border-b-0">
         {!expanded ? (
@@ -583,11 +618,53 @@ export default function CardPage() {
     );
   }
 
+  /* Nothing about the card is knowable until localStorage is read AND — for
+     a signed-in user — /api/answers has answered, since the account is the
+     only source on a fresh device. */
+  const loading = !hydrated || sessionLoading || (signedIn && answersLoading);
+
   return (
     <main className="min-h-screen">
       <Navbar />
       <div className="mx-auto max-w-2xl px-4 pb-16 pt-4">
-        {hydrated && !hasCard && (
+        {loading && (
+          <>
+            <LoadingAnnounce label="Loading your User Card…" />
+            <Skeleton className="h-7 w-56" />
+            <Skeleton className="mt-2 h-3.5 w-full max-w-md" />
+            <Card className="mt-5 flex items-center gap-4 p-5">
+              <Skeleton className="h-14 w-14 rounded-full" />
+              <div className="min-w-0 flex-1">
+                <Skeleton className="h-4 w-40" />
+                <Skeleton className="mt-2 h-3 w-28" />
+              </div>
+            </Card>
+            <Card className="mt-6 p-5">
+              <Skeleton className="h-4 w-32" />
+              <Skeleton className="mt-3 h-28 w-full" />
+            </Card>
+            <Skeleton className="mt-6 h-11 w-full rounded-[14px]" />
+            <div className="mt-4 flex gap-2">
+              {["3.5rem", "5rem", "6rem", "4.5rem"].map((w) => (
+                <Skeleton key={w} className="h-8 rounded-full" style={{ width: w }} />
+              ))}
+            </div>
+            <Card className="mt-6 overflow-hidden p-0">
+              <SkeletonRows
+                className="space-y-0"
+                count={5}
+                render={() => (
+                  <div className="flex items-center gap-2 border-b border-border px-5 py-3.5 last:border-b-0">
+                    <Skeleton className="h-4 w-16 rounded" />
+                    <Skeleton className="h-3.5 flex-1" />
+                  </div>
+                )}
+              />
+            </Card>
+          </>
+        )}
+
+        {!loading && !hasCard && (
           <Card className="p-10 text-center">
             <span className="text-3xl">🗂️</span>
             <h1 className="mt-3 text-xl font-bold text-ink">
@@ -609,7 +686,7 @@ export default function CardPage() {
         {/* The card no longer requires an ACTIVE flow: a returning user on a
             new device has answers in their account and archived flows on this
             one, and both must be manageable here. */}
-        {hydrated && hasCard && (
+        {!loading && hasCard && (
           <>
             <div className="flex items-center gap-3">
               <h1 className="text-2xl font-bold text-ink">Your User Card</h1>
@@ -656,6 +733,18 @@ export default function CardPage() {
               />
             </div>
 
+            {/* Category chips — jump straight to the questions you want to
+                change instead of scanning one long undifferentiated list.
+                Composes with the search box above. */}
+            <div className="mt-3">
+              <TopicFilter
+                buckets={topicBuckets}
+                active={activeTopic}
+                onChange={setActiveTopic}
+                total={rows.length}
+              />
+            </div>
+
             <div className="mt-6 space-y-4">
               <Section
                 title="Your answers"
@@ -665,7 +754,11 @@ export default function CardPage() {
               >
                 {answeredCount === 0 && (
                   <p className="px-5 py-4 text-sm text-ink-faint">
-                    {kw ? `No answers match “${search}”.` : "No answers yet."}
+                    {kw
+                      ? `No answers match “${search}”.`
+                      : activeTopic
+                        ? `No answers in “${activeTopic}” yet.`
+                        : "No answers yet."}
                   </p>
                 )}
                 {answeredRows.map((r) => cardRow(r))}
@@ -681,7 +774,9 @@ export default function CardPage() {
                   <p className="px-5 py-4 text-sm text-ink-faint">
                     {kw
                       ? `No open questions match “${search}”.`
-                      : "Nothing left — you answered everything 🎉"}
+                      : activeTopic
+                        ? `Nothing open in “${activeTopic}” — all answered 🎉`
+                        : "Nothing left — you answered everything 🎉"}
                   </p>
                 )}
                 {unansweredRows.map((r) => cardRow(r))}

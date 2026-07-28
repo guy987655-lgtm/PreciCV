@@ -128,6 +128,11 @@ export const QuestionnaireSchema = z.object({
       id: z.string(),
       question: z.string(),
       why: z.string(),
+      /** Same category vocabulary as McqQuestionSchema.topic — My Card's
+       *  filter chips group both kinds together. Defaults to "" so every
+       *  questionnaire stored before this field existed still parses; the
+       *  UI falls back to inferTopic() (lib/topics.ts) for those. */
+      topic: z.string().default(""),
     })
   ),
 });

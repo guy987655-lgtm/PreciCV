@@ -16,6 +16,7 @@ import {
 } from "@/lib/funnel";
 import { printBoth, printFile } from "@/lib/download";
 import { Badge, Button, Card, Toast } from "@/components/ui";
+import { LoadingAnnounce, Skeleton, SkeletonRows } from "@/components/skeleton";
 import { Navbar } from "@/components/navbar";
 import { CvRenderer } from "@/components/cv-renderer";
 import { ReportPage } from "@/components/report-page";
@@ -145,18 +146,25 @@ export default function HistoryPage() {
   const [history, setHistory] = useState<FunnelState[]>([]);
   // Saved flows live in Supabase once a user is signed in; the localStorage
   // list below only ever knew about flows that never got that far.
-  const { signedIn } = useSession();
+  const { signedIn, loading: sessionLoading } = useSession();
   const [jobs, setJobs] = useState<SavedJob[] | null>(null);
+  // Tracked separately from `jobs === null`, which cannot tell "not fetched
+  // yet" from "signed out". Without it the page renders blank — and then
+  // flashes the "No flows yet" empty state — while /api/jobs is in flight.
+  const [jobsLoading, setJobsLoading] = useState(true);
   useEffect(() => {
     if (!signedIn) {
       setJobs(null);
+      setJobsLoading(false);
       return;
     }
     let alive = true;
+    setJobsLoading(true);
     fetch("/api/jobs")
       .then((r) => (r.ok ? r.json() : { jobs: [] }))
       .then((d) => alive && setJobs(d.jobs ?? []))
-      .catch(() => alive && setJobs([]));
+      .catch(() => alive && setJobs([]))
+      .finally(() => alive && setJobsLoading(false));
     return () => {
       alive = false;
     };
@@ -459,6 +467,12 @@ export default function HistoryPage() {
       .map((f) => ({ flow: f, isActive: false })),
   ];
 
+  /* Nothing is knowable until localStorage is read AND — for a signed-in
+     user — /api/jobs has answered. Both lists and the empty state stay
+     behind this, so the page never shows "No flows yet" to someone who has
+     flows. */
+  const loading = !hydrated || sessionLoading || (signedIn && jobsLoading);
+
   return (
     <main className="min-h-screen">
       <Navbar />
@@ -471,9 +485,30 @@ export default function HistoryPage() {
           CV. Resume incomplete flows or re-download finished files.
         </p>
 
+        {loading && (
+          <div className="mt-6">
+            <LoadingAnnounce label="Loading your flows…" />
+            <Skeleton className="h-3 w-40" />
+            <SkeletonRows
+              className="mt-3"
+              count={3}
+              render={() => (
+                <Card className="flex flex-wrap items-center gap-3 p-4">
+                  <div className="min-w-0 flex-1">
+                    <Skeleton className="h-4 w-1/2" />
+                    <Skeleton className="mt-2 h-3 w-24" />
+                  </div>
+                  <Skeleton className="h-9 w-24 rounded-full" />
+                  <Skeleton className="h-8 w-8 rounded-full" />
+                </Card>
+              )}
+            />
+          </div>
+        )}
+
         {/* Saved flows (server-side). These are the ones that reached an
             account — the localStorage list below never knew about them. */}
-        {signedIn && jobs !== null && jobs.length > 0 && (
+        {!loading && signedIn && jobs !== null && jobs.length > 0 && (
           <div className="mt-6">
             <h2 className="text-[13px] font-bold uppercase tracking-wide text-ink-faint">
               Saved to your account
@@ -546,7 +581,7 @@ export default function HistoryPage() {
         )}
 
         <div className="mt-6 space-y-3">
-          {hydrated && flows.length === 0 && !(jobs && jobs.length > 0) && (
+          {!loading && flows.length === 0 && !(jobs && jobs.length > 0) && (
             <Card className="p-10 text-center">
               <span className="text-3xl">🗂️</span>
               <h2 className="mt-3 text-xl font-bold text-ink">No flows yet</h2>
@@ -559,7 +594,7 @@ export default function HistoryPage() {
               </Button>
             </Card>
           )}
-          {flows.map(({ flow, isActive }) => flowRow(flow, isActive))}
+          {!loading && flows.map(({ flow, isActive }) => flowRow(flow, isActive))}
         </div>
       </div>
 

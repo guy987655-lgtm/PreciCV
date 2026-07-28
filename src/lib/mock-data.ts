@@ -178,11 +178,13 @@ export function mockFunnelState(opts?: { withJob?: boolean }): FunnelState {
           id: "q1",
           question: "How large was the team you led at Acme?",
           why: "Team size signals scope.",
+          topic: "Leadership",
         },
         {
           id: "q2",
           question: "What business impact did your dashboards have?",
           why: "Metrics strengthen bullets.",
+          topic: "Visualization",
         },
       ],
     },

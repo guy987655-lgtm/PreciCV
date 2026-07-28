@@ -408,7 +408,10 @@ export async function extractProfileFromCv(
       `(team sizes, revenue impact, performance numbers), unclear scope, ` +
       `gaps in dates, technologies implied but not listed. Each question ` +
       `must reference something specific from THIS CV. In "why", explain in ` +
-      `one sentence how the answer improves future tailoring.\n\n` +
+      `one sentence how the answer improves future tailoring. Give each one a ` +
+      `"topic" drawn from the SAME small set of broad categories you used for ` +
+      `"mcq" above — reuse those exact values wherever they fit rather than ` +
+      `inventing new ones, so both question sets group together.\n\n` +
       (targetJdText?.trim()
         ? `IMPORTANT: the candidate is targeting the specific job below. Make ` +
           `BOTH question sets laser-focused on bridging the gap between this ` +

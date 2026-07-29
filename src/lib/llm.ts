@@ -12,6 +12,8 @@ import {
   InterviewQuestionSchema,
   MasterProfile,
   MasterProfileSchema,
+  MAX_ASKED_MCQ,
+  MAX_ASKED_OPEN,
   McqQuestionnaire,
   McqQuestionnaireSchema,
   Questionnaire,
@@ -373,13 +375,14 @@ export async function extractProfileFromCv(
     prompt:
       `Extract the professional profile from this CV text. Then produce TWO ` +
       `question sets:\n\n` +
-      `1. "mcq" — a quick check of 8-14 SHORT multiple-choice questions. ` +
-      `Ask ONLY what genuinely matters for bridging THIS CV to the target ` +
-      `job (when given) — no filler. Mark "required": true on ONLY the ` +
-      `questions that are ESSENTIAL to close the gap between the CV and the ` +
-      `job (at most 8); everything else is "required": false (optional ` +
-      `enrichment). Each question is answerable in one tap and has 3-5 short ` +
-      `options grounded in THIS CV plus plausible alternatives. Set ` +
+      `1. "mcq" — a quick check of EXACTLY ${MAX_ASKED_MCQ} SHORT ` +
+      `multiple-choice questions, with "required": true on every one. This ` +
+      `is a hard budget, not a target: only the ${MAX_ASKED_MCQ} highest-` +
+      `impact questions for bridging THIS CV to the target job (when given) ` +
+      `survive, so spend each slot on the single biggest gap still open — no ` +
+      `filler, no nice-to-haves. Each question is answerable in one tap and ` +
+      `has 3-5 short options grounded in THIS CV plus plausible ` +
+      `alternatives. Set ` +
       `"selectType": "single" when exactly one answer is logical (skill ` +
       `level, yes/no, team size, recency); use "ranked" ONLY when picking ` +
       `several and prioritizing them makes sense (e.g. tools used). For ` +
@@ -387,23 +390,29 @@ export async function extractProfileFromCv(
       `be "None of these". Any question about AI/LLM tool usage MUST ` +
       `include "ChatGPT", "Claude" and "Grok" among its options (plus any ` +
       `other tools you find relevant). CRITICAL — "topic" is a CATEGORY, not a ` +
-      `per-question label: use AT MOST 4 distinct broad topic values across ` +
-      `the whole set (e.g. "SQL & Data", "Visualization", "Leadership"), ` +
-      `each shared by several questions. Do NOT add an "Other" option — the ` +
+      `per-question label: use AT MOST 2 distinct broad topic values across ` +
+      `the whole set (e.g. "SQL & Data", "Leadership"), each shared by ` +
+      `several questions. Do NOT add an "Other" option — the ` +
       `UI appends one automatically.\n\n` +
       `COMPLETENESS CHECK (critical): scan the extracted profile for entries ` +
       `that would render as bare headers — an education entry with no ` +
       `coursework/honors/notes, an experience role with no bullets, a project ` +
-      `with no description. For EACH such entry ADD one more question to ` +
-      `"mcq" with "required": true and topic "Details", asking what to ` +
-      `highlight about that specific entry (options: plausible concrete ` +
-      `directions like "Relevant coursework", "Final project", "Honors", ` +
-      `"Key responsibilities"). On THESE questions ALSO set ` +
+      `with no description. Such an entry is a strong candidate for one of ` +
+      `the ${MAX_ASKED_MCQ} slots: a question with topic "Details" asking ` +
+      `what to highlight about that specific entry (options: plausible ` +
+      `concrete directions like "Relevant coursework", "Final project", ` +
+      `"Honors", "Key responsibilities"). These questions COMPETE for the ` +
+      `same ${MAX_ASKED_MCQ} slots — they are never added on top, so include ` +
+      `one only when filling that bare entry matters more than the ` +
+      `gap-bridging question it would displace, and at most two of them. On ` +
+      `THESE questions ALSO set ` +
       `"placeholderText" to ONE generic-but-professional sentence describing ` +
       `the entry from its header alone (e.g. "Completed comprehensive ` +
       `coursework and projects aligned with core degree requirements."). ` +
       `Leave "placeholderText" as an empty string on every other question.\n\n` +
-      `2. "questionnaire" — 4-7 targeted OPEN questions that uncover UNSTATED ` +
+      `2. "questionnaire" — EXACTLY ${MAX_ASKED_OPEN} targeted OPEN questions ` +
+      `(again a hard budget — pick the ${MAX_ASKED_OPEN} with the most ` +
+      `leverage over the tailored CV) that uncover UNSTATED ` +
       `information that would strengthen tailored CVs: missing metrics ` +
       `(team sizes, revenue impact, performance numbers), unclear scope, ` +
       `gaps in dates, technologies implied but not listed. Each question ` +

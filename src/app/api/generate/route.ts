@@ -8,6 +8,12 @@ import {
   LLM_NOT_CONFIGURED_MSG,
 } from "@/lib/llm";
 import { MasterProfileSchema } from "@/lib/types";
+import {
+  DEFAULT_TEMPLATE,
+  asTemplate,
+  recommendTemplates,
+  sampleUnlockedTemplates,
+} from "@/lib/templates";
 
 export const maxDuration = 300;
 
@@ -62,9 +68,9 @@ export async function POST(request: Request) {
     .eq("status", "paid")
     .maybeSingle();
 
-  const { data: profileRow } = await supabase
+  const { data: profileRow, error: profileError } = await supabase
     .from("profiles")
-    .select("master_data")
+    .select("master_data, default_template")
     .eq("user_id", user.id)
     .single();
 
@@ -124,6 +130,20 @@ export async function POST(request: Request) {
     );
   }
 
+  /**
+   * A profile that failed to LOAD must never fall through to an empty one:
+   * every field of MasterProfileSchema has a default, so `{}` parses happily
+   * and generation would spend the user's credit tailoring a blank CV. The
+   * validation check below cannot catch that — it only sees valid output.
+   */
+  if (profileError || !profileRow) {
+    console.error("[api/generate] could not load profile:", profileError);
+    return NextResponse.json(
+      { error: "We could not load your profile. Please try again in a moment." },
+      { status: 503 }
+    );
+  }
+
   const profileParsed = MasterProfileSchema.safeParse(
     profileRow?.master_data ?? {}
   );
@@ -150,6 +170,18 @@ export async function POST(request: Request) {
     return llmFailureResponse("api/generate", e);
   }
 
+  /**
+   * The user's saved design, unless this is a free sample that may not show
+   * it: samples unlock only six designs (sampleUnlockedTemplates), so a saved
+   * default outside that set would open the catalog on a locked, disabled chip.
+   */
+  const preferred = asTemplate(profileRow?.default_template) ?? DEFAULT_TEMPLATE;
+  const startingTemplate =
+    asSample &&
+    !sampleUnlockedTemplates(recommendTemplates(job.jd_text, 4)).has(preferred)
+      ? DEFAULT_TEMPLATE
+      : preferred;
+
   const { data: generation, error } = await supabase
     .from("generations")
     .insert({
@@ -159,7 +191,9 @@ export async function POST(request: Request) {
       diff: result.diff,
       simulation: result.simulation,
       revision_number: 0,
-      template: "classic",
+      // Open in the design the user last downloaded — this used to be
+      // hardcoded, so a returning user had to reselect their design every time.
+      template: startingTemplate,
       is_sample: asSample,
     })
     .select("id")

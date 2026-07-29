@@ -284,13 +284,13 @@ export function GreetingBlock({
 }
 
 const TRANSITION_MSG =
-  "Great! So we've basically finished the mandatory questions and can start " +
-  "generating the files. Or, you can continue answering more questions so we " +
-  "might discover an important detail for the final version—and even if not, " +
-  "at least we'll have a bit more info about you for future jobs.";
+  "That's everything I need — I can generate your CV and report right now. " +
+  "If you'd like, I can also ask a few optional questions about your role " +
+  "first: they sometimes surface a detail worth including, and they make " +
+  "your future applications shorter.";
 const CONTINUE_MSG =
-  "Great, let's continue. You can start generating the reports whenever you " +
-  "feel like you've had enough.";
+  "Nice — let me pull together some questions about your role. Answer as " +
+  "many as you like, and start generating whenever you've had enough.";
 const GENERATE_MSG =
   "No problem. Just say the word and I'll start generating your CV.";
 const REGISTER_MSG =
@@ -330,19 +330,20 @@ export function TransitionBlock({
         {TRANSITION_MSG}
       </TypingBotMessage>
 
-      {/* PRD 1.5.6 — the two options SIDE-BY-SIDE, never stacked. Continue is
-          the green pill, Generate the white one; each explains itself in a
-          tooltip (hover / focus, touch-reachable). */}
+      {/* PRD 1.5.6 — the two options SIDE-BY-SIDE, never stacked. Generating
+          is now the green pill: the questionnaire is complete by this point,
+          so finishing is the expected move and more questions are the opt-in.
+          Each explains itself in a tooltip (hover / focus, touch-reachable). */}
       {branchChoice === "" && introDone && (
         <div className="chat-pop-in flex flex-row flex-wrap items-center gap-2 pl-[42px]">
-          <Tooltip label="You can continue answering more questions so we might discover an important detail for the final version—and even if not, at least we'll have a bit more info about you for future jobs.">
-            <Button size="md" onClick={() => onChoose("continue")}>
-              Continue
+          <Tooltip label="At this stage, the system begins generating your CV.">
+            <Button size="md" onClick={() => onChoose("generate")}>
+              Generate CV and report
             </Button>
           </Tooltip>
-          <Tooltip label="At this stage, the system begins generating your CV.">
-            <Button size="md" variant="white" onClick={() => onChoose("generate")}>
-              Generate CV and report
+          <Tooltip label="Optional questions about what employers typically expect for your role. They might surface a detail worth including — and the answers are remembered, so future applications ask you less.">
+            <Button size="md" variant="white" onClick={() => onChoose("continue")}>
+              Answer a few more
             </Button>
           </Tooltip>
         </div>
@@ -350,7 +351,9 @@ export function TransitionBlock({
 
       {branchChoice !== "" && (
         <UserBubble>
-          {branchChoice === "continue" ? "Continue" : "Generate CV and report"}
+          {branchChoice === "continue"
+            ? "Answer a few more"
+            : "Generate CV and report"}
         </UserBubble>
       )}
 

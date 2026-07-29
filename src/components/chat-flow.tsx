@@ -22,6 +22,7 @@ import {
   itemStatus,
   questionView,
 } from "@/lib/chat-seq";
+import { MAX_ASKED_MCQ, MAX_ASKED_OPEN } from "@/lib/types";
 import { Button, Modal, Spinner, Textarea } from "@/components/ui";
 import { McqOptions } from "@/components/mcq-options";
 import { ChatQuestionPanel } from "@/components/chat-question-panel";
@@ -72,8 +73,8 @@ type ChatFlowProps = {
 
 /** Phase 2's old milestone line was replaced by the TransitionBlock script. */
 const PHASE_INTRO: Record<1 | 3, string> = {
-  1: "First, a few quick questions I need to tailor your CV to this job. These are the required ones.",
-  3: "Last part — a few open questions in your own words. Answer freely; I'll help polish the wording.",
+  1: `First, ${MAX_ASKED_MCQ} quick one-tap questions I need to tailor your CV to this job.`,
+  3: `Last part — ${MAX_ASKED_OPEN} open questions in your own words. Answer freely; I'll help polish the wording.`,
 };
 
 /** The interactive input for one question — MCQ options or a free-text box. */
@@ -341,8 +342,9 @@ function KnownRecap({
 
 /**
  * The unified conversational data-entry surface (PRD Topic 2). A deterministic
- * bot walks the user through required MCQs → milestone → optional MCQs → open
- * questions, with an LLM confirmation loop on longer open answers. The chat
+ * bot walks the user through the capped core set (MCQs → open questions) →
+ * milestone → optional role-bank MCQs if the user asks for them, with an LLM
+ * confirmation loop on longer open answers. The chat
  * timeline is DERIVED from the answer state, so edits from the left panel never
  * disturb it. Reuses McqOptions and the funnel's answer helpers.
  */
@@ -417,13 +419,23 @@ export function ChatFlow({
     [state.autoFilledIds]
   );
 
-  // Mandatory gate (mirrors the funnel's mcqUnlocked).
-  const required = seq.filter((it) => it.phase === 1);
-  const requiredAnswered = required.filter(
-    (it) => itemStatus(it, state, skipped) === "answered" ||
-      itemStatus(it, state, skipped) === "auto"
-  ).length;
-  const mcqUnlocked = requiredAnswered >= required.length;
+  /**
+   * The core set — everything the flow asks by default: the capped MCQ budget
+   * (phase 1) plus the open questions (phase 3). Optional questions (phase 2)
+   * only exist after the user opts into the role bank, so they sit outside
+   * this count and outside the gate.
+   *
+   * This used to be phase 1 alone, which put the generate/continue branch
+   * BETWEEN the MCQs and the open questions. Once the pool is capped there is
+   * no optional tier in between, so that branch would have ended the flow
+   * before the open questions were ever asked.
+   */
+  const core = seq.filter((it) => it.phase !== 2);
+  const coreAnswered = core.filter((it) => {
+    const st = itemStatus(it, state, skipped);
+    return st === "answered" || st === "auto";
+  }).length;
+  const coreDone = coreAnswered >= core.length;
 
   const nextUnpassed = (from: number): number => {
     let n = from;
@@ -564,8 +576,10 @@ export function ChatFlow({
   const visibleCount = done ? seq.length : cursor + 1;
 
   /* --- Scripted conversational stages (PRD Topic 1) ------------------ */
-  // Phase-1 items always come first in seq.
-  const p1Count = required.length;
+  // The seq index just past the last core question — where the
+  // TransitionBlock sits. buildSequence puts the core set first, so the core
+  // items are contiguous and this is simply their count.
+  const coreEnd = core.length;
   // Questions render only once the greeting exchange (incl. its ack) ended.
   const greetingReady = state.greetingDone && ackDone;
   // The continue branch actually began — optional questions are unlocked.
@@ -573,10 +587,11 @@ export function ChatFlow({
     state.branchChoice === "continue" && state.branchStarted;
   const generateUnlocked =
     optionalUnlocked || state.branchChoice === "generate";
-  // Unanswered optional questions (optional MCQs + open ones) — drives the
-  // generate-confirmation modal (PRD questionnaire-flow Topic 2).
+  // Unanswered optional questions — drives the generate-confirmation modal
+  // (PRD questionnaire-flow Topic 2). Open questions used to count here; they
+  // are core now, and the gate below already covers them.
   const remainingOptional = seq.filter(
-    (it) => it.phase !== 1 && !isPassed(it, state, skipped)
+    (it) => it.phase === 2 && !isPassed(it, state, skipped)
   ).length;
 
   /**
@@ -588,15 +603,15 @@ export function ChatFlow({
     if (optionalUnlocked && remainingOptional > 0) setConfirmGenerate(true);
     else onGenerate();
   }
-  // Past the mandatory phase with no branch opening more questions: cap the
-  // transcript at phase 1 and show the TransitionBlock at the frontier. The
-  // cursor guard matters — mcqUnlocked flips before the last "Continue" click.
+  // Past the core questions with no branch opening more: cap the transcript
+  // there and show the TransitionBlock at the frontier. The cursor guard
+  // matters — coreDone flips before the last "Continue" click.
   const inTransition =
-    greetingReady && mcqUnlocked && cursor >= p1Count && !optionalUnlocked;
+    greetingReady && coreDone && cursor >= coreEnd && !optionalUnlocked;
   const shownCount = !greetingReady
     ? 0
     : inTransition
-      ? Math.min(visibleCount, p1Count)
+      ? Math.min(visibleCount, coreEnd)
       : visibleCount;
 
   /** Right-to-left display language (Hebrew, Arabic) — see i18n.ts. */
@@ -675,7 +690,7 @@ export function ChatFlow({
               <Fragment key={item.key}>
                 {/* Once the continue branch starts, the transition script sits
                     at the phase boundary as static transcript history. */}
-                {i === p1Count && optionalUnlocked && transitionEl}
+                {i === coreEnd && optionalUnlocked && transitionEl}
                 {/* Phase intro → typing indicator → typewriter question →
                     answer/editor, strictly sequential (PRD Topic 2). */}
                 <QuestionStep
@@ -815,18 +830,18 @@ export function ChatFlow({
             ← Back
           </Button>
           <div className="flex items-center gap-3">
-            {!mcqUnlocked && (
+            {!coreDone && (
               <span className="text-[12.5px] text-ink-faint">
-                {requiredAnswered}/{required.length} required
+                {coreAnswered}/{core.length} questions
               </span>
             )}
             {generateUnlocked && (
               <Button
                 size="lg"
-                disabled={!mcqUnlocked || generateBusy}
+                disabled={!coreDone || generateBusy}
                 onClick={handleGenerateClick}
                 className={
-                  mcqUnlocked ? "ring-2 ring-accent/30 ring-offset-2" : ""
+                  coreDone ? "ring-2 ring-accent/30 ring-offset-2" : ""
                 }
               >
                 {generateBusy ? (

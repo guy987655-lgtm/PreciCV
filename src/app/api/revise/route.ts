@@ -14,6 +14,7 @@ import {
   TailoredCvSchema,
   TIERS,
 } from "@/lib/types";
+import { DEFAULT_TEMPLATE, asTemplate } from "@/lib/templates";
 
 export const maxDuration = 300;
 
@@ -105,7 +106,7 @@ export async function POST(request: Request) {
 
   const { data: latest } = await supabase
     .from("generations")
-    .select("cv, revision_number")
+    .select("cv, revision_number, template")
     .eq("job_id", jobId)
     .order("revision_number", { ascending: false })
     .limit(1)
@@ -117,11 +118,20 @@ export async function POST(request: Request) {
     );
   }
 
-  const { data: profileRow } = await supabase
+  const { data: profileRow, error: profileError } = await supabase
     .from("profiles")
-    .select("master_data")
+    .select("master_data, default_template")
     .eq("user_id", user.id)
     .single();
+  // See api/generate: `{}` is a VALID MasterProfile, so a failed load would
+  // silently revise against a blank profile and consume a revision.
+  if (profileError || !profileRow) {
+    console.error("[api/revise] could not load profile:", profileError);
+    return NextResponse.json(
+      { error: "We could not load your profile. Please try again in a moment." },
+      { status: 503 }
+    );
+  }
   const profileParsed = MasterProfileSchema.safeParse(
     profileRow?.master_data ?? {}
   );
@@ -159,7 +169,12 @@ export async function POST(request: Request) {
       diff: result.diff,
       simulation: result.simulation,
       revision_number: revisionNumber,
-      template: "classic",
+      // A revision keeps the design of the document it revises; the user's
+      // saved default only applies when that document predates the column.
+      template:
+        asTemplate(latest.template) ??
+        asTemplate(profileRow?.default_template) ??
+        DEFAULT_TEMPLATE,
     })
     .select("id")
     .single();

@@ -6,6 +6,7 @@ import {
   FunnelState,
   McqAnswer,
   OTHER_OPTION,
+  clearAllAnswers,
   flowDisplayName,
   formatMcqAnswer,
   isMcqAnswered,
@@ -16,13 +17,16 @@ import {
   updateHistoryEntry,
 } from "@/lib/funnel";
 import { MonthBucket, cumulativeUniqueAnswered } from "@/lib/answer-stats";
+import { readJson } from "@/lib/fetch-json";
+import { trackButtonClick } from "@/lib/analytics";
 import { McqQuestionnaire, Questionnaire } from "@/lib/types";
 import { isSimilarQuestion } from "@/lib/text";
 import { buildTopicBuckets, matchesTopic, resolveTopic } from "@/lib/topics";
 import { AnswersChart } from "@/components/answers-chart";
 import { useSimUser } from "@/lib/sim-user";
 import { useSession } from "@/lib/use-session";
-import { Badge, Button, Card, Input, Textarea } from "@/components/ui";
+import { Badge, Button, Card, Input, Textarea, Toast } from "@/components/ui";
+import { ConfirmCountdownModal } from "@/components/confirm-countdown-modal";
 import { LoadingAnnounce, Skeleton, SkeletonRows } from "@/components/skeleton";
 import { TopicFilter } from "@/components/topic-filter";
 import { UserCard } from "@/components/user-card";
@@ -179,6 +183,11 @@ export default function CardPage() {
   /** "" = All. Category chips under the search box. */
   const [activeTopic, setActiveTopic] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // "Clear my data" — confirmation, in-flight state, and the success toast.
+  const [clearOpen, setClearOpen] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [clearError, setClearError] = useState("");
+  const [cleared, setCleared] = useState(false);
   // Draft answers for the open row. Edits stay local while the row is open
   // (so typing/selecting never re-partitions the list and collapses the row);
   // they're committed to the funnel only when the user clicks "Done".
@@ -228,6 +237,47 @@ export default function CardPage() {
   const hasCard =
     (Boolean(state?.profile) || historyFlows.length > 0 || serverAnswers.length > 0) &&
     (signedIn || sim !== "registered_no_profile");
+
+  /**
+   * Wipes the answer memory: the account rows first (the source that survives
+   * devices and cleared storage), then every flow in this browser. The account
+   * call goes first on purpose — if it fails there is still something to
+   * delete, and reporting success while the account copy survived would be a
+   * lie the user could only discover on their next application.
+   */
+  async function clearAnswers() {
+    setClearing(true);
+    setClearError("");
+    trackButtonClick({
+      button_name: "clear_my_answers",
+      action: "delete",
+      button_text: "Delete my answers",
+      click_source: "card_page",
+    });
+    try {
+      if (signedIn) {
+        const res = await fetch("/api/answers", { method: "DELETE" });
+        if (!res.ok) {
+          const data = await readJson(res);
+          throw new Error(data.error ?? "Could not clear your answers");
+        }
+      }
+      clearAllAnswers();
+      const s = loadFunnel();
+      setServerAnswers([]);
+      setState(s);
+      setHistoryFlows(loadHistory());
+      setChartData(computeChart(s));
+      setExpandedId(null);
+      setClearOpen(false);
+      setCleared(true);
+      setTimeout(() => setCleared(false), 4000);
+    } catch (e) {
+      setClearError(e instanceof Error ? e.message : "Something went wrong");
+    } finally {
+      setClearing(false);
+    }
+  }
 
   /* ------------- edits persist straight to the funnel state ---------- */
   function update(next: FunnelState) {
@@ -782,9 +832,52 @@ export default function CardPage() {
                 {unansweredRows.map((r) => cardRow(r))}
               </Section>
             </div>
+
+            {/* Data control. Deliberately scoped to answers: the card IS the
+                answer memory, while CVs, reports and History live elsewhere
+                and stay. Full account deletion remains on /my-account. */}
+            <Card className="mt-8 border-red-200 p-6">
+              <h2 className="font-semibold text-red-700">Clear my data</h2>
+              <p className="mt-2 text-sm text-ink-soft">
+                Deletes every answer you&apos;ve given. Future CVs are tailored
+                without that context, and the next questionnaire starts from
+                scratch. Your CVs, reports and history stay.
+              </p>
+              <Button
+                variant="danger"
+                className="mt-4"
+                onClick={() => setClearOpen(true)}
+              >
+                Clear my answers
+              </Button>
+              {clearError && (
+                <p className="mt-3 text-sm text-red-600">{clearError}</p>
+              )}
+            </Card>
           </>
         )}
       </div>
+
+      <ConfirmCountdownModal
+        open={clearOpen}
+        onClose={() => setClearOpen(false)}
+        title="Delete every answer?"
+        confirmLabel="Delete my answers"
+        cancelLabel="Keep my answers"
+        busy={clearing}
+        onConfirm={clearAnswers}
+      >
+        <p>
+          Every answer you&apos;ve given{signedIn ? ", on this device and on your account," : ""}{" "}
+          will be permanently erased. Future CVs will be tailored without that
+          context — the next questionnaire starts from scratch.
+        </p>
+        <p className="mt-2">
+          Your generated CVs, reports and history are not affected.
+        </p>
+      </ConfirmCountdownModal>
+
+      {cleared && <Toast message="Your answers were deleted." />}
     </main>
   );
 }

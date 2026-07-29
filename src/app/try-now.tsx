@@ -6,6 +6,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { readJson } from "@/lib/fetch-json";
 import { trackButtonClick } from "@/lib/analytics";
 import {
+  MAX_ASKED_MCQ,
+  MAX_ASKED_OPEN,
   MAX_REPORT_REGENS,
   MAX_REWRITES,
   McqQuestionnaire,
@@ -28,6 +30,7 @@ import {
   HOME_EVENT,
   McqAnswer,
   STEP_ORDER,
+  capQuestionPools,
   clearFunnel,
   isMcqAnswered,
   loadFunnel,
@@ -38,6 +41,13 @@ import {
   stampAnswerTime,
   stashForSignup,
 } from "@/lib/funnel";
+import {
+  BaseCvMeta,
+  fetchAccountPrefs,
+  preferredTemplate,
+  rememberTemplate,
+  saveAccountPrefs,
+} from "@/lib/prefs";
 import { findCachedAnswers } from "@/lib/answer-cache";
 import { EMPTY_MATCH, MatchedAnswers, mergeMatches } from "@/lib/answer-match";
 import { generateWithRetry } from "@/lib/generate-client";
@@ -213,6 +223,34 @@ export function TryNow() {
     if (saved?.profile) setState(saved);
     setHydrated(true);
   }, []);
+
+  /**
+   * Account-level preferences: the design last downloaded and the base CV on
+   * file. The local preference wins when present (it is this device's most
+   * recent truth); the account fills in on a fresh device, which is what makes
+   * the chosen design and the saved CV follow the user at all.
+   */
+  const [savedCv, setSavedCv] = useState<BaseCvMeta | null>(null);
+  const [useSavedCv, setUseSavedCv] = useState(false);
+  // Derived rather than reset on sign-out: a signed-out user has no base CV
+  // regardless of what the last fetch found.
+  const baseCv = signedIn ? savedCv : null;
+  useEffect(() => {
+    if (!signedIn) return;
+    let alive = true;
+    void fetchAccountPrefs().then((prefs) => {
+      if (!alive || !prefs) return;
+      setSavedCv(prefs.baseCv);
+      // Pre-select it: a returning user's common case is "same CV, new job".
+      setUseSavedCv(prefs.baseCv !== null);
+      if (prefs.defaultTemplate && !preferredTemplate()) {
+        rememberTemplate(prefs.defaultTemplate);
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, [signedIn]);
   useEffect(() => {
     if (hydrated) saveFunnel(state);
   }, [state, hydrated]);
@@ -227,6 +265,12 @@ export function TryNow() {
   // "download" milestone version.
   useEffect(() => {
     if (!printRequest || reportBusy) return;
+    // The design the user actually downloaded in becomes their default for
+    // every future flow (both stores; the account copy follows them across
+    // devices). Non-fatal by design — a failed preference write must never
+    // interfere with handing over a print dialog.
+    rememberTemplate(state.template);
+    if (signedIn) void saveAccountPrefs({ defaultTemplate: state.template });
     setState((s) => {
       const flags = { downloadedCv: true, downloadedReport: true };
       if (!s.results) return { ...s, ...flags };
@@ -370,7 +414,8 @@ export function TryNow() {
   }
 
   async function analyze() {
-    if (!file) return;
+    const fromSaved = useSavedCv && baseCv !== null;
+    if (!file && !fromSaved) return;
     setBusy(true);
     setError("");
     trackButtonClick({
@@ -381,17 +426,28 @@ export function TryNow() {
     });
     try {
       const form = new FormData();
-      form.append("file", file);
+      // The saved CV is already on the account as extracted text, so the
+      // server reads it from there — the user never re-picks the same file.
+      if (fromSaved) form.append("useSaved", "1");
+      else if (file) form.append("file", file);
       // The target job makes the questionnaire gap-bridging specific (§4.2).
       if (state.jdText.trim()) form.append("jd", state.jdText);
       const res = await fetch("/api/try/parse-cv", { method: "POST", body: form });
       const data = await readJson(res);
       if (!res.ok) throw new Error(data.error ?? "Upload failed");
+      // Keep the freshly uploaded CV on the account so the next session can
+      // offer it back. Best-effort: this must not fail an otherwise good run.
+      if (signedIn && file && data.rawText) {
+        void saveAccountPrefs({
+          baseCv: { rawText: data.rawText, fileName: file.name },
+        });
+        setSavedCv({ fileName: file.name, uploadedAt: new Date().toISOString() });
+      }
       // A new CV upload starts a NEW flow — the previous one is archived
       // to History, never overwritten.
       if (state.profile) pushToHistory(state);
-      const mcqPool = { questions: normalizeMcqPool(data.mcq?.questions ?? []) };
-      const questionnaire = data.questionnaire ?? null;
+      const fullMcq = { questions: data.mcq?.questions ?? [] };
+      const fullOpen: Questionnaire | null = data.questionnaire ?? null;
       /**
        * Progressive profiling: cross-reference this job's questions against
        * everything the user has already answered — on this device (the
@@ -399,13 +455,21 @@ export function TryNow() {
        * are answered up front and never asked again, so an active user gets
        * a short questionnaire instead of the same one every time.
        */
-      const cached = findCachedAnswers(mcqPool, questionnaire, Date.now());
+      const cached = findCachedAnswers(fullMcq, fullOpen, Date.now());
       const remembered = signedIn
-        ? await matchServerAnswers(mcqPool, questionnaire)
+        ? await matchServerAnswers(fullMcq, fullOpen)
         : EMPTY_MATCH;
       // The account is the stronger source: it survives devices and cleared
       // storage, and holds the answers the user curated in My Card.
       const known = mergeMatches(remembered, cached);
+      /**
+       * Only NOW is the pool cut to the asking budget. Matching first means
+       * the five slots go to five genuinely new questions — capping first
+       * would spend them on questions the matcher was about to answer.
+       */
+      const capped = capQuestionPools(fullMcq, fullOpen, known.knownIds);
+      const mcqPool = { questions: normalizeMcqPool(capped.mcq.questions) };
+      const questionnaire = capped.questionnaire;
       const hasQuestions =
         mcqPool.questions.length > 0 ||
         (questionnaire?.questions?.length ?? 0) > 0;
@@ -436,6 +500,10 @@ export function TryNow() {
         processName: "",
         roleQuestionsLoaded: false,
         mcqIndex: 0,
+        // A fresh flow opens in the design the user last downloaded, not the
+        // hardcoded EMPTY_FUNNEL default — that reset is what forced users
+        // with a consistent visual identity to reselect on every application.
+        template: preferredTemplate() ?? EMPTY_FUNNEL.template,
         results: null,
         downloadedCv: false,
         downloadedReport: false,
@@ -929,6 +997,8 @@ export function TryNow() {
 
   /* ---------------- derived ---------------- */
   const hasJob = state.jdText.trim().length >= 100;
+  /** A CV is ready to analyze: freshly picked, or the one on the account. */
+  const hasCvReady = file !== null || (useSavedCv && baseCv !== null);
   const stepIdx = STEP_ORDER.indexOf(state.step);
 
   /* ---------------- state-aware banner (§3) ---------------- */
@@ -1067,9 +1137,54 @@ export function TryNow() {
             <div className="flex items-center gap-2">
               <StepNum n={1} />
               <span className="text-[15px] font-bold text-ink">
-                Upload your CV
+                {baseCv ? "Choose your CV" : "Upload your CV"}
               </span>
             </div>
+            {/* A returning user's CV is already on file — offer it instead of
+                making them find the same document again. Selecting it hides
+                the dropzone; "Upload a different CV" brings it back. */}
+            {baseCv && (
+              <div className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={() => setUseSavedCv(true)}
+                  disabled={busy}
+                  aria-pressed={useSavedCv}
+                  className={`flex items-center gap-3 rounded-2xl border-[2.5px] p-4 text-left transition-all disabled:opacity-50 ${
+                    useSavedCv
+                      ? "border-accent bg-selected-bg"
+                      : "border-border bg-card hover:border-accent-soft"
+                  }`}
+                >
+                  <span className="text-2xl">📄</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[15px] font-bold text-ink">
+                      {baseCv.fileName}
+                    </span>
+                    <span className="block text-[13px] text-ink-faint">
+                      {baseCv.uploadedAt
+                        ? `Saved ${new Date(baseCv.uploadedAt).toLocaleDateString(
+                            "en-GB",
+                            { day: "numeric", month: "short" }
+                          )} · ready to use`
+                        : "Saved to your account · ready to use"}
+                    </span>
+                  </span>
+                  {useSavedCv && <CheckCircle size={28} />}
+                </button>
+                {useSavedCv && (
+                  <button
+                    type="button"
+                    onClick={() => setUseSavedCv(false)}
+                    disabled={busy}
+                    className="cursor-pointer self-start text-[13px] font-semibold text-accent underline disabled:opacity-50"
+                  >
+                    Upload a different CV
+                  </button>
+                )}
+              </div>
+            )}
+            {!(baseCv && useSavedCv) && (
             <label
               onDragEnter={(e) => {
                 e.preventDefault();
@@ -1122,6 +1237,7 @@ export function TryNow() {
                 {file ? "Click or drop to replace" : "or click to browse · PDF or DOCX"}
               </span>
             </label>
+            )}
           </div>
 
           {/* 2 — Job description (large rectangular text box) */}
@@ -1143,7 +1259,7 @@ export function TryNow() {
             />
           </div>
         </div>
-        {file && state.jdText.trim().length > 0 && !hasJob && (
+        {hasCvReady && state.jdText.trim().length > 0 && !hasJob && (
           <p className="text-center text-[13px] text-ink-faint">
             Paste a bit more of the job posting (min. 100 characters)
           </p>
@@ -1158,7 +1274,7 @@ export function TryNow() {
             size="lg"
             className="flex-1 text-[16px]"
             style={{ paddingTop: 14, paddingBottom: 14 }}
-            disabled={!file || !hasJob || busy}
+            disabled={!hasCvReady || !hasJob || busy}
             onClick={analyze}
           >
             {busy ? (
@@ -1313,7 +1429,7 @@ export function TryNow() {
                 ? `Let's tailor your CV, ${state.profile.contact.fullName.split(" ")[0]}.`
                 : "Let's tailor your CV to this job."
             }
-            sub="Answer the required questions to unlock your reports — then sharpen with a few optional ones."
+            sub={`${MAX_ASKED_MCQ} quick one-tap questions and ${MAX_ASKED_OPEN} in your own words — that's everything we need to build your reports.`}
           />
           <ChatFlow
             state={state}
@@ -1336,12 +1452,20 @@ export function TryNow() {
                 button_name: `chat_branch_${choice}`,
                 action: "navigate",
                 button_text:
-                  choice === "continue" ? "Continue" : "Generate CV and report",
+                  choice === "continue"
+                    ? "Answer a few more"
+                    : "Generate CV and report",
                 click_source: "landing_try_now",
               });
               patch({ branchChoice: choice });
             }}
-            onBranchStart={() => patch({ branchStarted: true })}
+            onBranchStart={() => {
+              patch({ branchStarted: true });
+              // The core questionnaire is capped, so this branch has nothing
+              // left to show unless the role bank is fetched — it used to
+              // simply unlock optional questions that were already in the pool.
+              if (!state.roleQuestionsLoaded) void loadRoleQuestions();
+            }}
           />
         </div>
       )}

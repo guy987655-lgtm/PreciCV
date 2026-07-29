@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
 import { extractDocText, ParseDocError } from "@/lib/parse-doc";
 import {
   analyzeJdGreeting,
@@ -14,6 +15,12 @@ export const maxDuration = 120;
  * dynamic questionnaire and returns them to the browser WITHOUT storing
  * anything server-side. The client keeps the result in localStorage and
  * imports it via /api/try/import right after the user signs up.
+ *
+ * One authenticated variant: `useSaved` runs the same extraction against the
+ * CV text a signed-in user already has on file (profiles.raw_cv_text), so a
+ * returning user does not have to locate and re-upload the same document. It
+ * still stores nothing new — it only reads what /api/account/preferences
+ * saved — and the text never round-trips through the browser.
  */
 export async function POST(request: Request) {
   if (!llmConfigured()) {
@@ -22,7 +29,8 @@ export async function POST(request: Request) {
 
   const formData = await request.formData();
   const file = formData.get("file");
-  if (!(file instanceof File)) {
+  const useSaved = formData.get("useSaved") === "1";
+  if (!useSaved && !(file instanceof File)) {
     return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
   }
   // Optional target job — makes the questionnaire gap-bridging specific.
@@ -30,13 +38,35 @@ export async function POST(request: Request) {
   const jdText = typeof jd === "string" ? jd : "";
 
   let rawText: string;
-  try {
-    rawText = await extractDocText(file);
-  } catch (e) {
-    if (e instanceof ParseDocError) {
-      return NextResponse.json({ error: e.message }, { status: e.status });
+  if (useSaved) {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    throw e;
+    const { data } = await supabase
+      .from("profiles")
+      .select("raw_cv_text")
+      .eq("user_id", user.id)
+      .maybeSingle();
+    rawText = data?.raw_cv_text?.trim() ?? "";
+    if (!rawText) {
+      return NextResponse.json(
+        { error: "No saved CV found. Please upload your CV." },
+        { status: 404 }
+      );
+    }
+  } else {
+    try {
+      rawText = await extractDocText(file as File);
+    } catch (e) {
+      if (e instanceof ParseDocError) {
+        return NextResponse.json({ error: e.message }, { status: e.status });
+      }
+      throw e;
+    }
   }
 
   try {

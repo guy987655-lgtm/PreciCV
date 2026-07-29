@@ -6,6 +6,7 @@ import {
   llmConfigured,
   LLM_NOT_CONFIGURED_MSG,
 } from "@/lib/llm";
+import { capQuestionPools } from "@/lib/funnel";
 
 export const maxDuration = 120;
 
@@ -43,7 +44,14 @@ export async function POST(request: Request) {
     throw e;
   }
 
-  const { profile, questionnaire, mcq } = await extractProfileFromCv(rawText);
+  const extracted = await extractProfileFromCv(rawText);
+  const { profile } = extracted;
+  // Enforce the asking budget the prompt only requests. No matcher runs on
+  // this path (onboarding is a first upload), so nothing is already known.
+  const { mcq, questionnaire } = capQuestionPools(
+    extracted.mcq,
+    extracted.questionnaire
+  );
 
   const { error } = await supabase.from("profiles").upsert(
     {

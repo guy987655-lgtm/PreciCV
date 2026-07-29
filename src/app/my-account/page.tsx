@@ -6,7 +6,8 @@ import { readJson } from "@/lib/fetch-json";
 import { loadFunnel } from "@/lib/funnel";
 import { trackButtonClick, resetAnalytics } from "@/lib/analytics";
 import { useSession } from "@/lib/use-session";
-import { Button, Card, Modal, Spinner } from "@/components/ui";
+import { Button, Card } from "@/components/ui";
+import { ConfirmCountdownModal } from "@/components/confirm-countdown-modal";
 import { AccountIdentity } from "@/components/account-identity";
 import { Navbar } from "@/components/navbar";
 
@@ -106,24 +107,22 @@ export default function MyAccountPage() {
         </Card>
       </div>
 
-      <Modal
+      {/* The countdown is shared with My Card's clear-data flow. This action
+          is the more destructive of the two, so it gets the same guard. */}
+      <ConfirmCountdownModal
         open={confirmOpen}
         onClose={() => setConfirmOpen(false)}
         title="Delete everything?"
+        confirmLabel="Yes, delete everything"
+        cancelLabel="Keep my account"
+        busy={busy}
+        onConfirm={deleteAccount}
       >
-        <p className="text-sm text-slate-600">
+        <p>
           All of your data — profile, CVs, reports, and history — will be
           permanently and irreversibly erased.
         </p>
-        <div className="mt-5 flex justify-end gap-3">
-          <Button variant="ghost" onClick={() => setConfirmOpen(false)}>
-            Keep my account
-          </Button>
-          <Button variant="danger" disabled={busy} onClick={deleteAccount}>
-            {busy ? <Spinner /> : "Yes, delete everything"}
-          </Button>
-        </div>
-      </Modal>
+      </ConfirmCountdownModal>
     </main>
   );
 }

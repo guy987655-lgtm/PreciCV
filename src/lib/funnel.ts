@@ -3,6 +3,8 @@ import {
   GenerationResult,
   GreetingInfo,
   MasterProfile,
+  MAX_ASKED_MCQ,
+  MAX_ASKED_OPEN,
   MAX_REQUIRED_QUESTIONS,
   McqQuestionnaire,
   Questionnaire,
@@ -84,6 +86,63 @@ export function normalizeMcqPool(input: McqQuestion[]): McqQuestion[] {
     out.push(...chunk.map((q) => ({ ...q, topic: label })));
   }
   return [...required, ...out];
+}
+
+/**
+ * Trims a freshly generated question set down to what the flow is allowed to
+ * ASK: MAX_ASKED_MCQ multiple-choice + MAX_ASKED_OPEN open questions.
+ *
+ * The prompt asks the model for exactly those counts, but a prompt is a hint —
+ * this is the enforcement, and the only reason a user can be promised a
+ * seven-question funnel.
+ *
+ * Two rules that are easy to get wrong:
+ *
+ * 1. Questions the user already answered in an earlier application (knownIds)
+ *    are ALWAYS kept, and never count against the budget. They are not asked
+ *    (buildSequence filters them out and the chat recaps them instead), but
+ *    profileWithAnswers walks these same pools to fold their answers into the
+ *    tailoring payload — dropping them here would silently delete answers from
+ *    the generated CV.
+ * 2. Consequently this must run AFTER progressive-profiling matching. Capping
+ *    first would spend the budget on questions the matcher is about to answer,
+ *    leaving a returning user with a two-question flow instead of five fresh
+ *    ones.
+ *
+ * Every surviving unknown MCQ becomes `required` — with a five-question budget
+ * there is no room for an optional enrichment tier. Optional questions now
+ * arrive only through the opt-in role bank (generateRoleQuestions).
+ */
+export function capQuestionPools(
+  mcq: McqQuestionnaire | null,
+  questionnaire: Questionnaire | null,
+  knownIds: string[] = []
+): { mcq: McqQuestionnaire; questionnaire: Questionnaire | null } {
+  const known = new Set(knownIds);
+
+  const mcqAll = mcq?.questions ?? [];
+  const fresh = mcqAll.filter((q) => !known.has(q.id));
+  // Essential questions win the slots; the rest fill whatever is left over.
+  const winners = new Set(
+    [...fresh.filter((q) => q.required), ...fresh.filter((q) => !q.required)]
+      .slice(0, MAX_ASKED_MCQ)
+      .map((q) => q.id)
+  );
+  // Rebuilt by walking the original array so the model's ordering survives.
+  const keptMcq = mcqAll
+    .filter((q) => known.has(q.id) || winners.has(q.id))
+    .map((q) => (known.has(q.id) || q.required ? q : { ...q, required: true }));
+
+  const openAll = questionnaire?.questions ?? [];
+  let openBudget = MAX_ASKED_OPEN;
+  const keptOpen = openAll.filter(
+    (q) => known.has(q.id) || openBudget-- > 0
+  );
+
+  return {
+    mcq: { questions: keptMcq },
+    questionnaire: questionnaire ? { questions: keptOpen } : null,
+  };
 }
 
 /**
@@ -402,6 +461,39 @@ export function updateHistoryEntry(flowId: string, patch: Partial<FunnelState>) 
   persistHistory(
     loadHistory().map((f) => (f.flowId === flowId ? { ...f, ...patch } : f))
   );
+}
+
+/**
+ * Empties a flow's Q&A while leaving the flow itself intact.
+ *
+ * The questions, the parsed profile, the generated CV, its versions and the
+ * download flags all survive, so History rows stay listed and re-downloadable
+ * — only what the user TOLD us is gone.
+ *
+ * This is what actually removes local context: answer-cache.ts mines its
+ * matches straight out of the active flow and the history array, so emptying
+ * these maps is what makes the next flow ask its questions from scratch
+ * instead of auto-filling them.
+ */
+export function stripAnswers(s: FunnelState): FunnelState {
+  return {
+    ...s,
+    mcqAnswers: {},
+    answers: {},
+    answerTimes: {},
+    autoFilledIds: [],
+    knownIds: [],
+    sharpenSuggestions: {},
+    greetingReply: "",
+  };
+}
+
+/** Clears every answer this browser remembers — active flow and history. */
+export function clearAllAnswers() {
+  if (typeof window === "undefined") return;
+  const active = loadFunnel();
+  if (active) saveFunnel(stripAnswers(active));
+  persistHistory(loadHistory().map(stripAnswers));
 }
 
 /**

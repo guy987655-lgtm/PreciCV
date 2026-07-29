@@ -24,6 +24,7 @@ import {
   makeVersion,
 } from "@/lib/cv-session";
 import { effectiveSplit } from "@/lib/templates";
+import { rememberTemplate, saveAccountPrefs } from "@/lib/prefs";
 import { printBoth, printFile } from "@/lib/download";
 import { Badge, Button, Card, Modal, Spinner, Toast } from "@/components/ui";
 import { ReportSectionsSkeleton } from "@/components/skeleton";
@@ -609,6 +610,13 @@ export function JobWorkspace({
   // Deferred print: runs once the requested files have rendered.
   useEffect(() => {
     if (!printRequest || reportBusy) return;
+    // The downloaded design becomes this user's default for future
+    // generations. Best-effort — never let it hold up a print dialog.
+    if (generation?.template) {
+      const t = generation.template as CvTemplate;
+      rememberTemplate(t);
+      void saveAccountPrefs({ defaultTemplate: t });
+    }
     if (generation && !isSample) {
       setVersions((vs) =>
         appendVersion(

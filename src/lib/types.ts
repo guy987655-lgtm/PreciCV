@@ -115,8 +115,17 @@ export const McqQuestionnaireSchema = z.object({
 });
 export type McqQuestionnaire = z.infer<typeof McqQuestionnaireSchema>;
 
+/**
+ * The whole questionnaire budget, enforced in code (capQuestionPools) — the
+ * prompt only asks for these counts, so the model exceeding them must not
+ * reach the user. A long questionnaire was the funnel's biggest drop-off
+ * source; a short, promisable one is the point.
+ */
+export const MAX_ASKED_MCQ = 5;
+export const MAX_ASKED_OPEN = 2;
+
 /** Hard cap on questions a user MUST answer before continuing. */
-export const MAX_REQUIRED_QUESTIONS = 10;
+export const MAX_REQUIRED_QUESTIONS = MAX_ASKED_MCQ;
 
 /* ------------------------------------------------------------------ */
 /* Dynamic questionnaire                                               */

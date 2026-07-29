@@ -82,6 +82,52 @@ export async function GET() {
 }
 
 /**
+ * Erases the user's whole answer memory (My Card's "clear my data").
+ *
+ * Also empties master_data.additionalFacts: answers imported at signup were
+ * flattened in there, where they are indistinguishable from facts parsed out
+ * of the CV. Leaving them would mean a "cleared" account still fed old
+ * answers into every future generation, which is exactly what the user asked
+ * to stop. The CV-derived facts that go with them are re-extracted on the next
+ * upload; nothing else in the profile is touched.
+ */
+export async function DELETE() {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { error } = await supabase
+    .from("profile_answers")
+    .delete()
+    .eq("user_id", user.id);
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  const { data: profileRow } = await supabase
+    .from("profiles")
+    .select("master_data")
+    .eq("user_id", user.id)
+    .maybeSingle();
+  const master = profileRow?.master_data as Record<string, unknown> | null;
+  if (master && Array.isArray(master.additionalFacts) && master.additionalFacts.length) {
+    const { error: profileError } = await supabase
+      .from("profiles")
+      .update({ master_data: { ...master, additionalFacts: [] } })
+      .eq("user_id", user.id);
+    if (profileError) {
+      return NextResponse.json({ error: profileError.message }, { status: 500 });
+    }
+  }
+
+  return NextResponse.json({ ok: true });
+}
+
+/**
  * Upserts answers into the user's cross-job memory. One row per question
  * (unique on user_id + question), so re-answering updates in place and the
  * newest wording of an answer is always the one replayed onto a new job.

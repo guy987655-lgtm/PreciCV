@@ -56,6 +56,21 @@ export const CV_TEMPLATE_INFO: Record<CvTemplate, TemplateInfo> = {
   mono: { category: "modern", splitMode: "never", roleTags: ["engineering", "data"] },
 };
 
+/** The design used when nothing else is known. */
+export const DEFAULT_TEMPLATE: CvTemplate = "classic";
+
+/**
+ * Narrows an untrusted value (a DB column, a stored preference, a request
+ * body) to a known template id. Anything unrecognized — including a design
+ * removed from the catalog since it was saved — becomes null rather than
+ * reaching CvRenderer, which would fall back silently to a different look.
+ */
+export function asTemplate(v: unknown): CvTemplate | null {
+  return typeof v === "string" && (CV_TEMPLATES as readonly string[]).includes(v)
+    ? (v as CvTemplate)
+    : null;
+}
+
 /** Whether the split toggle should be shown for this template. */
 export function canToggleSplit(t: CvTemplate): boolean {
   return CV_TEMPLATE_INFO[t].splitMode === "both";

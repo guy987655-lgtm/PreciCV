@@ -16,7 +16,15 @@ export type SeqItem =
   | { key: string; kind: "open"; phase: 3; q: OpenQ };
 
 /**
- * Ordered questions: required MCQ → optional MCQ → open.
+ * Ordered questions: required MCQ → open → optional MCQ.
+ *
+ * The core set the flow always asks (the capped MCQ budget plus the open
+ * questions) comes first and contiguously; optional questions come last
+ * because they only ever arrive from the opt-in role bank, appended after the
+ * user has already answered everything else. Ordering them in the middle —
+ * as this did while phase 2 was part of the default flow — would splice a
+ * fresh batch of unanswered questions above open questions the user had
+ * already answered.
  *
  * Questions already answered in an earlier application are dropped — a
  * returning user should only be asked what is genuinely new (they are
@@ -43,11 +51,11 @@ export function buildSequence(
     ...required.map(
       (q): SeqItem => ({ key: `mcq:${q.id}`, kind: "mcq", phase: 1, q })
     ),
-    ...optional.map(
-      (q): SeqItem => ({ key: `mcq:${q.id}`, kind: "mcq", phase: 2, q })
-    ),
     ...open.map(
       (q): SeqItem => ({ key: `open:${q.id}`, kind: "open", phase: 3, q })
+    ),
+    ...optional.map(
+      (q): SeqItem => ({ key: `mcq:${q.id}`, kind: "mcq", phase: 2, q })
     ),
   ];
 }

@@ -1,5 +1,5 @@
-import { FunnelState, McqAnswer } from "./funnel";
-import { McqQuestionnaire } from "./types";
+import { FunnelState, McqAnswer, capQuestionPools } from "./funnel";
+import { McqQuestionnaire, Questionnaire } from "./types";
 
 type MockQ = McqQuestionnaire["questions"][number];
 
@@ -62,12 +62,43 @@ const MOCK_POOL: MockQ[] = [
   q("ld5", "Leadership", "Have you led cross-functional projects?"),
 ];
 
-// First 6 questions are the "required" set the launch flow gates on.
-for (const mq of MOCK_POOL.slice(0, 6)) mq.required = true;
+/**
+ * The mock mirrors the shape a real flow ends up in: a CORE set capped by
+ * capQuestionPools (what the funnel asks by default), plus the role-bank
+ * remainder a user gets only by opting into "Answer a few more". Running the
+ * core through the real cap means the simulator can never drift from the
+ * production budget.
+ */
+const MOCK_OPEN: Questionnaire = {
+  questions: [
+    {
+      id: "q1",
+      question: "How large was the team you led at Acme?",
+      why: "Team size signals scope.",
+      topic: "Leadership",
+    },
+    {
+      id: "q2",
+      question: "What business impact did your dashboards have?",
+      why: "Metrics strengthen bullets.",
+      topic: "Visualization",
+    },
+  ],
+};
 
-/** 21 of 25 answered — required set fully covered, 4 left as suggestions. */
+const MOCK_CAPPED = capQuestionPools(
+  { questions: MOCK_POOL.map((mq) => ({ ...mq, required: true })) },
+  MOCK_OPEN
+);
+const MOCK_CORE = MOCK_CAPPED.mcq.questions;
+const MOCK_ROLE = MOCK_POOL.filter(
+  (mq) => !MOCK_CORE.some((c) => c.id === mq.id)
+);
+const MOCK_QUESTIONS = [...MOCK_CORE, ...MOCK_ROLE];
+
+/** Core fully answered plus most of the role bank — 4 left as suggestions. */
 const MOCK_MCQ_ANSWERS: Record<string, McqAnswer> = Object.fromEntries(
-  MOCK_POOL.slice(0, 21).map((mq) => [
+  MOCK_QUESTIONS.slice(0, MOCK_QUESTIONS.length - 4).map((mq) => [
     mq.id,
     {
       selected:
@@ -172,23 +203,8 @@ export function mockFunnelState(opts?: { withJob?: boolean }): FunnelState {
       additionalFacts: [],
     },
     rawText: "(mock raw CV text)",
-    questionnaire: {
-      questions: [
-        {
-          id: "q1",
-          question: "How large was the team you led at Acme?",
-          why: "Team size signals scope.",
-          topic: "Leadership",
-        },
-        {
-          id: "q2",
-          question: "What business impact did your dashboards have?",
-          why: "Metrics strengthen bullets.",
-          topic: "Visualization",
-        },
-      ],
-    },
-    mcq: { questions: MOCK_POOL },
+    questionnaire: MOCK_CAPPED.questionnaire,
+    mcq: { questions: MOCK_QUESTIONS },
     mcqAnswers: MOCK_MCQ_ANSWERS,
     answers: { q1: "A squad of 4 analysts" },
     roleQuestionsLoaded: true,

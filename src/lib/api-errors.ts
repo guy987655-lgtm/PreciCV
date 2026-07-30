@@ -6,8 +6,8 @@ import { NextResponse } from "next/server";
  * Generation is a 15–45s call to a third-party model. Without this, an
  * overloaded provider or a malformed JSON reply left the route handler to
  * throw, which reaches the browser as a bodyless 500 — the user sees a generic
- * "Server error (500)" and we lose the reason. `/api/try/generate` already did
- * this locally; `/api/generate` and `/api/revise` now share it.
+ * "Server error (500)" and we lose the reason. `/api/generate` and
+ * `/api/revise` share this so both answer a blown-up model call the same way.
  */
 export function llmFailureResponse(where: string, e: unknown): NextResponse {
   console.error(`[${where}] generation failed:`, e);

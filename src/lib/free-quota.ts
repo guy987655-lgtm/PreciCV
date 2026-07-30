@@ -40,9 +40,10 @@ export type FreeQuota = {
  *
  * A calendar day rather than a rolling 24h window: it gives one fixed reset
  * instant that can actually be stated to the user, where a rolling window's
- * expiry would shift every time a purchase credited a slot back. (The
- * anonymous cookie limiter in rate-limit.ts is inherently rolling — it has no
- * server-side history to anchor a day to.)
+ * expiry would shift every time a purchase credited a slot back. Anchoring the
+ * day is only possible because the count is derived from stored rows — the
+ * cookie-based limiter this replaced had no server-side history, so it could
+ * only ever be a rolling window.
  */
 export function utcDayWindow(now: Date = new Date()): {
   start: Date;

@@ -226,32 +226,46 @@ struggles with English. Worth a decision.
 `.next/types/validator.ts` still imports the removed page. Run `npm run build`
 first to regenerate it, then typecheck.
 
+## Dead code removed 2026-07-30
+
+- **`/api/try/generate` deleted**, with `src/lib/generate-client.ts`
+  (`generateWithRetry`) and `src/lib/rate-limit.ts` — the only importer of each.
+  The route lost its last caller when generation became registered-only: guests
+  hit the register wall, and signed-in users go `/continue` → `/jobs/[id]` →
+  `/api/generate`. It was worth deleting rather than leaving parked, because it
+  persisted nothing, so the account-wide cap in `free-quota.ts` could not see
+  its usage and its only ceiling was a clearable cookie plus a per-instance IP
+  map. That also settles the old "decide on `QUOTA_DISABLED`" open item.
+- `RATE_LIMIT_SECRET` is now unused and can be dropped from the deploy env.
+  Nothing else reads the `precicv_quota` cookie; stale ones expire on their own.
+- The authenticated path keeps its own retry (the one silent re-run in
+  `jobs/[id]/workspace.tsx`). `generateWithRetry`'s budgeted retry was **not**
+  moved onto it: that helper was safe to retry freely because `/api/try/generate`
+  wrote nothing, whereas `/api/generate` inserts a generation and spends a free
+  slot, so extra attempts there need idempotency thought first, not a lift.
+
 ## Open items, most important first
 
-1. **Decide on `QUOTA_DISABLED`.** `src/app/api/try/generate/route.ts:26` has
-   it `true`, so every anonymous visitor can generate unlimited CVs on your
-   LLM budget. Flipping to `false` restores one per day per IP+browser. A
-   one-line change, deliberately left unmade pending the owner's call.
-2. **Run the purchases check above** — the only unverified link in the payment
+1. **Run the purchases check above** — the only unverified link in the payment
    chain.
-3. **Free sample is per JOB** (not per account). Still not confirmed in the
+2. **Free sample is per JOB** (not per account). Still not confirmed in the
    browser: needs a second job on an account whose sample was spent → expect an
    auto-generated blurred preview, not a bare pricing page.
    - `jobs/[id]/page.tsx`: `freeSampleAvailable = !purchase && !generation`.
    - `profiles.free_sample_used` is still written but **nothing reads it**.
    - Every new job costs an LLM call with no payment. If abuse becomes an
      issue, cap jobs-per-day or samples-per-account.
-4. **Sample teaser** (eyeball on `/demo/sample`, no auth needed): blur is per
+3. **Sample teaser** (eyeball on `/demo/sample`, no auth needed): blur is per
    section, bottom half of each, measured from `[data-cv-section]` so each
    column locks separately. The design catalog unlocks six designs for a
    sample (`sampleUnlockedTemplates` in `src/lib/templates.ts`). Quirk: a
    design unlocked via one row shows unlocked in every row it appears in, so
    "Recommended" can show 3 open chips.
-5. **PostHog** — code fully wired, only the key is missing.
-6. **Brand naming is inconsistent** and users see it: app says *SpeCV*, the
+4. **PostHog** — code fully wired, only the key is missing.
+5. **Brand naming is inconsistent** and users see it: app says *SpeCV*, the
    GitHub OAuth app says *PreciCV*, README says *PreciCV*, and Google's consent
    screen shows the raw `…supabase.co` domain.
-7. `/dashboard` still exists but nothing links to it — the user called it
+6. `/dashboard` still exists but nothing links to it — the user called it
    irrelevant. Delete or repurpose.
 
 ## Gotchas worth knowing

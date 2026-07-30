@@ -23,8 +23,11 @@ import {
   appendVersion,
   makeVersion,
 } from "@/lib/cv-session";
-import { effectiveSplit } from "@/lib/templates";
-import { rememberTemplate, saveAccountPrefs } from "@/lib/prefs";
+import { DEFAULT_TEMPLATE, effectiveSplit } from "@/lib/templates";
+import { startCheckout } from "@/lib/checkout";
+import { rememberExportPrefs, saveAccountPrefs } from "@/lib/prefs";
+import { asCvTheme, readAiSectionPref } from "@/lib/export-prefs";
+import type { FreeQuota } from "@/lib/free-quota";
 import { printBoth, printFile } from "@/lib/download";
 import { Badge, Button, Card, Modal, Spinner, Toast } from "@/components/ui";
 import { ReportSectionsSkeleton } from "@/components/skeleton";
@@ -207,6 +210,19 @@ export function JobWorkspace({
     !initialGen && (purchase || freeSampleAvailable) ? "generate" : ""
   );
   const [error, setError] = useState("");
+  /**
+   * Today's free-generation allowance. Fetched only where it matters (a job
+   * with no purchase and no generation yet) and refreshed from the generate
+   * response, so no page pays for a counter it never shows.
+   */
+  const [quota, setQuota] = useState<FreeQuota | null>(null);
+  const [capped, setCapped] = useState(false);
+  // The auto-run's retry lives in an async closure created at mount, so it
+  // cannot see `capped` — it reads this instead.
+  const cappedRef = useRef(false);
+  useEffect(() => {
+    cappedRef.current = capped;
+  }, [capped]);
   const [redFlagModal, setRedFlagModal] = useState(false);
   const [pendingSample, setPendingSample] = useState(false);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
@@ -345,14 +361,7 @@ export function JobWorkspace({
       job_id: job.id,
     });
     try {
-      const res = await fetch("/api/payments/checkout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobId: job.id, tier }),
-      });
-      const data = await readJson(res);
-      if (!res.ok) throw new Error(data.error ?? "Checkout failed");
-      window.location.href = data.url;
+      await startCheckout(job.id, tier);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong");
       setBusy("");
@@ -387,6 +396,7 @@ export function JobWorkspace({
           jobId: job.id,
           acknowledgeRedFlags: acknowledged,
           useFreeSample: asSample,
+          justPaid,
         }),
       });
       const data = await readJson(res);
@@ -394,8 +404,31 @@ export function JobWorkspace({
         if (data.error === "payment_required") {
           throw new Error("Purchase a tier below to generate.");
         }
+        // Out of free CVs for today. Flagged rather than just thrown, because
+        // the retry below must not fire and the pricing cards are the
+        // immediate way out.
+        if (data.error === "daily_limit_reached") {
+          setCapped(true);
+          setQuota({
+            limit: data.limit,
+            used: data.used,
+            remaining: 0,
+            resetAt: data.resetAt,
+            allowed: false,
+          });
+          throw new Error(data.message ?? "Daily free limit reached.");
+        }
         throw new Error(data.message ?? data.error ?? "Generation failed");
       }
+      if (typeof data.freeRemaining === "number") {
+        setQuota((q) => (q ? { ...q, remaining: data.freeRemaining } : q));
+      }
+      const nextTheme: CvTheme =
+        asCvTheme(data.cvTheme) ?? generation?.cvTheme ?? cvTheme;
+      const nextSplit =
+        typeof data.splitView === "boolean"
+          ? data.splitView
+          : (generation?.splitView ?? splitView);
       setGeneration({
         id: data.generationId,
         cv: data.cv,
@@ -404,13 +437,18 @@ export function JobWorkspace({
         // dropping it here left the report print target out of the DOM, so
         // "download reports" produced an empty page until a page reload.
         simulation: data.simulation,
-        template: data.template ?? generation?.template ?? "classic",
+        template: data.template ?? generation?.template ?? DEFAULT_TEMPLATE,
         revisionNumber: generation?.revisionNumber ?? 0,
         isSample: data.isSample ?? false,
         reportStale: false,
-        cvTheme: generation?.cvTheme,
-        splitView: generation?.splitView,
+        cvTheme: nextTheme,
+        splitView: nextSplit,
       });
+      // Theme and split live in their OWN state, seeded once from the server
+      // props — without these two the saved view was written to the database
+      // and then ignored until the next hard reload.
+      setCvThemeState(nextTheme);
+      setSplitViewState(nextSplit);
       router.refresh();
       return true;
     } catch (e) {
@@ -425,6 +463,22 @@ export function JobWorkspace({
   // users get this job's sample auto-run on arrival; buyers returning from
   // checkout get the real thing auto-run the same way, so payment lands
   // straight on the CV. Runs once; a failure falls back to the button.
+  // The allowance is only worth showing where a free generation is about to be
+  // spent, so this fetch is scoped to that state rather than run on mount.
+  useEffect(() => {
+    if (purchase || generation) return;
+    let alive = true;
+    fetch("/api/account/free-quota")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((q) => alive && q && setQuota(q))
+      .catch(() => {
+        /* the counter is informational — never block the page on it */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [purchase, generation]);
+
   const autoRunTried = useRef(false);
   useEffect(() => {
     if (generation || autoRunTried.current) return;
@@ -437,8 +491,11 @@ export function JobWorkspace({
       // finished the questions (or paid).
       const ok = await generate(false, asSample);
       // Red flags stop generation on purpose (the modal is waiting on the
-      // user) — that is not a failure to retry.
-      if (!ok && hits.length === 0) await generate(false, asSample);
+      // user) — that is not a failure to retry. Neither is the daily cap:
+      // retrying it just burns a second request to be refused again.
+      if (!ok && hits.length === 0 && !cappedRef.current) {
+        await generate(false, asSample);
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -610,12 +667,25 @@ export function JobWorkspace({
   // Deferred print: runs once the requested files have rendered.
   useEffect(() => {
     if (!printRequest || reportBusy) return;
-    // The downloaded design becomes this user's default for future
-    // generations. Best-effort — never let it hold up a print dialog.
-    if (generation?.template) {
-      const t = generation.template as CvTemplate;
-      rememberTemplate(t);
-      void saveAccountPrefs({ defaultTemplate: t });
+    // The configuration this download was made with becomes the user's default
+    // for future generations — the whole toolbar state, not just the design,
+    // which is all that used to survive. Best-effort: never let a preference
+    // write hold up a print dialog.
+    if (generation) {
+      const exportPrefs = {
+        ...(generation.template
+          ? { template: generation.template as CvTemplate }
+          : {}),
+        cvTheme,
+        // The raw toggle, not `shownSplit` — see export-prefs.ts.
+        splitView,
+        ...(() => {
+          const hide = readAiSectionPref(generation.cv);
+          return hide === undefined ? {} : { hideAiSection: hide };
+        })(),
+      };
+      rememberExportPrefs(exportPrefs);
+      void saveAccountPrefs({ export: exportPrefs });
     }
     if (generation && !isSample) {
       setVersions((vs) =>
@@ -841,17 +911,17 @@ export function JobWorkspace({
             {approved && (
               <Button
                 data-tour="download"
-                disabled={reportBusy || editing || printing}
+                disabled={editing}
+                loading={printing || reportBusy}
+                loadingLabel={
+                  printing
+                    ? "Opening your print dialog…"
+                    : "Rebuilding report…"
+                }
                 title={editing ? "Finish editing (Done) to export" : undefined}
                 onClick={exportPdf}
               >
-                {printing ? (
-                  <Spinner label="Opening your print dialog…" />
-                ) : reportBusy ? (
-                  "Rebuilding report…"
-                ) : (
-                  exportLabel
-                )}
+                {exportLabel}
               </Button>
             )}
           </div>
@@ -952,7 +1022,7 @@ export function JobWorkspace({
             </Card>
           ) : (
             <>
-              {freeSampleAvailable && (
+              {freeSampleAvailable && !capped && (
                 <Card className="border-2 border-emerald-300 bg-emerald-50/40 p-6 text-center">
                   <Badge tone="green">Sample for this job</Badge>
                   <h2 className="mt-2 text-lg font-semibold text-slate-900">
@@ -963,6 +1033,14 @@ export function JobWorkspace({
                     watermarked preview (not downloadable). Every job you add
                     gets one preview.
                   </p>
+                  {/* Said BEFORE the click, not after the wall: the daily cap
+                      is invisible otherwise, and running out mid-session reads
+                      as the product breaking. */}
+                  {quota && (
+                    <p className="mt-2 text-xs font-semibold text-emerald-800">
+                      {quota.remaining} of {quota.limit} free CVs left today
+                    </p>
+                  )}
                   <Button
                     size="lg"
                     variant="success"
@@ -971,6 +1049,26 @@ export function JobWorkspace({
                   >
                     Generate my sample
                   </Button>
+                </Card>
+              )}
+              {/* Out of free CVs for today. Buying is the immediate way out and
+                  the tier cards are right below, so this states both options
+                  rather than only the wait. */}
+              {capped && (
+                <Card className="border-2 border-amber-300 bg-amber-50/60 p-6 text-center">
+                  <Badge tone="amber">Daily free limit reached</Badge>
+                  <h2 className="mt-2 text-lg font-semibold text-slate-900">
+                    You&apos;ve used today&apos;s {quota?.limit ?? ""} free CVs
+                  </h2>
+                  <p className="mx-auto mt-1 max-w-md text-sm text-slate-600">
+                    Buy this one and it generates right away — paid CVs
+                    don&apos;t count toward the free limit. Otherwise your free
+                    CVs reset
+                    {quota?.resetAt
+                      ? ` ${new Date(quota.resetAt).toLocaleString()}`
+                      : " tomorrow"}
+                    .
+                  </p>
                 </Card>
               )}
               {tierCards}
@@ -1568,14 +1666,10 @@ export function JobWorkspace({
             Cancel
           </Button>
           <Button
-            disabled={busy === "checkout"}
+            loading={busy === "checkout"}
             onClick={() => checkout("full", true)}
           >
-            {busy === "checkout" ? (
-              <Spinner />
-            ) : (
-              `Upgrade for $${upgradeUsd}`
-            )}
+            {`Upgrade for $${upgradeUsd}`}
           </Button>
         </div>
       </Modal>

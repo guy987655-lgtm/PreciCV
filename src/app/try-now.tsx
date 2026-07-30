@@ -32,6 +32,7 @@ import {
   STEP_ORDER,
   capQuestionPools,
   clearFunnel,
+  ensureAiToolOptions,
   isMcqAnswered,
   loadFunnel,
   normalizeMcqPool,
@@ -44,13 +45,13 @@ import {
 import {
   BaseCvMeta,
   fetchAccountPrefs,
-  preferredTemplate,
-  rememberTemplate,
+  preferredExportPrefs,
+  rememberExportPrefs,
   saveAccountPrefs,
 } from "@/lib/prefs";
+import { readAiSectionPref } from "@/lib/export-prefs";
 import { findCachedAnswers } from "@/lib/answer-cache";
 import { EMPTY_MATCH, MatchedAnswers, mergeMatches } from "@/lib/answer-match";
-import { generateWithRetry } from "@/lib/generate-client";
 import { printBoth, printFile } from "@/lib/download";
 import { simMeta, useSimUser } from "@/lib/sim-user";
 import { useSession } from "@/lib/use-session";
@@ -139,12 +140,6 @@ export function TryNow() {
   const [error, setError] = useState("");
   const uploadCardRef = useRef<HTMLDivElement>(null);
 
-  // V1 public launch: no accounts/payment yet — guests generate directly,
-  // rate-limited server-side (src/lib/rate-limit.ts). Results live in the
-  // persisted funnel state so History can resume and re-download them.
-  const [generateBusy, setGenerateBusy] = useState(false);
-  const [quotaMessage, setQuotaMessage] = useState("");
-  const [remaining, setRemaining] = useState<number | null>(null);
   // Split view + CV background theme live in the persisted funnel state so
   // the whole Results view restores exactly across refreshes (PRD v2 Topic 3).
   const splitView = state.splitView;
@@ -243,8 +238,16 @@ export function TryNow() {
       setSavedCv(prefs.baseCv);
       // Pre-select it: a returning user's common case is "same CV, new job".
       setUseSavedCv(prefs.baseCv !== null);
-      if (prefs.defaultTemplate && !preferredTemplate()) {
-        rememberTemplate(prefs.defaultTemplate);
+      // Merge per SETTING, local winning: this device's last download is the
+      // most recent truth, and the account fills in whatever it never saw.
+      const local = preferredExportPrefs();
+      rememberExportPrefs({ ...prefs.export, ...local });
+      // Push local up when the account has nothing yet — someone who
+      // downloaded as a guest and then registered has their whole
+      // configuration only in localStorage, and the sync was one-way, so
+      // their first account generation would have ignored it.
+      if (!prefs.export.template && local.template) {
+        void saveAccountPrefs({ export: local });
       }
     });
     return () => {
@@ -265,12 +268,25 @@ export function TryNow() {
   // "download" milestone version.
   useEffect(() => {
     if (!printRequest || reportBusy) return;
-    // The design the user actually downloaded in becomes their default for
-    // every future flow (both stores; the account copy follows them across
-    // devices). Non-fatal by design — a failed preference write must never
-    // interfere with handing over a print dialog.
-    rememberTemplate(state.template);
-    if (signedIn) void saveAccountPrefs({ defaultTemplate: state.template });
+    // The configuration the user actually downloaded in becomes their default
+    // for every future flow (both stores; the account copy follows them across
+    // devices). This used to save the design alone, so a Ledger + dark + split
+    // download came back as Ledger + light + no split. Non-fatal by design — a
+    // failed preference write must never interfere with a print dialog.
+    const exportPrefs = {
+      template: state.template,
+      cvTheme: state.cvTheme,
+      // The raw toggle, not `shownSplit` — see export-prefs.ts.
+      splitView: state.splitView,
+      ...(() => {
+        const hide = state.results
+          ? readAiSectionPref(state.results.cv)
+          : undefined;
+        return hide === undefined ? {} : { hideAiSection: hide };
+      })(),
+    };
+    rememberExportPrefs(exportPrefs);
+    if (signedIn) void saveAccountPrefs({ export: exportPrefs });
     setState((s) => {
       const flags = { downloadedCv: true, downloadedReport: true };
       if (!s.results) return { ...s, ...flags };
@@ -468,7 +484,9 @@ export function TryNow() {
        * would spend them on questions the matcher was about to answer.
        */
       const capped = capQuestionPools(fullMcq, fullOpen, known.knownIds);
-      const mcqPool = { questions: normalizeMcqPool(capped.mcq.questions) };
+      const mcqPool = {
+        questions: ensureAiToolOptions(normalizeMcqPool(capped.mcq.questions)),
+      };
       const questionnaire = capped.questionnaire;
       const hasQuestions =
         mcqPool.questions.length > 0 ||
@@ -478,6 +496,7 @@ export function TryNow() {
       // below only render for specific user states. The user simply has
       // nothing left to answer there.
       const nextStep: FunnelStep = hasQuestions ? "chat" : "gate";
+      const seededExport = preferredExportPrefs();
       setState((s) => ({
         ...s,
         flowId: crypto.randomUUID(),
@@ -500,10 +519,14 @@ export function TryNow() {
         processName: "",
         roleQuestionsLoaded: false,
         mcqIndex: 0,
-        // A fresh flow opens in the design the user last downloaded, not the
-        // hardcoded EMPTY_FUNNEL default — that reset is what forced users
-        // with a consistent visual identity to reselect on every application.
-        template: preferredTemplate() ?? EMPTY_FUNNEL.template,
+        // A fresh flow opens in the configuration the user last downloaded,
+        // not the hardcoded EMPTY_FUNNEL defaults — that reset is what forced
+        // users with a consistent visual identity to redo their whole export
+        // setup on every application. (The AI-section choice is not here: it
+        // lives inside the CV's own hiddenSectionIds, applied in generateNow.)
+        template: seededExport.template ?? EMPTY_FUNNEL.template,
+        cvTheme: seededExport.cvTheme ?? EMPTY_FUNNEL.cvTheme,
+        splitView: seededExport.splitView ?? EMPTY_FUNNEL.splitView,
         results: null,
         downloadedCv: false,
         downloadedReport: false,
@@ -606,7 +629,9 @@ export function TryNow() {
         }
         const fresh = kept.map((q, i) => ({ ...q, id: `role_${i}_${q.id || i}` }));
         // Re-group so every category stays a contiguous carousel run.
-        const merged = normalizeMcqPool([...existing, ...fresh]);
+        const merged = ensureAiToolOptions(
+          normalizeMcqPool([...existing, ...fresh])
+        );
         // Auto-advance straight to the first newly generated question so the
         // user immediately sees the fresh questions are ready (no manual Next).
         const freshIds = new Set(fresh.map((q) => q.id));
@@ -671,62 +696,14 @@ export function TryNow() {
     setFile(null);
   }
 
-  async function generateNow() {
-    // Fold every questionnaire answer into the profile — the answers are
-    // the whole point of the funnel.
-    const profile = profileWithAnswers(state);
-    if (!profile) return;
-    setGenerateBusy(true);
-    setError("");
-    setQuotaMessage("");
-    trackButtonClick({
-      button_name: "anon_generate_cv",
-      action: "generate",
-      button_text: "Generate my tailored CV",
-      click_source: "landing_try_now",
-    });
-    try {
-      // Topic 1: generation cold starts (LLM overload / serverless warm-up)
-      // make the first attempt fail intermittently. Silently retry transient
-      // failures so the user never sees an error mid-loading — the spinner
-      // ("Preparing your two files…") stays up across retries. Only a hard
-      // failure after the whole budget is exhausted surfaces an error.
-      const data = await generateWithRetry(profile, state.jdText);
-      if (data.quota) {
-        setQuotaMessage(
-          data.quota ?? "Daily limit reached. Please come back tomorrow."
-        );
-        return;
-      }
-      setState((s) => {
-        const results = {
-          cv: data.cv as TailoredCv,
-          diff: data.diff,
-          simulation: data.simulation ?? { pitch: "", questions: [] },
-          jobTitle: data.jobTitle,
-          company: data.company,
-        };
-        // Milestone 1: the initial AI generation becomes the "original" version.
-        const version = makeVersion("original", {
-          cv: results.cv,
-          diff: results.diff,
-          simulation: results.simulation,
-          template: s.template,
-        });
-        return {
-          ...s,
-          results,
-          reportStale: false,
-          versions: appendVersion(s.versions, version),
-        };
-      });
-      setRemaining(data.remaining ?? null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong");
-    } finally {
-      setGenerateBusy(false);
-    }
-  }
+  /**
+   * NOTE on the Results view below: the funnel itself no longer generates.
+   * Generation is a registered-user feature, so finishQuestions() hands every
+   * user over to /continue → /jobs/[id] → /api/generate. What remains here
+   * renders and re-exports flows that ALREADY hold results — a completed flow
+   * resumed from History — which is why the print effect above is still the
+   * funnel's export-preference write site.
+   */
 
   /** Questions done (answered or skipped) → results; generation starts.
    *  If this flow already produced a report, the user came back to edit a
@@ -771,7 +748,8 @@ export function TryNow() {
     }));
     setEditing(false);
     setEditSnapshot(null);
-    if (!meta.registered) generateNow();
+    // A guest lands on the register wall above rather than regenerating:
+    // generation is a registered-user feature.
   }
 
   /* ---------------- inline editing + AI rewrite (Results page) -------- */
@@ -1442,7 +1420,11 @@ export function TryNow() {
             loadingRole={loadingMore}
             sharpenBusy={sharpenBusy}
             onGenerate={finishQuestions}
-            generateBusy={generateBusy}
+            // The CTA now navigates (to sign-in, or to the imported job) rather
+            // than generating in place, so `leaving` is what the button should
+            // reflect — without it the click looked like nothing happened for
+            // the beat before the route changed.
+            generateBusy={leaving}
             onBack={() => goTo("upload")}
             onGreetingReply={(reply) =>
               patch({ greetingReply: reply, greetingDone: true })
@@ -1458,47 +1440,50 @@ export function TryNow() {
                 click_source: "landing_try_now",
               });
               patch({ branchChoice: choice });
+              // Start fetching IMMEDIATELY on the choice rather than on the
+              // "Let's Start" click that follows it: the scripted reply takes
+              // ~2.4s to type out, so overlapping the two hides most of a
+              // 10-40s LLM call behind animation the user is already watching.
+              if (choice === "continue" && !state.roleQuestionsLoaded) {
+                void loadRoleQuestions();
+              }
             }}
             onBranchStart={() => {
               patch({ branchStarted: true });
               // The core questionnaire is capped, so this branch has nothing
               // left to show unless the role bank is fetched — it used to
               // simply unlock optional questions that were already in the pool.
+              // Normally a no-op by now (see onBranch above); this is the
+              // fallback for a resumed flow or a failed prefetch.
               if (!state.roleQuestionsLoaded) void loadRoleQuestions();
             }}
           />
         </div>
       )}
 
-      {/* ============ 4. Results — V1 public launch: free, no account ==== */}
+      {/* ============ 4. The register wall ==============================
+          Generation is a registered-user feature: guests answer the questions,
+          then register to see the results. finishQuestions() sends them here
+          for the normal path; this block is what a guest reaches when their
+          questionnaire came back fully pre-answered from the answer cache, so
+          there were no questions to ask at all. It used to offer generation
+          directly, which quietly handed guests the whole product. */}
       {state.step === "gate" && !meta.registered && !results && (
         <div className="mx-auto flex max-w-[560px] flex-col items-center gap-[18px] text-center">
           <span className="flex h-14 w-14 items-center justify-center rounded-full bg-green-100">
             <CheckCircle />
           </span>
           <h2 className="font-display text-[32px] font-extrabold tracking-tight text-ink [text-wrap:balance]">
-            {generateBusy
-              ? "Preparing your two files…"
-              : "Ready to see your tailored CV"}
+            Your answers are ready
           </h2>
           <p className="text-[15.5px] leading-[1.55] text-ink-soft">
-            A one-page CV made for this job, plus an interview report with the
-            questions you are likely to be asked.
+            Register to generate your tailored CV — a one-page CV made for this
+            job, plus an interview report with the questions you are likely to
+            be asked. Your answers are saved either way.
           </p>
-          {quotaMessage && (
-            <div className="w-full rounded-2xl border-[1.5px] border-border bg-chip px-5 py-4 text-[14px] text-ink-soft">
-              {quotaMessage}
-            </div>
-          )}
-          {generateBusy ? (
-            <div className="rounded-2xl border-[1.5px] border-border bg-card px-6 py-4">
-              <Spinner label="Building your CV and report… (30–90 seconds)" />
-            </div>
-          ) : (
-            <Button size="lg" onClick={generateNow}>
-              Generate my two files →
-            </Button>
-          )}
+          <Button size="lg" onClick={() => goToSignup("gate_register")}>
+            Register to see your results →
+          </Button>
           <p className="text-[12.5px] text-muted">
             Everything you told us is saved on{" "}
             <Link href="/card" className="font-bold text-accent underline">
@@ -1563,7 +1548,13 @@ export function TryNow() {
                 <Button
                   data-tour="download"
                   size="md"
-                  disabled={reportBusy || editing || printing}
+                  disabled={editing}
+                  loading={printing || reportBusy}
+                  loadingLabel={
+                    printing
+                      ? "Opening your print dialog…"
+                      : "Rebuilding report…"
+                  }
                   title={
                     editing
                       ? "Finish editing (Done) to download"
@@ -1571,13 +1562,7 @@ export function TryNow() {
                   }
                   onClick={exportBoth}
                 >
-                  {printing ? (
-                    <Spinner label="Opening your print dialog…" />
-                  ) : reportBusy ? (
-                    "Rebuilding report…"
-                  ) : (
-                    downloadLabel
-                  )}
+                  {downloadLabel}
                 </Button>
               </div>
               {/* The interview simulation is the whole second file. When the
@@ -1686,11 +1671,6 @@ export function TryNow() {
               maxRewrites={MAX_REWRITES}
               onRewrite={handleRewrite}
             />
-            <p className="mt-3 text-center text-xs text-ink-faint print:hidden">
-              {remaining !== null
-                ? `${remaining} CV${remaining === 1 ? "" : "s"} left today.`
-                : ""}
-            </p>
           </div>
 
           {/* ---- 2-4. Report sections. During a refresh these are replaced
@@ -1949,21 +1929,17 @@ export function TryNow() {
         <div className="fixed right-6 top-20 z-40 print:hidden">
           <Button
             size="md"
-            disabled={reportBusy || editing || printing}
+            disabled={editing}
+            loading={printing || reportBusy}
+            loadingLabel={printing ? "Opening…" : "Rebuilding report…"}
             title={editing ? "Finish editing (Done) to download" : undefined}
             onClick={exportBoth}
             className="shadow-[0_12px_32px_rgba(30,43,36,0.28)]"
           >
-            {printing ? (
-              <Spinner label="Opening…" />
-            ) : reportBusy ? (
-              "Rebuilding report…"
-            ) : (
-              <>
-                <span className="hidden sm:inline">{downloadLabel}</span>
-                <span className="sm:hidden">Download</span>
-              </>
-            )}
+            <>
+              <span className="hidden sm:inline">{downloadLabel}</span>
+              <span className="sm:hidden">Download</span>
+            </>
           </Button>
         </div>
       )}

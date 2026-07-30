@@ -19,6 +19,66 @@ type McqQuestion = McqQuestionnaire["questions"][number];
 const MAX_MCQ_SEGMENTS = 6;
 
 /**
+ * The AI/LLM tools every such question must offer, in display order.
+ *
+ * The prompts in llm.ts ask for these too, but a prompt is a request, not a
+ * guarantee — the model drops one often enough that the question shipped
+ * without Cursor. This list is applied deterministically afterwards so the
+ * options cannot drift.
+ */
+const AI_TOOL_OPTIONS = ["ChatGPT", "Claude", "Grok", "Cursor"] as const;
+
+/** Recognizes a tool this question already lists, however it was spelled. */
+const AI_TOOL_HINTS = [
+  "chatgpt",
+  "chat gpt",
+  "openai",
+  "claude",
+  "anthropic",
+  "grok",
+  "cursor",
+  "copilot",
+  "gemini",
+  "midjourney",
+  "llm",
+  "ai tool",
+  "ai assistant",
+];
+
+const NONE_OPTION = /^none of (these|the above)\.?$/i;
+
+/**
+ * Guarantees every AI/LLM-tool question offers the canonical tool list.
+ *
+ * A question qualifies when its options name two or more known AI tools — one
+ * mention is too weak a signal (a "which of these did you automate?" question
+ * may list Copilot among ten unrelated systems, and padding it with chatbots
+ * would make it nonsense). Extra options the model found are kept, and
+ * "None of these" is pushed back to last, where the UI expects it.
+ */
+export function ensureAiToolOptions(input: McqQuestion[]): McqQuestion[] {
+  return input.map((q) => {
+    const opts = q.options ?? [];
+    const hits = new Set(
+      opts.flatMap((o) => {
+        const lower = o.toLowerCase();
+        return AI_TOOL_HINTS.filter((h) => lower.includes(h));
+      })
+    );
+    if (hits.size < 2) return q;
+
+    const has = (tool: string) =>
+      opts.some((o) => o.toLowerCase().includes(tool.toLowerCase()));
+    const missing = AI_TOOL_OPTIONS.filter((t) => !has(t));
+    if (missing.length === 0) return q;
+
+    const none = opts.filter((o) => NONE_OPTION.test(o.trim()));
+    const rest = opts.filter((o) => !NONE_OPTION.test(o.trim()));
+    return { ...q, options: [...rest, ...missing, ...none] };
+  });
+}
+
+/**
  * Guards the segmented mini-navigation against over-fragmented topics
  * (e.g. an LLM giving every question its own topic): required questions
  * come first (capped at MAX_REQUIRED_QUESTIONS — extras demote to

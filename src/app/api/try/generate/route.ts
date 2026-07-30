@@ -7,23 +7,21 @@ import {
   LLM_NOT_CONFIGURED_MSG,
 } from "@/lib/llm";
 import { checkDailyQuota } from "@/lib/rate-limit";
+import { createClient } from "@/lib/supabase/server";
+import { FREE_GENERATIONS_PER_DAY } from "@/lib/free-quota";
 
 export const maxDuration = 300;
 
 /**
- * One free generation per day. The cap is enforced per IP (see
- * src/lib/rate-limit.ts) as well as per browser cookie, so opening an
- * Incognito window — which drops the cookie but keeps the IP — does not
- * grant a second free CV.
+ * Backstop cap, enforced per IP (see src/lib/rate-limit.ts) as well as per
+ * browser cookie, so opening an Incognito window — which drops the cookie but
+ * keeps the IP — does not grant more.
+ *
+ * Matched to the account-wide free limit. This route persists nothing, so the
+ * derived counter in free-quota.ts cannot see its usage; the cookie/IP counter
+ * is the only ceiling available here.
  */
-const DAILY_LIMIT = 1;
-
-/**
- * Temporarily disables the daily quota — generation is unlimited while this
- * is true. Flip back to `false` (or delete this flag) to re-enable the
- * per-day cap; the rate-limit machinery below is left intact for that.
- */
-const QUOTA_DISABLED = true;
+const DAILY_LIMIT = FREE_GENERATIONS_PER_DAY;
 
 const BodySchema = z.object({
   profile: MasterProfileSchema,
@@ -31,18 +29,36 @@ const BodySchema = z.object({
 });
 
 /**
- * V1 public launch: anonymous, no-account, no-payment tailored CV
- * generation straight from the funnel's local profile + job text. Nothing
- * is persisted server-side. Rate-limited per browser+IP (see
- * src/lib/rate-limit.ts) since there is no account/purchase to gate on.
+ * Tailored CV generation straight from the funnel's local profile + job text.
+ * Nothing is persisted server-side.
+ *
+ * Requires a signed-in user. Guests answer the questionnaire and then hit the
+ * register wall — generation is a registered-user feature — and this route used
+ * to be an open, unauthenticated LLM endpoint that made that wall bypassable
+ * with a single curl. Signed-in traffic is still capped per browser+IP, since
+ * nothing here lands in the database for the account-wide counter to see.
  */
 export async function POST(request: Request) {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json(
+      {
+        error: "registration_required",
+        message: "Register to generate your tailored CV and reports.",
+      },
+      { status: 401 }
+    );
+  }
+
   if (!llmConfigured()) {
     return NextResponse.json({ error: LLM_NOT_CONFIGURED_MSG }, { status: 503 });
   }
 
-  const quota = QUOTA_DISABLED ? null : checkDailyQuota(request, DAILY_LIMIT);
-  if (quota && !quota.allowed) {
+  const quota = checkDailyQuota(request, DAILY_LIMIT);
+  if (!quota.allowed) {
     const res = NextResponse.json(
       {
         error: "quota_exceeded",
@@ -65,12 +81,12 @@ export async function POST(request: Request) {
   try {
     const result = await generateTailoredCv(parsed.data.profile, parsed.data.jdText);
     // Quota is consumed only on success — a failed run costs the user nothing.
-    const setCookie = quota?.commit();
+    const setCookie = quota.commit();
     const res = NextResponse.json({
       ...result,
-      remaining: quota?.remaining ?? null,
+      remaining: quota.remaining,
     });
-    if (setCookie) res.headers.set("Set-Cookie", setCookie);
+    res.headers.set("Set-Cookie", setCookie);
     return res;
   } catch (e) {
     console.error("try/generate failed:", e);

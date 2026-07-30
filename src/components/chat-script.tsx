@@ -2,7 +2,7 @@
 
 import { ReactNode, useEffect, useRef, useState } from "react";
 import { FunnelState } from "@/lib/funnel";
-import { Button, Spinner, Tooltip } from "@/components/ui";
+import { Button, Tooltip } from "@/components/ui";
 
 /**
  * Scripted conversational beats for the chat funnel (PRD Topic 1): the
@@ -385,14 +385,15 @@ export function TransitionBlock({
           </TypingBotMessage>
           {followUpDone && (
             <div className="chat-pop-in pl-[42px]">
-              <Button size="lg" disabled={generateBusy} onClick={onGenerate}>
-                {generateBusy ? (
-                  <Spinner label="Generating…" />
-                ) : registered ? (
-                  "Generate Reports →"
-                ) : (
-                  "Register to see your results →"
-                )}
+              <Button
+                size="lg"
+                loading={generateBusy}
+                loadingLabel="Generating…"
+                onClick={onGenerate}
+              >
+                {registered
+                  ? "Generate Reports →"
+                  : "Register to see your results →"}
               </Button>
             </div>
           )}

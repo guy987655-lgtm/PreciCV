@@ -3,7 +3,9 @@
  *
  * History and My Card both fetch on the client, so there is nothing for a
  * route-level `loading.tsx` to suspend on — the placeholder has to live
- * inside the page and be driven by its own fetch state. These are pure
+ * inside the page and be driven by its own fetch state. (The job workspace is
+ * the exception: it awaits on the server, so it gets a real
+ * app/jobs/[id]/loading.tsx built from these same blocks.) These are pure
  * presentational blocks: the shimmer itself is the `.skeleton` class in
  * globals.css, which also carries the prefers-reduced-motion fallback.
  */

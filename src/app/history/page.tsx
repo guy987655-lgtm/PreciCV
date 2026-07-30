@@ -1,7 +1,8 @@
 "use client";
 
+import Link, { useLinkStatus } from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import {
   FunnelState,
   STEP_ORDER,
@@ -15,6 +16,9 @@ import {
   updateHistoryEntry,
 } from "@/lib/funnel";
 import { printBoth, printFile } from "@/lib/download";
+import { startCheckout } from "@/lib/checkout";
+import { trackButtonClick } from "@/lib/analytics";
+import { TIERS, UPGRADE_ANCHOR_USD } from "@/lib/types";
 import { Badge, Button, Card, Toast } from "@/components/ui";
 import { LoadingAnnounce, Skeleton, SkeletonRows } from "@/components/skeleton";
 import { Navbar } from "@/components/navbar";
@@ -39,6 +43,19 @@ type SavedJob = {
 
 /** Max length for a user-chosen process name (PRD 4.5.6). */
 const MAX_PROCESS_NAME = 50;
+
+/** match → full costs only the difference, anchored to the $2 list price. */
+const UPGRADE_USD = (TIERS.full.priceCents - TIERS.match.priceCents) / 100;
+
+/**
+ * This job bought the tailored CV but not the interview reports.
+ *
+ * Mirrors `canUpgrade` in the job workspace: a real (non-sample) paid `match`
+ * purchase is exactly the state the $1 upgrade exists for.
+ */
+function canAddReports(j: SavedJob): boolean {
+  return j.tier === "match" && !j.isSample;
+}
 
 /** Human title for a flow: an explicit rename wins, else the derived default. */
 function flowTitle(f: FunnelState): string {
@@ -101,6 +118,27 @@ function InlineRename({
           finish(false);
         }
       }}
+    />
+  );
+}
+
+/**
+ * Inline "this click registered" hint for a row that navigates.
+ *
+ * Must be rendered INSIDE the <Link> — useLinkStatus reads the pending state
+ * of its nearest Link ancestor. Fixed size with a toggled opacity rather than
+ * a mounted/unmounted spinner, so a row never reflows when it lights up. With
+ * jobs/[id]/loading.tsx in place the shell is prefetched and this usually
+ * stays dark; it covers the case where prefetch hasn't landed yet.
+ */
+function LinkPending() {
+  const { pending } = useLinkStatus();
+  return (
+    <span
+      aria-hidden
+      className={`h-3.5 w-3.5 shrink-0 rounded-full border-2 border-border border-t-accent transition-opacity duration-150 ${
+        pending ? "animate-spin opacity-100" : "opacity-0"
+      }`}
     />
   );
 }
@@ -182,6 +220,17 @@ export default function HistoryPage() {
   // A soft-deleted account job, held for the Undo window.
   const [deletedJob, setDeletedJob] = useState<SavedJob | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The row whose Resume / download is in flight, so only that row goes busy.
+  const [resumingId, setResumingId] = useState<string | null>(null);
+  const [resumePending, startResume] = useTransition();
+  // The job whose reports upgrade is being checked out, and its error if the
+  // checkout could not be opened (kept per-row: a page-level banner would be
+  // ambiguous once there are several purchased jobs).
+  const [upgradingId, setUpgradingId] = useState<string | null>(null);
+  const [upgradeError, setUpgradeError] = useState<{
+    jobId: string;
+    message: string;
+  } | null>(null);
 
   function refresh() {
     const f = loadFunnel();
@@ -271,6 +320,32 @@ export default function HistoryPage() {
     }
   }
 
+  /**
+   * Buy the interview reports for a job that only owns the CV. Goes straight
+   * to checkout — the server charges the $1 difference against the existing
+   * paid `match` row, so there is nothing to choose here.
+   */
+  async function addReports(job: SavedJob) {
+    setUpgradingId(job.id);
+    setUpgradeError(null);
+    trackButtonClick({
+      button_name: "upgrade_to_full",
+      action: "checkout",
+      button_text: "Add interview reports",
+      click_source: "history",
+      job_id: job.id,
+    });
+    try {
+      await startCheckout(job.id, "full");
+    } catch (e) {
+      setUpgradeError({
+        jobId: job.id,
+        message: e instanceof Error ? e.message : "Checkout failed",
+      });
+      setUpgradingId(null);
+    }
+  }
+
   async function undoRemoveJob() {
     const job = deletedJob;
     if (!job) return;
@@ -321,14 +396,21 @@ export default function HistoryPage() {
     setPrintJob(null);
   }, [printJob]);
 
-  /** Makes the flow active and lands on its furthest reached step. */
+  /**
+   * Makes the flow active and lands on its furthest reached step.
+   *
+   * The transition is what gives the clicked row something to show: the
+   * localStorage write is instant but "/" is a heavy client page, so the row
+   * used to sit there looking untouched until the new page painted.
+   */
   function resume(flow: FunnelState) {
     const stepIdx = Math.min(
       Math.max(flow.furthestStep ?? 0, STEP_ORDER.indexOf(flow.step)),
       STEP_ORDER.length - 1
     );
+    setResumingId(flow.flowId);
     activateFlow({ ...flow, step: STEP_ORDER[stepIdx] });
-    router.push("/");
+    startResume(() => router.push("/"));
   }
 
   /**
@@ -359,6 +441,11 @@ export default function HistoryPage() {
     const stepNum =
       Math.min(flow.furthestStep ?? 0, STEP_ORDER.length - 1) + 1;
     const isEditing = editingId === flow.flowId;
+    const isResuming = resumePending && resumingId === flow.flowId;
+    // Printing goes through a render-then-print effect, so the click and the
+    // print dialog are a beat apart — the button has to say so meanwhile.
+    const printingTarget =
+      printJob?.flow.flowId === flow.flowId ? printJob.target : null;
     return (
       <Card key={flow.flowId || "active"} className="p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -425,6 +512,8 @@ export default function HistoryPage() {
                   <Button
                     variant="outline"
                     size="sm"
+                    loading={printingTarget === "cv"}
+                    loadingLabel="Opening…"
                     onClick={() => setPrintJob({ flow, target: "cv" })}
                   >
                     CV (PDF)
@@ -432,6 +521,8 @@ export default function HistoryPage() {
                   <Button
                     variant="outline"
                     size="sm"
+                    loading={printingTarget === "report"}
+                    loadingLabel="Opening…"
                     onClick={() => setPrintJob({ flow, target: "report" })}
                   >
                     Report (PDF)
@@ -440,13 +531,20 @@ export default function HistoryPage() {
               ) : (
                 <Button
                   size="sm"
+                  loading={printingTarget === "both"}
+                  loadingLabel="Opening…"
                   onClick={() => setPrintJob({ flow, target: "both" })}
                 >
                   Download my files (2 PDFs)
                 </Button>
               )
             ) : (
-              <Button size="sm" onClick={() => resume(flow)}>
+              <Button
+                size="sm"
+                loading={isResuming}
+                loadingLabel="Opening…"
+                onClick={() => resume(flow)}
+              >
                 Resume →
               </Button>
             )}
@@ -526,13 +624,21 @@ export default function HistoryPage() {
                         />
                       ) : (
                         <>
-                          <button
-                            className="min-w-0 cursor-pointer truncate text-left font-bold text-ink hover:underline"
-                            onClick={() => router.push(`/jobs/${j.id}`)}
+                          {/* A Link, not a router.push: /jobs/[id] is dynamic,
+                              and Next only prefetches such a route when it is
+                              reached through a Link AND has a loading boundary
+                              (it now has one). That prefetch is what makes the
+                              click feel instant. */}
+                          <Link
+                            href={`/jobs/${j.id}`}
+                            className="flex min-w-0 items-center gap-1.5 font-bold text-ink hover:underline"
                             title="Open this job"
                           >
-                            {jobTitle(j)}
-                          </button>
+                            <span className="min-w-0 truncate text-left">
+                              {jobTitle(j)}
+                            </span>
+                            <LinkPending />
+                          </Link>
                           <RenameButton
                             onClick={() => {
                               setRenameError(null);
@@ -550,21 +656,51 @@ export default function HistoryPage() {
                     <p className="mt-0.5 text-[12.5px] text-ink-faint">
                       {new Date(j.createdAt).toLocaleDateString()}
                     </p>
+                    {canAddReports(j) && (
+                      <p className="mt-1 text-[12.5px] text-ink-soft">
+                        Add the interview simulation — the questions they are
+                        likely to ask, and how to answer each one.
+                      </p>
+                    )}
+                    {upgradeError?.jobId === j.id && (
+                      <p className="mt-1 text-[12px] font-medium text-red-600">
+                        {upgradeError.message}
+                      </p>
+                    )}
                   </div>
-                  {j.tier ? (
+                  {canAddReports(j) ? (
+                    <Badge tone="slate">CV only</Badge>
+                  ) : j.tier ? (
                     <Badge tone="indigo">Purchased</Badge>
                   ) : j.isSample ? (
                     <Badge tone="amber">Preview</Badge>
                   ) : !j.hasResult ? (
                     <Badge tone="amber">Not finished</Badge>
                   ) : null}
-                  <Button
-                    size="md"
-                    variant="outline"
-                    onClick={() => router.push(`/jobs/${j.id}`)}
+                  {/* Job Match bought the CV alone. The interview reports were
+                      only reachable from inside the job page, so a buyer who
+                      decided later had no way back to the $1 upgrade. */}
+                  {canAddReports(j) && (
+                    <Button
+                      size="sm"
+                      loading={upgradingId === j.id}
+                      loadingLabel="Opening checkout…"
+                      onClick={() => addReports(j)}
+                    >
+                      Add interview reports —{" "}
+                      <span className="line-through opacity-70">
+                        ${UPGRADE_ANCHOR_USD}
+                      </span>{" "}
+                      ${UPGRADE_USD}
+                    </Button>
+                  )}
+                  <Link
+                    href={`/jobs/${j.id}`}
+                    className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-full border-[1.5px] border-border-strong bg-transparent px-[22px] py-[9px] text-sm font-semibold text-ink-soft transition-all duration-150 hover:bg-card"
                   >
                     {j.hasResult ? "Open" : "Continue"}
-                  </Button>
+                    <LinkPending />
+                  </Link>
                   <DeleteButton
                     label="Remove from history"
                     onClick={() => removeJob(j)}

@@ -14,6 +14,8 @@ import {
   recommendTemplates,
   sampleUnlockedTemplates,
 } from "@/lib/templates";
+import { applyAiSectionPref, asCvTheme } from "@/lib/export-prefs";
+import { FreeQuota, freeLimitResponse, readFreeQuota } from "@/lib/free-quota";
 
 export const maxDuration = 300;
 
@@ -23,6 +25,8 @@ const BodySchema = z.object({
   acknowledgeRedFlags: z.boolean().optional().default(false),
   /** Use this job's free sample instead of a paid credit. */
   useFreeSample: z.boolean().optional().default(false),
+  /** Arrived from checkout — softens the daily-cap copy while the webhook lands. */
+  justPaid: z.boolean().optional().default(false),
 });
 
 /**
@@ -30,6 +34,10 @@ const BodySchema = z.object({
  * this job's free sample (one per job; result is watermarked + locked).
  * If a sample generation already exists and the job is now paid, the
  * sample is unlocked in place — no extra LLM call.
+ *
+ * Free samples are additionally capped per DAY across the whole account (see
+ * src/lib/free-quota.ts): the per-job sample had no account-wide ceiling, so
+ * adding jobs was an unlimited supply of free generations.
  */
 export async function POST(request: Request) {
   const supabase = await createClient();
@@ -48,7 +56,7 @@ export async function POST(request: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
   }
-  const { jobId, acknowledgeRedFlags, useFreeSample } = parsed.data;
+  const { jobId, acknowledgeRedFlags, useFreeSample, justPaid } = parsed.data;
 
   const { data: job } = await supabase
     .from("jobs")
@@ -70,7 +78,9 @@ export async function POST(request: Request) {
 
   const { data: profileRow, error: profileError } = await supabase
     .from("profiles")
-    .select("master_data, default_template")
+    .select(
+      "master_data, default_template, cv_theme, split_view, hide_ai_section"
+    )
     .eq("user_id", user.id)
     .single();
 
@@ -92,7 +102,7 @@ export async function POST(request: Request) {
 
   const { data: existing } = await supabase
     .from("generations")
-    .select("id, cv, diff, simulation, is_sample, template")
+    .select("id, cv, diff, simulation, is_sample, template, cv_theme, split_view")
     .eq("job_id", jobId)
     .eq("revision_number", 0)
     .maybeSingle();
@@ -117,7 +127,11 @@ export async function POST(request: Request) {
         // when it holds one, so omitting it here exported an empty report
         // file until the user happened to reload the page.
         simulation: existing.simulation ?? { pitch: "", questions: [] },
-        template: existing.template ?? "classic",
+        template: existing.template ?? DEFAULT_TEMPLATE,
+        // Returned so the paid unlock restores the same VIEW, not just the
+        // same document — the client holds theme and split in their own state.
+        cvTheme: asCvTheme(existing.cv_theme) ?? "light",
+        splitView: Boolean(existing.split_view),
         jobTitle: jobMeta?.title ?? "",
         company: jobMeta?.company ?? "",
         isSample: false,
@@ -128,6 +142,21 @@ export async function POST(request: Request) {
       { error: "This job already has a generated CV" },
       { status: 409 }
     );
+  }
+
+  /**
+   * Account-wide daily cap on FREE generations. `asSample` is false whenever a
+   * paid purchase exists, so a match/full generation is never touched by this.
+   *
+   * Deliberately after the `existing` block: the paid unlock-in-place path and
+   * the "already generated" 409 must stay reachable for a user who happens to
+   * be at their limit — neither creates anything new. Nothing has been written
+   * at this point either, so refusing here costs the user nothing.
+   */
+  let quota: FreeQuota | null = null;
+  if (asSample) {
+    quota = await readFreeQuota(supabase, user.id);
+    if (!quota.allowed) return freeLimitResponse(quota, { justPaid });
   }
 
   /**
@@ -171,6 +200,20 @@ export async function POST(request: Request) {
   }
 
   /**
+   * Re-check right before the insert. This does not make the cap race-free, it
+   * shrinks the window from the ~90s the LLM call takes down to one query —
+   * which is what matters, because the workspace AUTO-RUNS generation on
+   * arrival, so "open five job tabs" is ordinary user behaviour rather than an
+   * attack. A ±1 overshoot is accepted deliberately: serializing this with an
+   * advisory lock could hard-fail an insert after the LLM had already been paid
+   * for, which is a worse outcome than one extra free CV.
+   */
+  if (asSample) {
+    quota = await readFreeQuota(supabase, user.id);
+    if (!quota.allowed) return freeLimitResponse(quota, { justPaid });
+  }
+
+  /**
    * The user's saved design, unless this is a free sample that may not show
    * it: samples unlock only six designs (sampleUnlockedTemplates), so a saved
    * default outside that set would open the catalog on a locked, disabled chip.
@@ -182,18 +225,33 @@ export async function POST(request: Request) {
       ? DEFAULT_TEMPLATE
       : preferred;
 
+  /**
+   * The rest of the user's saved export configuration. Unlike the design,
+   * none of these is gated on the tier: sampleUnlockedTemplates restricts
+   * which DESIGNS a free sample may show, while the theme, the split layout
+   * and hiding the AI section are free on every tier.
+   */
+  const startingTheme = asCvTheme(profileRow?.cv_theme) ?? "light";
+  const startingSplit = Boolean(profileRow?.split_view);
+  const startingCv = applyAiSectionPref(
+    result.cv,
+    Boolean(profileRow?.hide_ai_section)
+  );
+
   const { data: generation, error } = await supabase
     .from("generations")
     .insert({
       job_id: jobId,
       user_id: user.id,
-      cv: result.cv,
+      cv: startingCv,
       diff: result.diff,
       simulation: result.simulation,
       revision_number: 0,
       // Open in the design the user last downloaded — this used to be
       // hardcoded, so a returning user had to reselect their design every time.
       template: startingTemplate,
+      cv_theme: startingTheme,
+      split_view: startingSplit,
       is_sample: asSample,
     })
     .select("id")
@@ -228,5 +286,20 @@ export async function POST(request: Request) {
     generationId: generation.id,
     isSample: asSample,
     ...result,
+    /**
+     * The seeded view, so the client opens in it WITHOUT a reload.
+     * GenerationResult carries no template/theme/split, so the client's
+     * `data.template ?? …` always fell through to "classic" and the saved
+     * design was invisible until the page was hard-reloaded.
+     *
+     * `cv` must stay after `...result` — the spread would otherwise put the
+     * un-hidden CV back over the one we just stored.
+     */
+    cv: startingCv,
+    template: startingTemplate,
+    cvTheme: startingTheme,
+    splitView: startingSplit,
+    /** Free generations left AFTER this one; null when it wasn't a free one. */
+    freeRemaining: quota ? Math.max(0, quota.remaining - 1) : null,
   });
 }

@@ -297,8 +297,8 @@ export default function OnboardingPage() {
             <Button variant="ghost" onClick={() => setStep("questionnaire")}>
               ← Back
             </Button>
-            <Button onClick={finish} disabled={busy}>
-              {busy ? <Spinner /> : "Finish setup"}
+            <Button onClick={finish} loading={busy}>
+              Finish setup
             </Button>
           </div>
         </Card>

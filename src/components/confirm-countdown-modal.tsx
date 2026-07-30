@@ -1,7 +1,7 @@
 "use client";
 
 import { ReactNode, useEffect, useState } from "react";
-import { Button, Modal, Spinner } from "@/components/ui";
+import { Button, Modal } from "@/components/ui";
 
 /**
  * Destructive confirmation whose confirm button stays disabled for a few
@@ -99,14 +99,13 @@ function CountdownBody({
         <Button variant="ghost" onClick={onClose} disabled={busy}>
           {cancelLabel}
         </Button>
-        <Button variant="danger" disabled={!armed || busy} onClick={onConfirm}>
-          {busy ? (
-            <Spinner />
-          ) : armed ? (
-            confirmLabel
-          ) : (
-            `${confirmLabel} (${remaining})`
-          )}
+        <Button
+          variant="danger"
+          disabled={!armed}
+          loading={busy}
+          onClick={onConfirm}
+        >
+          {armed ? confirmLabel : `${confirmLabel} (${remaining})`}
         </Button>
       </div>
     </>

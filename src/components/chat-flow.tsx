@@ -24,6 +24,11 @@ import {
 } from "@/lib/chat-seq";
 import { MAX_ASKED_MCQ, MAX_ASKED_OPEN } from "@/lib/types";
 import { Button, Modal, Spinner, Textarea } from "@/components/ui";
+import {
+  LoadingAnnounce,
+  Skeleton,
+  SkeletonRows,
+} from "@/components/skeleton";
 import { McqOptions } from "@/components/mcq-options";
 import { ChatQuestionPanel } from "@/components/chat-question-panel";
 import {
@@ -587,6 +592,13 @@ export function ChatFlow({
     state.branchChoice === "continue" && state.branchStarted;
   const generateUnlocked =
     optionalUnlocked || state.branchChoice === "generate";
+  /**
+   * The role-question bank is in flight. try-now starts that fetch the moment
+   * the user picks "Answer a few more", so this covers the whole wait — the
+   * scripted typing AND the 10-40s LLM call that used to run behind a
+   * transcript claiming the flow was already finished.
+   */
+  const rolePending = loadingRole && !state.roleQuestionsLoaded;
   // Unanswered optional questions — drives the generate-confirmation modal
   // (PRD questionnaire-flow Topic 2). Open questions used to count here; they
   // are core now, and the gate below already covers them.
@@ -793,26 +805,49 @@ export function ChatFlow({
           {/* Post-mandatory branching (PRD 1.5.5-1.5.7) at the frontier */}
           {inTransition && transitionEl}
 
-          {/* More optional questions (role bank) once optional pool is exhausted */}
-          {!done &&
-            optionalUnlocked &&
-            currentItem?.phase === 2 &&
-            !state.roleQuestionsLoaded &&
-            cursor === seq.length - 1 && (
-              <button
-                onClick={onLoadRole}
-                disabled={loadingRole}
-                className="self-start rounded-full border-[1.5px] border-dashed border-accent/60 px-4 py-1.5 text-[13px] font-semibold text-accent hover:bg-selected-bg disabled:opacity-50"
-              >
-                {loadingRole ? "Adding more…" : "＋ More questions for my role"}
-              </button>
-            )}
+          {/* The role bank is being fetched. This block is deliberately NOT
+              gated on the cursor or the phase: at this point the sequence holds
+              no phase-2 items yet, so every such gate was unsatisfiable and the
+              user watched a 10-40s call with no feedback at all. */}
+          {rolePending && (
+            <>
+              <LoadingAnnounce label="Preparing more questions for your role…" />
+              <TypingIndicator />
+              <SkeletonRows
+                className="flex flex-col gap-3.5"
+                count={2}
+                render={() => (
+                  <div className="rounded-[18px] border-[1.5px] border-border bg-card p-4">
+                    <Skeleton className="h-4 w-3/5" />
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Skeleton className="h-8 w-24 rounded-full" />
+                      <Skeleton className="h-8 w-32 rounded-full" />
+                      <Skeleton className="h-8 w-20 rounded-full" />
+                    </div>
+                  </div>
+                )}
+              />
+            </>
+          )}
 
-          {sharpenBusy && optionalUnlocked && currentItem?.phase === 3 && (
+          {/* Retry affordance: the fetch above normally fills the bank on its
+              own, so this only surfaces when it failed or was never started. */}
+          {optionalUnlocked && !state.roleQuestionsLoaded && !rolePending && (
+            <button
+              onClick={onLoadRole}
+              className="self-start rounded-full border-[1.5px] border-dashed border-accent/60 px-4 py-1.5 text-[13px] font-semibold text-accent hover:bg-selected-bg"
+            >
+              ＋ More questions for my role
+            </button>
+          )}
+
+          {/* Was also gated on optionalUnlocked, which is false while the open
+              questions are being asked — i.e. exactly when this runs. */}
+          {sharpenBusy && currentItem?.phase === 3 && (
             <Spinner label="Drafting example answers from your CV…" />
           )}
 
-          {done && generateUnlocked && (
+          {done && generateUnlocked && !rolePending && (
             <TypingBotMessage animate={initialCursor < seq.length}>
               All set — generate your CV and interview report whenever you’re
               ready.
@@ -838,19 +873,21 @@ export function ChatFlow({
             {generateUnlocked && (
               <Button
                 size="lg"
-                disabled={!coreDone || generateBusy}
+                disabled={!coreDone}
+                // Busy while the role bank loads too: generating here would
+                // silently throw away the questions the user just asked for,
+                // and `remainingOptional` is 0 at that moment so the
+                // confirmation modal below would not catch it either.
+                loading={generateBusy || rolePending}
+                loadingLabel={generateBusy ? "Generating…" : "Preparing questions…"}
                 onClick={handleGenerateClick}
                 className={
                   coreDone ? "ring-2 ring-accent/30 ring-offset-2" : ""
                 }
               >
-                {generateBusy ? (
-                  <Spinner label="Generating…" />
-                ) : registered ? (
-                  "Generate my reports →"
-                ) : (
-                  "Register to see your results →"
-                )}
+                {registered
+                  ? "Generate my reports →"
+                  : "Register to see your results →"}
               </Button>
             )}
           </div>

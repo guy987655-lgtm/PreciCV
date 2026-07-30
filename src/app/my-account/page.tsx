@@ -6,6 +6,7 @@ import { readJson } from "@/lib/fetch-json";
 import { loadFunnel } from "@/lib/funnel";
 import { trackButtonClick, resetAnalytics } from "@/lib/analytics";
 import { useSession } from "@/lib/use-session";
+import type { FreeQuota } from "@/lib/free-quota";
 import { Button, Card } from "@/components/ui";
 import { ConfirmCountdownModal } from "@/components/confirm-countdown-modal";
 import { AccountIdentity } from "@/components/account-identity";
@@ -30,6 +31,23 @@ export default function MyAccountPage() {
   // the effect for the signed-out case: no user, nothing to wait for.
   const [nameLoaded, setNameLoaded] = useState(false);
   const nameLoading = Boolean(user) && !nameLoaded;
+  // Today's free-generation allowance. Null until it loads, or if it fails —
+  // the card simply doesn't render, since a wrong count is worse than none.
+  const [quota, setQuota] = useState<FreeQuota | null>(null);
+
+  useEffect(() => {
+    if (sessionLoading || !user) return;
+    let alive = true;
+    fetch("/api/account/free-quota")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((q) => alive && q && setQuota(q))
+      .catch(() => {
+        /* informational only */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [user, sessionLoading]);
 
   useEffect(() => {
     if (sessionLoading || !user) return;
@@ -88,6 +106,37 @@ export default function MyAccountPage() {
           email={user?.email ?? ""}
           loading={sessionLoading || nameLoading}
         />
+
+        {/* Today's free allowance. Shown here as well as at the point of use,
+            so a user who wonders why generation stopped has somewhere to look
+            instead of guessing at a limit nothing ever mentioned. */}
+        {quota && (
+          <Card className="mt-6 p-6">
+            <h2 className="font-semibold text-ink">Free CVs today</h2>
+            <p className="mt-2 text-sm text-ink-soft">
+              You have used <strong>{quota.used}</strong> of{" "}
+              <strong>{quota.limit}</strong> free tailored CVs today. Buying a CV
+              gives the free one back, so paid CVs never count toward this.
+            </p>
+            <div
+              className="mt-3 h-2 w-full overflow-hidden rounded-full bg-chip"
+              role="img"
+              aria-label={`${quota.remaining} of ${quota.limit} free CVs left today`}
+            >
+              <div
+                className="h-full rounded-full bg-accent transition-[width] duration-300"
+                style={{
+                  width: `${Math.min(100, (quota.used / Math.max(1, quota.limit)) * 100)}%`,
+                }}
+              />
+            </div>
+            <p className="mt-2 text-[12.5px] text-ink-faint">
+              {quota.remaining > 0
+                ? `${quota.remaining} left · resets ${new Date(quota.resetAt).toLocaleString()}`
+                : `None left · resets ${new Date(quota.resetAt).toLocaleString()}`}
+            </p>
+          </Card>
+        )}
 
         <Card className="mt-8 border-red-200 p-6">
           <h2 className="font-semibold text-red-700">Danger zone</h2>

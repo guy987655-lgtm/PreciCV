@@ -2,10 +2,12 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { CV_TEMPLATES } from "@/lib/types";
+import { ExportPrefsSchema, asCvTheme } from "@/lib/export-prefs";
 
 /**
- * Account-level preferences the funnel needs the moment it mounts: the design
- * the user last downloaded, and whether they have a base CV on file.
+ * Account-level preferences the funnel needs the moment it mounts: the export
+ * configuration the user last downloaded with, and whether they have a base CV
+ * on file.
  *
  * One route for both because the landing page needs both at the same instant
  * (on hydrate) — splitting them would cost a second round trip on the page
@@ -13,7 +15,12 @@ import { CV_TEMPLATES } from "@/lib/types";
  */
 
 const BodySchema = z.object({
+  /**
+   * Legacy alias for `export.template`. Kept because a client loaded before
+   * this deploy still sends only this field.
+   */
   defaultTemplate: z.enum(CV_TEMPLATES).optional(),
+  export: ExportPrefsSchema.optional(),
   /** null forgets the saved CV; an object replaces it. */
   baseCv: z
     .object({
@@ -35,7 +42,9 @@ export async function GET() {
 
   const { data, error } = await supabase
     .from("profiles")
-    .select("default_template, cv_file_name, cv_uploaded_at, raw_cv_text")
+    .select(
+      "default_template, cv_theme, split_view, hide_ai_section, cv_file_name, cv_uploaded_at, raw_cv_text"
+    )
     .eq("user_id", user.id)
     .maybeSingle();
   if (error) {
@@ -46,7 +55,15 @@ export async function GET() {
   // would render a card that cannot actually be analyzed.
   const hasText = Boolean(data?.raw_cv_text?.trim());
   return NextResponse.json({
+    // Additive: `defaultTemplate` stays at the top level for clients loaded
+    // before `export` existed.
     defaultTemplate: data?.default_template ?? null,
+    export: {
+      template: data?.default_template ?? null,
+      cvTheme: asCvTheme(data?.cv_theme) ?? "light",
+      splitView: Boolean(data?.split_view),
+      hideAiSection: Boolean(data?.hide_ai_section),
+    },
     baseCv: hasText
       ? {
           fileName: data?.cv_file_name ?? "Your CV",
@@ -72,7 +89,19 @@ export async function PATCH(request: Request) {
   const { defaultTemplate, baseCv } = parsed.data;
 
   const patch: Record<string, unknown> = {};
-  if (defaultTemplate) patch.default_template = defaultTemplate;
+  // The legacy top-level field is just the template; an explicit `export`
+  // block wins over it.
+  const exp = {
+    ...(defaultTemplate ? { template: defaultTemplate } : {}),
+    ...(parsed.data.export ?? {}),
+  };
+  // Compared against undefined rather than tested for truthiness: `if
+  // (exp.splitView)` would never persist `false`, making both toggles
+  // one-way — on could be saved, off could not.
+  if (exp.template !== undefined) patch.default_template = exp.template;
+  if (exp.cvTheme !== undefined) patch.cv_theme = exp.cvTheme;
+  if (exp.splitView !== undefined) patch.split_view = exp.splitView;
+  if (exp.hideAiSection !== undefined) patch.hide_ai_section = exp.hideAiSection;
   if (baseCv === null) {
     patch.raw_cv_text = null;
     patch.cv_file_name = null;

@@ -11,14 +11,29 @@ function cx(...classes: (string | false | undefined)[]) {
 export function Button({
   variant = "primary",
   size = "md",
+  loading = false,
+  loadingLabel,
   className,
+  children,
+  disabled,
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: "primary" | "secondary" | "outline" | "ghost" | "danger" | "success" | "dark" | "white";
   size?: "sm" | "md" | "lg";
+  /**
+   * The action behind this button is in flight: swaps the label for a spinner
+   * and blocks further clicks. Every button that kicks off an async task
+   * should set this — an unresponsive-looking button reads as a broken app,
+   * and users double-click it.
+   */
+  loading?: boolean;
+  /** Optional text beside the spinner ("Generating…"). Omit for a bare one. */
+  loadingLabel?: string;
 }) {
   return (
     <button
+      aria-busy={loading || undefined}
+      disabled={disabled || loading}
       className={cx(
         "inline-flex items-center justify-center gap-2 rounded-full font-semibold transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer",
         size === "sm" && "px-4 py-1.5 text-[13px]",
@@ -40,7 +55,26 @@ export function Button({
         className
       )}
       {...props}
-    />
+    >
+      {loading ? (
+        // Grid-stacked so the pill keeps the WIDER of label/spinner: replacing
+        // the text outright made buttons visibly shrink the instant they were
+        // clicked, which reads as the layout breaking rather than as progress.
+        <span className="grid place-items-center">
+          <span
+            aria-hidden
+            className="invisible col-start-1 row-start-1 inline-flex items-center gap-2"
+          >
+            {children}
+          </span>
+          <span className="col-start-1 row-start-1">
+            <Spinner label={loadingLabel} />
+          </span>
+        </span>
+      ) : (
+        children
+      )}
+    </button>
   );
 }
 

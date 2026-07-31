@@ -27,7 +27,7 @@ for tiers and the payment provider.
 | Piece | State |
 |---|---|
 | Supabase project `nrcmijgoyxthbdftdzgg` | 5 tables + RLS: `profiles`, `jobs`, `generations`, `purchases`, `profile_answers` |
-| Migrations 0001–0006 | ✅ **all applied** (0005 + 0006 run 2026-07-27; verification query returned 2/1/1/1) |
+| Migrations 0001–0009 | ✅ **all applied** (0005 + 0006 run 2026-07-27; 0008 + 0009 run 2026-07-31 in the SQL Editor and verified against production — the `profiles` select in `/api/account/preferences` returns all seven columns) |
 | Supabase redirect allow-list | ✅ `https://preci-cv.vercel.app/auth/callback` **and** `http://localhost:3000/auth/callback`; Site URL = `https://preci-cv.vercel.app` |
 | Production sign-in | ✅ Google verified end-to-end in incognito by the user |
 | Vercel env | Supabase vars ✅ (project URL is in the client bundle). `LEMONSQUEEZY_WEBHOOK_SECRET` ✅ — proven by live webhook deliveries returning `200`; a wrong/missing secret returns `400` |

@@ -16,7 +16,10 @@ import {
   updateHistoryEntry,
 } from "@/lib/funnel";
 import { printBoth, printFile } from "@/lib/download";
-import { startCheckout } from "@/lib/checkout";
+import { startCheckout, startOrderUpgradeCheckout } from "@/lib/checkout";
+import { useCredits } from "@/lib/use-credits";
+import { upgradableOrders } from "@/lib/credit-types";
+import { centsToUsd } from "@/lib/packs";
 import { trackButtonClick } from "@/lib/analytics";
 import { TIERS, UPGRADE_ANCHOR_USD } from "@/lib/types";
 import { Badge, Button, Card, Toast } from "@/components/ui";
@@ -39,6 +42,8 @@ type SavedJob = {
   hasResult: boolean;
   isSample: boolean;
   tier: string | null;
+  /** Set when the unlock came from a bundle credit. */
+  orderId?: string | null;
 };
 
 /** Max length for a user-chosen process name (PRD 4.5.6). */
@@ -51,10 +56,18 @@ const UPGRADE_USD = (TIERS.full.priceCents - TIERS.match.priceCents) / 100;
  * This job bought the tailored CV but not the interview reports.
  *
  * Mirrors `canUpgrade` in the job workspace: a real (non-sample) paid `match`
- * purchase is exactly the state the $1 upgrade exists for.
+ * purchase is exactly the state the $1 upgrade exists for. A job unlocked from
+ * a bundle is excluded — it upgrades with its whole bundle for $1–$2 total,
+ * and charging $1 per job would make the volume discount worse the more jobs
+ * the user actually used. The bundle banner above the list offers that.
  */
 function canAddReports(j: SavedJob): boolean {
-  return j.tier === "match" && !j.isSample;
+  return j.tier === "match" && !j.isSample && !j.orderId;
+}
+
+/** Paid `match` jobs that upgrade as part of a bundle rather than alone. */
+function isBundleMatch(j: SavedJob): boolean {
+  return j.tier === "match" && !j.isSample && Boolean(j.orderId);
 }
 
 /** Human title for a flow: an explicit rename wins, else the derived default. */
@@ -231,6 +244,8 @@ export default function HistoryPage() {
     jobId: string;
     message: string;
   } | null>(null);
+  /** Unlock credits and the bundles they came from. Signed-in only. */
+  const { balance: credits, loaded: creditsLoaded } = useCredits(signedIn);
 
   function refresh() {
     const f = loadFunnel();
@@ -340,6 +355,31 @@ export default function HistoryPage() {
     } catch (e) {
       setUpgradeError({
         jobId: job.id,
+        message: e instanceof Error ? e.message : "Checkout failed",
+      });
+      setUpgradingId(null);
+    }
+  }
+
+  /**
+   * Lift a whole bundle to Full Prep. Shares `upgradingId` with the per-job
+   * upgrade above — a job id and an order id can never collide, and the two
+   * paths are mutually exclusive for any given job anyway.
+   */
+  async function addBundleReports(orderId: string) {
+    setUpgradingId(orderId);
+    setUpgradeError(null);
+    trackButtonClick({
+      button_name: "upgrade_bundle_to_full",
+      action: "checkout",
+      button_text: "Add interview reports to bundle",
+      click_source: "history",
+    });
+    try {
+      await startOrderUpgradeCheckout(orderId, "/history");
+    } catch (e) {
+      setUpgradeError({
+        jobId: orderId,
         message: e instanceof Error ? e.message : "Checkout failed",
       });
       setUpgradingId(null);
@@ -582,6 +622,61 @@ export default function HistoryPage() {
           Every flow you started — a new one begins each time you upload a
           CV. Resume incomplete flows or re-download finished files.
         </p>
+        {signedIn && (
+          <p className="mt-2 text-[13px] text-ink-soft">
+            Applying to several roles at once?{" "}
+            <Link href="/" className="font-semibold text-accent underline">
+              Start a new application
+            </Link>{" "}
+            — add up to 5 jobs, answer one questionnaire, get a tailored CV for
+            each.
+          </p>
+        )}
+
+        {/* Credits and bundle upgrades — account-wide, so they belong above the
+            list rather than repeated on every row that could use them. */}
+        {!loading && signedIn && creditsLoaded && credits.total > 0 && (
+          <Card className="mt-6 flex flex-wrap items-center gap-3 p-4">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-ink">
+                {credits.total} unlock{credits.total === 1 ? "" : "s"} left
+              </p>
+              <p className="mt-0.5 text-[12.5px] text-ink-soft">
+                Open any unfinished job to spend one — no extra charge.
+              </p>
+            </div>
+            <Link
+              href="/my-account"
+              className="text-[12.5px] font-semibold text-accent underline"
+            >
+              Manage credits
+            </Link>
+          </Card>
+        )}
+        {!loading &&
+          signedIn &&
+          creditsLoaded &&
+          upgradableOrders(credits).map((order) => (
+            <Card key={order.id} className="mt-3 flex flex-wrap items-center gap-3 p-4">
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-ink">
+                  Add interview reports to your {order.creditsTotal}-job bundle
+                </p>
+                <p className="mt-0.5 text-[12.5px] text-ink-soft">
+                  One payment covers every job in the bundle, including the ones
+                  you already generated.
+                </p>
+              </div>
+              <Button
+                size="sm"
+                loading={upgradingId === order.id}
+                loadingLabel="Opening checkout…"
+                onClick={() => addBundleReports(order.id)}
+              >
+                Upgrade — ${centsToUsd(order.upgradeCents)}
+              </Button>
+            </Card>
+          ))}
 
         {loading && (
           <div className="mt-6">
@@ -662,13 +757,19 @@ export default function HistoryPage() {
                         likely to ask, and how to answer each one.
                       </p>
                     )}
+                    {isBundleMatch(j) && (
+                      <p className="mt-1 text-[12.5px] text-ink-soft">
+                        Interview report available with the bundle upgrade
+                        above.
+                      </p>
+                    )}
                     {upgradeError?.jobId === j.id && (
                       <p className="mt-1 text-[12px] font-medium text-red-600">
                         {upgradeError.message}
                       </p>
                     )}
                   </div>
-                  {canAddReports(j) ? (
+                  {canAddReports(j) || isBundleMatch(j) ? (
                     <Badge tone="slate">CV only</Badge>
                   ) : j.tier ? (
                     <Badge tone="indigo">Purchased</Badge>

@@ -40,7 +40,9 @@ export default async function JobPage({
 
   const { data: purchase } = await supabase
     .from("purchases")
-    .select("tier, status, revisions_used, rewrites_used, report_regens_used")
+    .select(
+      "tier, status, revisions_used, rewrites_used, report_regens_used, order_id"
+    )
     .eq("job_id", id)
     .eq("status", "paid")
     .maybeSingle();
@@ -80,6 +82,7 @@ export default async function JobPage({
               maxRewrites: MAX_REWRITES,
               regensUsed: purchase.report_regens_used ?? 0,
               maxRegens: MAX_REPORT_REGENS,
+              orderId: purchase.order_id ?? null,
             }
           : null
       }

@@ -442,6 +442,105 @@ export async function extractProfileFromCv(
 }
 
 /* ------------------------------------------------------------------ */
+/* 1'. One merged question set covering every job in the flow          */
+/* ------------------------------------------------------------------ */
+
+const JobQuestionsSchema = z.object({
+  questionnaire: QuestionnaireSchema,
+  mcq: McqQuestionnaireSchema.prefault({}),
+});
+
+/**
+ * The questions to ask once, covering every job the user added.
+ *
+ * The point of applying to several roles at once is that five applications
+ * should not cost five questionnaires, so the budget is the SAME as for a
+ * single job (MAX_ASKED_MCQ + MAX_ASKED_OPEN) no matter how many jobs there
+ * are. One LLM call sees every job description at once, which is what lets it
+ * merge "do you know Kubernetes?" and "experience with container
+ * orchestration?" into one question instead of asking both.
+ *
+ * Takes the already-extracted profile rather than re-parsing the CV — the
+ * funnel has parsed it by this point, and a signed-in user's copy is already
+ * in the database.
+ *
+ * Cheap tier on purpose — this is question selection over text the model can
+ * see, not the tailoring judgement that earns the quality tier.
+ */
+export async function extractJobQuestions(
+  profile: MasterProfile,
+  jdTexts: string[]
+): Promise<{ questionnaire: Questionnaire; mcq: McqQuestionnaire }> {
+  const roleSummary =
+    `Headline: ${profile.headline}\n` +
+    `Recent titles: ${profile.experience
+      .slice(0, 4)
+      .map((e) => e.title)
+      .filter(Boolean)
+      .join("; ")}\n` +
+    `Skills: ${profile.skills.join(", ")}\n` +
+    `Summary: ${profile.summary}`;
+
+  // Per-JD budget so a five-job batch cannot blow the context window; the
+  // questions only need requirements, which live near the top of a posting.
+  const perJdChars = Math.max(2000, Math.floor(24000 / Math.max(1, jdTexts.length)));
+  const jobsBlock = jdTexts
+    .map(
+      (jd, i) =>
+        `--- JOB ${i + 1} START ---\n${jd.slice(0, perJdChars)}\n--- JOB ${i + 1} END ---`
+    )
+    .join("\n\n");
+
+  return structuredCall({
+    tier: "fast",
+    system:
+      "You are the question-planning engine of SpeCV. Given a candidate's " +
+      "profile and SEVERAL job descriptions they are applying to at once, " +
+      "you produce the single smallest set of questions that improves the " +
+      "tailored CV for ALL of those jobs.",
+    prompt:
+      `The candidate is applying to ${jdTexts.length} job${
+        jdTexts.length === 1 ? "" : "s"
+      } in one batch. Produce ONE shared question set for the whole batch.\n\n` +
+      `THE RULE THAT MATTERS MOST — MERGE AGGRESSIVELY. Two jobs asking for ` +
+      `"Kubernetes" and "container orchestration" are ONE question. Ask about ` +
+      `what the jobs have in common first; only spend a slot on something ` +
+      `specific to a single job when that one job's biggest gap is bigger ` +
+      `than any shared gap left unasked. NEVER ask the same thing twice in ` +
+      `different words, and never mention job numbers in the question text — ` +
+      `the candidate sees one list, not a list per job.\n\n` +
+      `1. "mcq" — AT MOST ${MAX_ASKED_MCQ} short multiple-choice questions, ` +
+      `"required": true on every one. This budget is FIXED no matter how ` +
+      `many jobs there are: ${jdTexts.length} jobs still means at most ` +
+      `${MAX_ASKED_MCQ} questions. Each is answerable in one tap with 3-5 ` +
+      `short options grounded in THIS CV plus plausible alternatives. Set ` +
+      `"selectType": "single" when exactly one answer is logical (skill ` +
+      `level, yes/no, team size, recency); use "ranked" ONLY when picking ` +
+      `several and prioritizing them makes sense. For questions listing ` +
+      `concrete tools/technologies, the LAST option must be "None of these". ` +
+      `Any question about AI/LLM tool usage MUST include "ChatGPT", ` +
+      `"Claude", "Grok" and "Cursor" among its options. CRITICAL — "topic" ` +
+      `is a CATEGORY, not a per-question label: use AT MOST 2 distinct broad ` +
+      `topic values across the whole set. Do NOT add an "Other" option — the ` +
+      `UI appends one automatically. Leave "placeholderText" empty.\n\n` +
+      `2. "questionnaire" — AT MOST ${MAX_ASKED_OPEN} open questions that ` +
+      `uncover UNSTATED information useful across these roles: missing ` +
+      `metrics (team sizes, revenue impact, performance numbers), unclear ` +
+      `scope, technologies implied but not listed. Each must reference ` +
+      `something specific from THIS CV. In "why", explain in one sentence ` +
+      `how the answer improves the tailored CVs. Reuse the same broad ` +
+      `"topic" values you used for "mcq".\n\n` +
+      `Candidate profile:\n${roleSummary}\n\n${jobsBlock}`,
+    schema: JobQuestionsSchema,
+    toolName: "save_batch_questions",
+    toolDescription:
+      "Save the one shared multiple-choice check and open questionnaire for " +
+      "the whole batch of jobs.",
+    maxTokens: 4000,
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* 1a. Greeting facts from the JD — powers the chat's personalized     */
 /*     opening ("…you're interested in the X position")                */
 /* ------------------------------------------------------------------ */

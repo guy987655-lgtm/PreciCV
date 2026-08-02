@@ -79,13 +79,13 @@ export async function GET() {
   const { data: paid } = ids.length
     ? await supabase
         .from("purchases")
-        .select("job_id, tier")
+        .select("job_id, tier, order_id")
         .eq("status", "paid")
         .in("job_id", ids)
-    : { data: [] as { job_id: string; tier: string }[] };
+    : { data: [] as { job_id: string; tier: string; order_id: string | null }[] };
 
   const genBy = new Map((gens ?? []).map((g) => [g.job_id, g]));
-  const paidBy = new Map((paid ?? []).map((p) => [p.job_id, p.tier]));
+  const paidBy = new Map((paid ?? []).map((p) => [p.job_id, p]));
 
   return NextResponse.json({
     jobs: (jobs ?? []).map((j) => ({
@@ -97,7 +97,10 @@ export async function GET() {
       createdAt: j.created_at,
       hasResult: genBy.has(j.id),
       isSample: genBy.get(j.id)?.is_sample ?? false,
-      tier: paidBy.get(j.id) ?? null,
+      tier: paidBy.get(j.id)?.tier ?? null,
+      /** Set when this unlock was spent from a bundle — such a job upgrades
+       *  with its whole bundle, never on its own. */
+      orderId: paidBy.get(j.id)?.order_id ?? null,
     })),
   });
 }

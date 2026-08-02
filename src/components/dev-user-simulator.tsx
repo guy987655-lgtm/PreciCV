@@ -12,8 +12,10 @@ import {
 /**
  * DEV/TEST ONLY — floating bottom-left User Status Selector covering the 5
  * valid user states. Picking a state clears all session data, injects the
- * matching mock data, and hard-redirects to the homepage. Hidden in
- * production unless NEXT_PUBLIC_DEV_TOOLS=true.
+ * matching mock data, and hard-redirects to the homepage.
+ *
+ * Renders NOTHING unless NEXT_PUBLIC_DEV_TOOLS=true — including in local
+ * development. See simEnabled() in src/lib/sim-user.ts for why.
  */
 export function DevUserSimulator() {
   const status = useSimUser();

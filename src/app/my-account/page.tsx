@@ -6,8 +6,16 @@ import { readJson } from "@/lib/fetch-json";
 import { loadFunnel } from "@/lib/funnel";
 import { trackButtonClick, resetAnalytics } from "@/lib/analytics";
 import { useSession } from "@/lib/use-session";
+import { useCredits } from "@/lib/use-credits";
+import { upgradableOrders } from "@/lib/credit-types";
+import {
+  startOrderUpgradeCheckout,
+  startPackCheckout,
+} from "@/lib/checkout";
+import { PackQuantity, PackTier, centsToUsd } from "@/lib/packs";
 import type { FreeQuota } from "@/lib/free-quota";
-import { Button, Card } from "@/components/ui";
+import { Badge, Button, Card } from "@/components/ui";
+import { BundlePaywall } from "@/components/bundle-paywall";
 import { ConfirmCountdownModal } from "@/components/confirm-countdown-modal";
 import { AccountIdentity } from "@/components/account-identity";
 import { Navbar } from "@/components/navbar";
@@ -34,6 +42,41 @@ export default function MyAccountPage() {
   // Today's free-generation allowance. Null until it loads, or if it fails —
   // the card simply doesn't render, since a wrong count is worse than none.
   const [quota, setQuota] = useState<FreeQuota | null>(null);
+  // Unlock credits. `loaded` gates the section so it doesn't flash "0 credits"
+  // for a user who has plenty.
+  const { balance: credits, loaded: creditsLoaded } = useCredits(
+    Boolean(user) && !sessionLoading
+  );
+  const [packBusy, setPackBusy] = useState<PackTier | null>(null);
+  const [upgradeBusy, setUpgradeBusy] = useState("");
+
+  async function buyPack(tier: PackTier, quantity: PackQuantity) {
+    setPackBusy(tier);
+    setError("");
+    trackButtonClick({
+      button_name: "buy_credit_pack",
+      action: "checkout",
+      button_text: `${quantity}× ${tier}`,
+      click_source: "my_account_page",
+    });
+    try {
+      await startPackCheckout(tier, quantity, "/my-account");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong");
+      setPackBusy(null);
+    }
+  }
+
+  async function upgradeBundle(orderId: string) {
+    setUpgradeBusy(orderId);
+    setError("");
+    try {
+      await startOrderUpgradeCheckout(orderId, "/my-account");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong");
+      setUpgradeBusy("");
+    }
+  }
 
   useEffect(() => {
     if (sessionLoading || !user) return;
@@ -135,6 +178,76 @@ export default function MyAccountPage() {
                 ? `${quota.remaining} left · resets ${new Date(quota.resetAt).toLocaleString()}`
                 : `None left · resets ${new Date(quota.resetAt).toLocaleString()}`}
             </p>
+          </Card>
+        )}
+
+        {/* Unlock credits — the balance, the bundles it came from, and the
+            place to buy more. Bundles are the only surface that sells more
+            than one unlock at a time, so this section is also the entry point
+            for volume pricing. */}
+        {creditsLoaded && user && (
+          <Card className="mt-6 p-6">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="font-semibold text-ink">Unlock credits</h2>
+              {credits.total > 0 && (
+                <Badge tone="green">
+                  {credits.total} left
+                </Badge>
+              )}
+            </div>
+
+            {credits.total > 0 ? (
+              <p className="mt-2 text-sm text-ink-soft">
+                You have <strong>{credits.total}</strong> unlock
+                {credits.total === 1 ? "" : "s"} left
+                {credits.byTier.full > 0 && credits.byTier.match > 0
+                  ? ` (${credits.byTier.match} Job Match, ${credits.byTier.full} Full Prep)`
+                  : ""}
+                . Spend one on any job — they don&apos;t expire.
+              </p>
+            ) : (
+              <p className="mt-2 text-sm text-ink-soft">
+                Applying to several roles? Buying unlocks in a bundle costs less
+                per job, and you can spend them whenever you like.
+              </p>
+            )}
+
+            {/* Bundles that can still gain the interview reports. */}
+            {upgradableOrders(credits).map((order) => (
+              <div
+                key={order.id}
+                className="mt-4 rounded-[14px] border-[1.5px] border-border bg-bg p-4"
+              >
+                <p className="text-sm font-semibold text-ink">
+                  {order.creditsTotal}-job bundle · Job Match
+                </p>
+                <p className="mt-1 text-[13px] text-ink-soft">
+                  {order.creditsUsed} of {order.creditsTotal} used. Add the
+                  interview report to every job in this bundle — including the
+                  ones you already generated.
+                </p>
+                <Button
+                  size="sm"
+                  className="mt-3"
+                  loading={upgradeBusy === order.id}
+                  loadingLabel="Opening checkout…"
+                  onClick={() => upgradeBundle(order.id)}
+                >
+                  Upgrade to Full Prep — ${centsToUsd(order.upgradeCents)}
+                </Button>
+              </div>
+            ))}
+
+            <div className="mt-5 border-t border-border pt-5">
+              <h3 className="mb-3 text-sm font-semibold text-ink">
+                {credits.total > 0 ? "Buy more" : "Buy unlocks"}
+              </h3>
+              <BundlePaywall
+                busyTier={packBusy}
+                onSelect={buyPack}
+                hint="Credits work on any job, whenever you're ready."
+              />
+            </div>
           </Card>
         )}
 

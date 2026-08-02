@@ -8,8 +8,9 @@ import { PENDING_KEY, clearFunnel } from "@/lib/funnel";
 
 /**
  * Landing spot after OAuth for users who started anonymously on the
- * landing page: imports the stashed profile + answers + JD, then jumps
- * straight to the created job (or home, when there is nothing to import).
+ * landing page: imports the stashed profile + answers + jobs, then jumps
+ * straight to the created job or run (or home, when there is nothing to
+ * import).
  */
 export default function ContinuePage() {
   const router = useRouter();
@@ -47,6 +48,8 @@ export default function ContinuePage() {
                 })
               ) ??
               [],
+            jobs: stash.jobs ?? [],
+            // Pre-multi-job stash shape, still accepted by the importer.
             jdText: stash.jdText ?? "",
             jobTitle: stash.jobTitle ?? "",
             company: stash.company ?? "",
@@ -56,7 +59,16 @@ export default function ContinuePage() {
         if (!res.ok) throw new Error(data.error ?? "Import failed");
         localStorage.removeItem(PENDING_KEY);
         clearFunnel();
-        router.replace(data.jobId ? `/jobs/${data.jobId}` : "/");
+        /**
+         * One job goes straight to its workspace, which generates the free
+         * preview on arrival. Several go to the run page, where the user picks
+         * which ones their credits are spent on before anything generates.
+         */
+        if (data.runId && data.jobCount > 1) {
+          router.replace(`/run/${data.runId}`);
+        } else {
+          router.replace(data.jobId ? `/jobs/${data.jobId}` : "/");
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : "Something went wrong");
       }

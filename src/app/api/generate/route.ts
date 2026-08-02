@@ -60,7 +60,7 @@ export async function POST(request: Request) {
 
   const { data: job } = await supabase
     .from("jobs")
-    .select("id, jd_text, dealbreaker_hits, status")
+    .select("id, jd_text, dealbreaker_hits, status, title, company")
     .eq("id", jobId)
     .eq("user_id", user.id)
     .single();
@@ -273,12 +273,22 @@ export async function POST(request: Request) {
       .eq("user_id", user.id);
   }
 
+  /**
+   * A name already on the job WINS over this run's extraction.
+   *
+   * This used to write `result.company || null` unconditionally, which meant a
+   * posting the tailoring pass read as anonymous NULLed a company name that
+   * was already known — and the export filenames are built from that name. The
+   * homepage makes the name mandatory and user-confirmable before any credit
+   * is spent, so overwriting it here would silently discard what the user
+   * typed. Generation still fills either field in when it was empty.
+   */
   await supabase
     .from("jobs")
     .update({
       status: "generated",
-      title: result.jobTitle || null,
-      company: result.company || null,
+      title: job.title || result.jobTitle || null,
+      company: job.company || result.company || null,
     })
     .eq("id", jobId);
 

@@ -1,5 +1,4 @@
 import { createHmac, timingSafeEqual } from "crypto";
-import type { TierId } from "@/lib/types";
 
 /**
  * Lemon Squeezy — Merchant of Record. Replaces the old Stripe layer (Stripe
@@ -29,15 +28,47 @@ export function devFreeMode(): boolean {
   return process.env.DEV_FREE_MODE === "true";
 }
 
-/** Resolve the Lemon Squeezy variant id for a checkout. Upgrades use the
- *  dedicated +$1 variant; everything else uses the tier's own variant. */
-function variantForTier(tier: TierId, isUpgrade: boolean): string | undefined {
-  if (isUpgrade) return process.env.LEMONSQUEEZY_VARIANT_UPGRADE;
-  const map: Partial<Record<TierId, string | undefined>> = {
-    match: process.env.LEMONSQUEEZY_VARIANT_MATCH,
-    full: process.env.LEMONSQUEEZY_VARIANT_FULL,
-  };
-  return map[tier];
+/**
+ * SKU → the env var holding its Lemon Squeezy variant id.
+ *
+ * One variant per PRICE, because Lemon Squeezy variants carry their price in
+ * the dashboard. The volume matrix in src/lib/packs.ts has ten pack prices,
+ * and upgrades are keyed by price rather than pack size (five pack sizes, two
+ * upgrade prices) — twelve variants in total, of which three already exist and
+ * keep their original env var names so nothing has to be re-entered.
+ *
+ * If Lemon Squeezy's `checkout_data.custom_price` turns out to be available on
+ * this store, this whole map collapses to two variants priced per checkout —
+ * that change is confined to this one function.
+ */
+const VARIANT_ENV: Record<string, string> = {
+  // Singles — the original three, unchanged.
+  match_x1: "LEMONSQUEEZY_VARIANT_MATCH",
+  full_x1: "LEMONSQUEEZY_VARIANT_FULL",
+  upgrade_100: "LEMONSQUEEZY_VARIANT_UPGRADE",
+  // Packs.
+  match_x2: "LEMONSQUEEZY_VARIANT_MATCH_X2",
+  match_x3: "LEMONSQUEEZY_VARIANT_MATCH_X3",
+  match_x4: "LEMONSQUEEZY_VARIANT_MATCH_X4",
+  match_x5: "LEMONSQUEEZY_VARIANT_MATCH_X5",
+  full_x2: "LEMONSQUEEZY_VARIANT_FULL_X2",
+  full_x3: "LEMONSQUEEZY_VARIANT_FULL_X3",
+  full_x4: "LEMONSQUEEZY_VARIANT_FULL_X4",
+  full_x5: "LEMONSQUEEZY_VARIANT_FULL_X5",
+  // The $2 whole-order upgrade (3-, 4- and 5-packs).
+  upgrade_200: "LEMONSQUEEZY_VARIANT_UPGRADE_2",
+};
+
+/** Resolve the Lemon Squeezy variant id for a SKU (see src/lib/packs.ts). */
+export function variantForSku(sku: string): string | undefined {
+  const envName = VARIANT_ENV[sku];
+  return envName ? process.env[envName] : undefined;
+}
+
+/** Which SKUs have no variant configured — surfaced by the checkout route so a
+ *  missing env var fails with a nameable cause instead of a generic 500. */
+export function missingVariantSkus(): string[] {
+  return Object.keys(VARIANT_ENV).filter((sku) => !variantForSku(sku));
 }
 
 const LS_HEADERS = () => ({
@@ -48,25 +79,25 @@ const LS_HEADERS = () => ({
 
 /**
  * Creates a hosted Lemon Squeezy checkout and returns its URL. `custom` is
- * echoed back verbatim on the order webhook (`meta.custom_data`), so we pass
- * the ids we need to mark the purchase paid.
+ * echoed back verbatim on the order webhook (`meta.custom_data`), so it carries
+ * the ids the webhook needs to grant what was bought:
+ *
+ *   single job unlock → { user_id, job_id, tier }
+ *   credit bundle     → { user_id, order_id, sku }
+ *
+ * The webhook branches on which of `job_id` / `order_id` is present.
  */
 export async function createLsCheckout(opts: {
-  tier: TierId;
-  isUpgrade: boolean;
+  sku: string;
   email: string | undefined;
-  userId: string;
-  jobId: string;
+  /** Lemon Squeezy requires every custom value to be a string. */
+  custom: Record<string, string>;
   redirectUrl: string;
 }): Promise<string> {
   const storeId = process.env.LEMONSQUEEZY_STORE_ID!;
-  const variantId = variantForTier(opts.tier, opts.isUpgrade);
+  const variantId = variantForSku(opts.sku);
   if (!variantId) {
-    throw new Error(
-      `No Lemon Squeezy variant configured for ${
-        opts.isUpgrade ? "upgrade" : opts.tier
-      }`
-    );
+    throw new Error(`No Lemon Squeezy variant configured for ${opts.sku}`);
   }
 
   const res = await fetch(`${LS_API}/checkouts`, {
@@ -78,12 +109,7 @@ export async function createLsCheckout(opts: {
         attributes: {
           checkout_data: {
             email: opts.email,
-            // Lemon Squeezy requires custom values to be strings.
-            custom: {
-              user_id: opts.userId,
-              job_id: opts.jobId,
-              tier: opts.tier,
-            },
+            custom: opts.custom,
           },
           product_options: { redirect_url: opts.redirectUrl },
         },

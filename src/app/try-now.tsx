@@ -10,6 +10,7 @@ import {
   MAX_ASKED_OPEN,
   MAX_REPORT_REGENS,
   MAX_REWRITES,
+  MasterProfile,
   McqQuestionnaire,
   Questionnaire,
   RewriteLength,
@@ -28,20 +29,27 @@ import {
   FunnelState,
   FunnelStep,
   HOME_EVENT,
+  JobDraft,
+  MIN_JD_CHARS,
   McqAnswer,
   STEP_ORDER,
   capQuestionPools,
   clearFunnel,
+  emptyJobDraft,
   ensureAiToolOptions,
+  isJobReady,
   isMcqAnswered,
   loadFunnel,
   normalizeMcqPool,
+  primaryJd,
   profileWithAnswers,
   pushToHistory,
+  readyJobs,
   saveFunnel,
   stampAnswerTime,
   stashForSignup,
 } from "@/lib/funnel";
+import { MAX_PACK_SIZE } from "@/lib/packs";
 import {
   BaseCvMeta,
   fetchAccountPrefs,
@@ -55,7 +63,16 @@ import { EMPTY_MATCH, MatchedAnswers, mergeMatches } from "@/lib/answer-match";
 import { printBoth, printFile } from "@/lib/download";
 import { simMeta, useSimUser } from "@/lib/sim-user";
 import { useSession } from "@/lib/use-session";
-import { Badge, Button, Card, Modal, Spinner, Textarea, Toast } from "@/components/ui";
+import {
+  Badge,
+  Button,
+  Card,
+  Input,
+  Modal,
+  Spinner,
+  Textarea,
+  Toast,
+} from "@/components/ui";
 import { ReportSectionsSkeleton } from "@/components/skeleton";
 import { Paywall } from "@/components/paywall";
 import { ChatFlow } from "@/components/chat-flow";
@@ -84,7 +101,7 @@ import { VersionStrip } from "@/components/version-strip";
 import { FullScreenCv } from "@/components/full-screen-cv";
 
 const STEP_LABELS: Record<FunnelStep, string> = {
-  upload: "CV + Job",
+  upload: "CV + Jobs",
   chat: "Questions",
   gate: "Results",
 };
@@ -135,6 +152,24 @@ export function TryNow() {
   const [file, setFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [busy, setBusy] = useState(false);
+  /** The CV extraction is running in the background (stage 1). */
+  const [cvBusy, setCvBusy] = useState(false);
+  /**
+   * In-flight CV parse, keyed by which CV it is for. Holding the promise (not
+   * a flag) lets a later caller await the same request instead of starting a
+   * second extraction of the same document.
+   */
+  const cvParse = useRef<{ key: string; promise: Promise<ParsedCv> } | null>(
+    null
+  );
+  /**
+   * The job the user explicitly opened. Null means "whatever still needs
+   * filling in" — see `expandedJob` below, which is derived rather than
+   * stored so a restored flow reopens its unfinished card without an effect.
+   */
+  const [openedJob, setOpenedJob] = useState<string | null>(null);
+  /** The CV picker is showing even though a CV is already parsed. */
+  const [cvOpen, setCvOpen] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const [error, setError] = useState("");
@@ -230,6 +265,10 @@ export function TryNow() {
   // Derived rather than reset on sign-out: a signed-out user has no base CV
   // regardless of what the last fetch found.
   const baseCv = signedIn ? savedCv : null;
+  /** A CV is chosen: freshly picked, or the one on the account. Declared here
+   *  rather than with the other derived values because the effect that opens
+   *  stage 2 depends on it. */
+  const hasCvReady = file !== null || (useSavedCv && baseCv !== null);
   useEffect(() => {
     if (!signedIn) return;
     let alive = true;
@@ -238,6 +277,11 @@ export function TryNow() {
       setSavedCv(prefs.baseCv);
       // Pre-select it: a returning user's common case is "same CV, new job".
       setUseSavedCv(prefs.baseCv !== null);
+      // …and open the first job card, since stage 1 is already satisfied.
+      // The CV itself is NOT parsed here: a returning user passing through the
+      // homepage should not cost an extraction. commitJob starts it once they
+      // actually file their first job away.
+      if (prefs.baseCv !== null) openFirstJob();
       // Merge per SETTING, local winning: this device's last download is the
       // most recent truth, and the account fills in whatever it never saw.
       const local = preferredExportPrefs();
@@ -427,41 +471,276 @@ export function TryNow() {
     }
     setError("");
     setFile(f);
+    setUseSavedCv(false);
+    openFirstJob();
+    // Read the CV straight away rather than waiting for a submit click: the
+    // extraction is a 30-60s LLM call, and the user is about to spend that
+    // long pasting their first job description anyway.
+    void parseCv({ kind: "file", file: f }).catch(() => {});
   }
 
-  async function analyze() {
-    const fromSaved = useSavedCv && baseCv !== null;
-    if (!file && !fromSaved) return;
-    setBusy(true);
+  /**
+   * Stage 2 opens the moment a CV is chosen: the flow is strictly sequential,
+   * so there is exactly one empty job card waiting and nothing else. Called
+   * from the CV-choice handlers rather than an effect — the card appearing is
+   * a response to that click, not a synchronisation with anything external.
+   */
+  function openFirstJob() {
+    const draft = emptyJobDraft();
+    setState((s) => (s.jobs.length > 0 ? s : { ...s, jobs: [draft] }));
+  }
+
+  /* ---------------- CV parsing (stage 1) ---------------- */
+
+  type CvSource = { kind: "file"; file: File } | { kind: "saved" };
+  type ParsedCv = { profile: MasterProfile; rawText: string };
+
+  function sourceKey(s: CvSource): string {
+    return s.kind === "file"
+      ? `file:${s.file.name}:${s.file.size}:${s.file.lastModified}`
+      : "saved";
+  }
+
+  /**
+   * Parse the chosen CV, at most once per CV.
+   *
+   * Kicked off eagerly the moment a CV is chosen and awaited again when the
+   * user continues, so the common case has the profile ready before they ask
+   * for it and the impatient case simply waits on the same request. The ref
+   * holds the in-flight promise (not a boolean) precisely so the second caller
+   * joins the first rather than firing a duplicate extraction — and it
+   * RESOLVES with the profile, so that caller never has to read it back out of
+   * a setState that has not committed yet.
+   */
+  function parseCv(source: CvSource): Promise<ParsedCv> {
+    const key = sourceKey(source);
+    const pending = cvParse.current;
+    if (pending?.key === key) return pending.promise;
+    const promise = runParseCv(source).catch((e) => {
+      // Clear the cache so the user can retry the same CV after a failure.
+      if (cvParse.current?.key === key) cvParse.current = null;
+      throw e;
+    });
+    cvParse.current = { key, promise };
+    return promise;
+  }
+
+  async function runParseCv(source: CvSource): Promise<ParsedCv> {
+    setCvBusy(true);
     setError("");
     trackButtonClick({
-      button_name: "try_now_analyze",
+      button_name: "try_now_parse_cv",
       action: "upload",
-      button_text: "Analyze my CV",
+      button_text: "Upload CV",
       click_source: "landing_try_now",
     });
     try {
       const form = new FormData();
       // The saved CV is already on the account as extracted text, so the
       // server reads it from there — the user never re-picks the same file.
-      if (fromSaved) form.append("useSaved", "1");
-      else if (file) form.append("file", file);
-      // The target job makes the questionnaire gap-bridging specific (§4.2).
-      if (state.jdText.trim()) form.append("jd", state.jdText);
+      if (source.kind === "saved") form.append("useSaved", "1");
+      else form.append("file", source.file);
+      /**
+       * No `jd` is sent. The questionnaire this route can build is tied to one
+       * job description, and the flow now collects several before asking
+       * anything — /api/try/questions builds the merged set once every job is
+       * in. What we need here is the profile and the raw text.
+       */
       const res = await fetch("/api/try/parse-cv", { method: "POST", body: form });
       const data = await readJson(res);
       if (!res.ok) throw new Error(data.error ?? "Upload failed");
       // Keep the freshly uploaded CV on the account so the next session can
       // offer it back. Best-effort: this must not fail an otherwise good run.
-      if (signedIn && file && data.rawText) {
+      if (signedIn && source.kind === "file" && data.rawText) {
         void saveAccountPrefs({
-          baseCv: { rawText: data.rawText, fileName: file.name },
+          baseCv: { rawText: data.rawText, fileName: source.file.name },
         });
-        setSavedCv({ fileName: file.name, uploadedAt: new Date().toISOString() });
+        setSavedCv({
+          fileName: source.file.name,
+          uploadedAt: new Date().toISOString(),
+        });
       }
-      // A new CV upload starts a NEW flow — the previous one is archived
-      // to History, never overwritten.
-      if (state.profile) pushToHistory(state);
+      const seededExport = preferredExportPrefs();
+      setState((s) => {
+        // A new CV starts a NEW flow — the previous one is archived to
+        // History, never overwritten. The job drafts are the exception: the
+        // user typed those, and they apply to whichever CV is on the desk.
+        if (s.profile) pushToHistory(s);
+        return {
+          ...s,
+          flowId: crypto.randomUUID(),
+          profile: data.profile,
+          rawText: data.rawText ?? "",
+          // Rebuilt from every job by /api/try/questions when the user
+          // continues; a stale pool here would flash the previous CV's
+          // questions if they walked back to the chat step.
+          questionnaire: null,
+          mcq: null,
+          mcqAnswers: {},
+          answers: {},
+          answerTimes: {},
+          autoFilledIds: [],
+          knownIds: [],
+          processName: "",
+          roleQuestionsLoaded: false,
+          mcqIndex: 0,
+          // A fresh flow opens in the configuration the user last downloaded,
+          // not the hardcoded EMPTY_FUNNEL defaults — that reset is what forced
+          // users with a consistent visual identity to redo their whole export
+          // setup on every application. (The AI-section choice is not here: it
+          // lives inside the CV's own hiddenSectionIds, applied in generateNow.)
+          template: seededExport.template ?? EMPTY_FUNNEL.template,
+          cvTheme: seededExport.cvTheme ?? EMPTY_FUNNEL.cvTheme,
+          splitView: seededExport.splitView ?? EMPTY_FUNNEL.splitView,
+          results: null,
+          downloadedCv: false,
+          downloadedReport: false,
+          versions: [],
+          rewritesUsed: 0,
+          regensUsed: 0,
+          reportStale: false,
+          sharpenSuggestions: {},
+          greetingInfo: null,
+          greetingReply: "",
+          greetingDone: false,
+          branchChoice: "",
+          branchStarted: false,
+        };
+      });
+      return { profile: data.profile, rawText: data.rawText ?? "" };
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong");
+      throw e;
+    } finally {
+      setCvBusy(false);
+    }
+  }
+
+  /* ---------------- job drafts (stage 2) ---------------- */
+
+  function patchJob(key: string, next: Partial<JobDraft>) {
+    setState((s) => ({
+      ...s,
+      jobs: s.jobs.map((d) => (d.key === key ? { ...d, ...next } : d)),
+    }));
+  }
+
+  function addJob() {
+    const draft = emptyJobDraft();
+    setState((s) => ({ ...s, jobs: [...s.jobs, draft] }));
+    setOpenedJob(draft.key);
+  }
+
+  function removeJob(key: string) {
+    setState((s) => ({ ...s, jobs: s.jobs.filter((d) => d.key !== key) }));
+    setOpenedJob((k) => (k === key ? null : k));
+  }
+
+  /**
+   * Read the hiring company and job title off a pasted JD.
+   *
+   * Fires on blur rather than while typing: one call per job description
+   * instead of one per keystroke-pause, and the user has finished pasting by
+   * the time they leave the field. Never overwrites something the user typed.
+   */
+  const lookUpJobMeta = useCallback(async (draft: JobDraft) => {
+    const jd = draft.jdText.trim();
+    if (jd.length < MIN_JD_CHARS || draft.lookedUpFor === jd) return;
+    setState((s) => ({
+      ...s,
+      jobs: s.jobs.map((d) =>
+        d.key === draft.key ? { ...d, looking: true, lookedUpFor: jd } : d
+      ),
+    }));
+    try {
+      const res = await fetch("/api/try/jd-meta", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jdText: jd }),
+      });
+      const data = await readJson(res);
+      setState((s) => ({
+        ...s,
+        jobs: s.jobs.map((d) =>
+          d.key === draft.key
+            ? {
+                ...d,
+                looking: false,
+                company: d.company.trim() || (data?.company ?? ""),
+                title: d.title.trim() || (data?.title ?? ""),
+              }
+            : d
+        ),
+      }));
+    } catch {
+      // The user can always type the name — a failed lookup is not an error
+      // worth showing, it just leaves the field empty and required.
+      setState((s) => ({
+        ...s,
+        jobs: s.jobs.map((d) =>
+          d.key === draft.key ? { ...d, looking: false } : d
+        ),
+      }));
+    }
+  }, []);
+
+  /** Leaving a job's textarea collapses it to a chip and names it. */
+  function commitJob(draft: JobDraft) {
+    if (!isJobReady(draft)) return;
+    patchJob(draft.key, { committed: true });
+    setOpenedJob((k) => (k === draft.key ? null : k));
+    void lookUpJobMeta(draft);
+    // A returning user's saved CV is pre-selected but deliberately unparsed
+    // until now — filing a job away is the first real sign they mean to run
+    // this flow, and it leaves the extraction time to overlap with the jobs
+    // they add next rather than landing entirely on the Continue click.
+    if (!state.profile && !cvBusy && hasCvReady) {
+      void parseCv(file ? { kind: "file", file } : { kind: "saved" }).catch(
+        () => {}
+      );
+    }
+  }
+
+  /* ---------------- questions (stage 3) ---------------- */
+
+  /**
+   * Every job's questions, asked once.
+   *
+   * The CV parse is awaited rather than required: it was started when the CV
+   * was chosen, so by now it has almost always finished, and when it has not
+   * the user waits here instead of being blocked from clicking at all.
+   */
+  async function continueToQuestions() {
+    const drafts = readyJobs(state);
+    if (drafts.length === 0 || busy) return;
+    setBusy(true);
+    setError("");
+    trackButtonClick({
+      button_name: "try_now_continue",
+      action: "continue",
+      button_text: "Continue",
+      click_source: "landing_try_now",
+    });
+    try {
+      // Any draft the user never blurred still needs its name looked up.
+      await Promise.all(drafts.filter((d) => !d.lookedUpFor).map(lookUpJobMeta));
+
+      const { profile, rawText } = await parseCv(
+        file ? { kind: "file", file } : { kind: "saved" }
+      );
+
+      const res = await fetch("/api/try/questions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profile,
+          rawText,
+          jdTexts: drafts.map((d) => d.jdText.trim()),
+        }),
+      });
+      const data = await readJson(res);
+      if (!res.ok) throw new Error(data.error ?? "Could not build the questions");
+
       const fullMcq = { questions: data.mcq?.questions ?? [] };
       const fullOpen: Questionnaire | null = data.questionnaire ?? null;
       /**
@@ -496,12 +775,11 @@ export function TryNow() {
       // below only render for specific user states. The user simply has
       // nothing left to answer there.
       const nextStep: FunnelStep = hasQuestions ? "chat" : "gate";
-      const seededExport = preferredExportPrefs();
+      // The flow itself was already reset when the CV was parsed — all this
+      // adds is the question pool, the answers the matcher filled in, and the
+      // greeting, which is derived from the first job.
       setState((s) => ({
         ...s,
-        flowId: crypto.randomUUID(),
-        profile: data.profile,
-        rawText: data.rawText ?? "",
         questionnaire,
         mcq: mcqPool,
         mcqAnswers: known.mcqAnswers,
@@ -516,30 +794,7 @@ export function TryNow() {
         ),
         autoFilledIds: known.knownIds,
         knownIds: known.knownIds,
-        processName: "",
-        roleQuestionsLoaded: false,
-        mcqIndex: 0,
-        // A fresh flow opens in the configuration the user last downloaded,
-        // not the hardcoded EMPTY_FUNNEL defaults — that reset is what forced
-        // users with a consistent visual identity to redo their whole export
-        // setup on every application. (The AI-section choice is not here: it
-        // lives inside the CV's own hiddenSectionIds, applied in generateNow.)
-        template: seededExport.template ?? EMPTY_FUNNEL.template,
-        cvTheme: seededExport.cvTheme ?? EMPTY_FUNNEL.cvTheme,
-        splitView: seededExport.splitView ?? EMPTY_FUNNEL.splitView,
-        results: null,
-        downloadedCv: false,
-        downloadedReport: false,
-        versions: [],
-        rewritesUsed: 0,
-        regensUsed: 0,
-        reportStale: false,
-        sharpenSuggestions: {},
         greetingInfo: data.greeting ?? null,
-        greetingReply: "",
-        greetingDone: false,
-        branchChoice: "",
-        branchStarted: false,
         step: nextStep,
         furthestStep: STEP_ORDER.indexOf(nextStep),
       }));
@@ -824,7 +1079,7 @@ export function TryNow() {
     const res = await fetch("/api/try/rewrite", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, length, jdText: state.jdText }),
+      body: JSON.stringify({ text, length, jdText: primaryJd(state) }),
     });
     const data = await readJson(res);
     if (!res.ok) throw new Error(data.error ?? "Rewrite failed");
@@ -861,7 +1116,7 @@ export function TryNow() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           cv: results.cv,
-          jdText: state.jdText,
+          jdText: primaryJd(state),
           baseCv: state.versions[0]?.cv,
           // Original uploaded-resume data — the Change Report's diff base.
           profile: profileWithAnswers(state) ?? undefined,
@@ -974,9 +1229,20 @@ export function TryNow() {
   }
 
   /* ---------------- derived ---------------- */
-  const hasJob = state.jdText.trim().length >= 100;
-  /** A CV is ready to analyze: freshly picked, or the one on the account. */
-  const hasCvReady = file !== null || (useSavedCv && baseCv !== null);
+  const jobDrafts = state.jobs ?? [];
+  /**
+   * Which job card is expanded — exactly one at a time, and that is the whole
+   * point of this screen. An unfinished card is always the open one (which is
+   * what makes a refresh mid-typing reopen where the user left off); an
+   * explicit Edit click wins over that default.
+   */
+  const expandedJob =
+    openedJob ?? jobDrafts.find((d) => !d.committed)?.key ?? null;
+  const readyDrafts = readyJobs(state);
+  const hasJob = readyDrafts.length > 0;
+  /** Every exported file is named after the employer — so it is required. */
+  const missingCompany = readyDrafts.some((d) => !d.company.trim());
+  const canContinue = hasCvReady && hasJob && !missingCompany && !busy;
   const stepIdx = STEP_ORDER.indexOf(state.step);
 
   /* ---------------- state-aware banner (§3) ---------------- */
@@ -1106,18 +1372,179 @@ export function TryNow() {
   }
 
   /* -------- upload card interior (shared by hero + step layouts) ------ */
+
+  /**
+   * The flow is strictly sequential: the CV first, then one job description at
+   * a time. A finished stage collapses into a one-line chip so the only thing
+   * ever expanded is the thing the user is being asked for right now.
+   */
+
+  /** One finished job: what it is, plus the controls to revisit it. */
+  function JobChip({ draft, index }: { draft: JobDraft; index: number }) {
+    const chars = draft.jdText.trim().length;
+    const needsCompany = !draft.company.trim();
+    return (
+      <div className="flex flex-col gap-2 rounded-2xl border-[1.5px] border-border bg-card p-3.5">
+        <div className="flex items-center gap-2.5">
+          <CheckCircle size={22} />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[14.5px] font-bold text-ink">
+              {draft.company.trim() || `Job ${index + 1}`}
+              {draft.title.trim() && (
+                <span className="font-normal text-ink-faint">
+                  {" "}
+                  · {draft.title.trim()}
+                </span>
+              )}
+            </span>
+            <span className="block text-[12.5px] text-ink-faint">
+              {draft.looking
+                ? "Reading the posting…"
+                : `${chars.toLocaleString("en-GB")} characters pasted`}
+            </span>
+          </span>
+          {draft.looking && <Spinner />}
+          <button
+            type="button"
+            onClick={() => {
+              patchJob(draft.key, { committed: false });
+              setOpenedJob(draft.key);
+            }}
+            className="cursor-pointer text-[12.5px] font-semibold text-accent underline"
+          >
+            Edit
+          </button>
+          <button
+            type="button"
+            onClick={() => removeJob(draft.key)}
+            className="cursor-pointer text-[12.5px] font-semibold text-ink-faint underline hover:text-ink"
+          >
+            Remove
+          </button>
+        </div>
+        {/* Every exported file is named after the employer, so a job with no
+            company would produce downloads the user cannot tell apart. */}
+        {needsCompany && !draft.looking && (
+          <div>
+            <label className="text-[12.5px] font-semibold text-ink-soft">
+              Company{" "}
+              <span className="font-normal text-ink-faint">
+                (used to name your downloaded files)
+              </span>
+            </label>
+            <Input
+              className="mt-1 border-amber-400 bg-amber-50/40"
+              placeholder="e.g. Monday.com"
+              value={draft.company}
+              aria-invalid
+              onChange={(e) => patchJob(draft.key, { company: e.target.value })}
+            />
+            <p className="mt-1 text-[12.5px] font-medium text-amber-800">
+              We couldn&apos;t find the company in this posting — add it so your
+              files are named for the right employer.
+            </p>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  /** The one open job card: paste here, blur to file it away. */
+  function JobEditor({ draft, index }: { draft: JobDraft; index: number }) {
+    const typed = draft.jdText.trim().length;
+    return (
+      <div className="flex flex-col gap-2 rounded-2xl border-[2.5px] border-accent bg-card p-3.5">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[14.5px] font-bold text-ink">
+            {jobDrafts.length > 1 ? `Job ${index + 1}` : "The job you want"}
+          </span>
+          {jobDrafts.length > 1 && (
+            <button
+              type="button"
+              onClick={() => removeJob(draft.key)}
+              className="cursor-pointer text-[12.5px] font-semibold text-ink-faint underline hover:text-ink"
+            >
+              Remove
+            </button>
+          )}
+        </div>
+        <Textarea
+          autoFocus={jobDrafts.length > 1}
+          rows={8}
+          className="min-h-[190px] resize-none rounded-lg border-2 text-[15px] leading-relaxed"
+          placeholder={
+            "--- Copied from LinkedIn ---\nSenior Product Manager, Growth\nTel Aviv · Hybrid\nWe're looking for a PM to own our activation funnel end-to-end…"
+          }
+          value={draft.jdText}
+          onChange={(e) => patchJob(draft.key, { jdText: e.target.value })}
+          onBlur={() => commitJob(draft)}
+        />
+        {typed > 0 && typed < MIN_JD_CHARS ? (
+          <p className="text-[12.5px] text-ink-faint">
+            Paste a bit more of the job posting (min. {MIN_JD_CHARS} characters)
+          </p>
+        ) : (
+          typed >= MIN_JD_CHARS && (
+            <button
+              type="button"
+              onClick={() => commitJob(draft)}
+              className="cursor-pointer self-start text-[13px] font-semibold text-accent underline"
+            >
+              Done with this job
+            </button>
+          )
+        )}
+      </div>
+    );
+  }
+
   function uploadFields(cta: "dark" | "primary") {
+    const cvSettled = state.profile !== null && hasCvReady && !cvOpen;
+    const showAddJob =
+      expandedJob === null &&
+      hasJob &&
+      !missingCompany &&
+      jobDrafts.length < MAX_PACK_SIZE;
     return (
       <>
-        <div className="grid gap-5 sm:grid-cols-2">
+        <div className="flex flex-col gap-5">
           {/* 1 — CV upload (large, highlighted, drag-and-drop) */}
           <div className="flex flex-col gap-2.5">
             <div className="flex items-center gap-2">
               <StepNum n={1} />
               <span className="text-[15px] font-bold text-ink">
-                {baseCv ? "Choose your CV" : "Upload your CV"}
+                {cvSettled
+                  ? "Your CV"
+                  : baseCv
+                    ? "Choose your CV"
+                    : "Upload your CV"}
               </span>
             </div>
+            {/* Parsed and settled → one line, so the job description is the
+                only thing on screen still asking for attention. */}
+            {cvSettled ? (
+              <div className="flex items-center gap-2.5 rounded-2xl border-[1.5px] border-border bg-card p-3.5">
+                <CheckCircle size={22} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[14.5px] font-bold text-ink">
+                    {file?.name ?? baseCv?.fileName ?? "Your CV"}
+                  </span>
+                  <span className="block text-[12.5px] text-ink-faint">
+                    {state.profile?.contact.fullName
+                      ? `Read — ${state.profile.contact.fullName}`
+                      : "Read and ready"}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setCvOpen(true)}
+                  className="cursor-pointer text-[12.5px] font-semibold text-accent underline"
+                >
+                  Change CV
+                </button>
+              </div>
+            ) : (
+              <>
             {/* A returning user's CV is already on file — offer it instead of
                 making them find the same document again. Selecting it hides
                 the dropzone; "Upload a different CV" brings it back. */}
@@ -1125,8 +1552,14 @@ export function TryNow() {
               <div className="flex flex-col gap-2">
                 <button
                   type="button"
-                  onClick={() => setUseSavedCv(true)}
-                  disabled={busy}
+                  onClick={() => {
+                    setUseSavedCv(true);
+                    setFile(null);
+                    setCvOpen(false);
+                    openFirstJob();
+                    void parseCv({ kind: "saved" }).catch(() => {});
+                  }}
+                  disabled={cvBusy}
                   aria-pressed={useSavedCv}
                   className={`flex items-center gap-3 rounded-2xl border-[2.5px] p-4 text-left transition-all disabled:opacity-50 ${
                     useSavedCv
@@ -1154,7 +1587,7 @@ export function TryNow() {
                   <button
                     type="button"
                     onClick={() => setUseSavedCv(false)}
-                    disabled={busy}
+                    disabled={cvBusy}
                     className="cursor-pointer self-start text-[13px] font-semibold text-accent underline disabled:opacity-50"
                   >
                     Upload a different CV
@@ -1166,11 +1599,11 @@ export function TryNow() {
             <label
               onDragEnter={(e) => {
                 e.preventDefault();
-                if (!busy) setDragOver(true);
+                if (!cvBusy) setDragOver(true);
               }}
               onDragOver={(e) => {
                 e.preventDefault();
-                if (!busy) setDragOver(true);
+                if (!cvBusy) setDragOver(true);
               }}
               onDragLeave={(e) => {
                 e.preventDefault();
@@ -1179,7 +1612,7 @@ export function TryNow() {
               onDrop={(e) => {
                 e.preventDefault();
                 setDragOver(false);
-                if (!busy) acceptFile(e.dataTransfer.files?.[0]);
+                if (!cvBusy) acceptFile(e.dataTransfer.files?.[0]);
               }}
               className={`flex min-h-[210px] flex-1 cursor-pointer flex-col items-center justify-center gap-2.5 rounded-2xl border-[2.5px] border-dashed p-6 text-center transition-all ${
                 dragOver
@@ -1194,7 +1627,7 @@ export function TryNow() {
                 type="file"
                 accept=".pdf,.docx"
                 className="hidden"
-                disabled={busy}
+                disabled={cvBusy}
                 onChange={(e) => acceptFile(e.target.files?.[0])}
               />
               {file ? (
@@ -1216,53 +1649,79 @@ export function TryNow() {
               </span>
             </label>
             )}
+              </>
+            )}
+            {cvBusy && (
+              <p className="text-[13px] text-ink-faint">
+                <Spinner label="Reading your CV… you can start on the job below." />
+              </p>
+            )}
           </div>
 
-          {/* 2 — Job description (large rectangular text box) */}
-          <div className="flex flex-col gap-2.5">
-            <div className="flex items-center gap-2">
-              <StepNum n={2} />
-              <span className="text-[15px] font-bold text-ink">
-                Paste the job description
-              </span>
+          {/* 2 — The jobs, one at a time. Nothing here until a CV is chosen:
+              that sequencing is the whole point of this screen. */}
+          {hasCvReady && (
+            <div className="flex flex-col gap-2.5">
+              <div className="flex items-center gap-2">
+                <StepNum n={2} />
+                <span className="text-[15px] font-bold text-ink">
+                  {jobDrafts.length > 1
+                    ? `Your jobs (${readyDrafts.length} of ${MAX_PACK_SIZE})`
+                    : "Paste the job description"}
+                </span>
+              </div>
+              {jobDrafts.map((draft, i) =>
+                expandedJob === draft.key ? (
+                  <JobEditor key={draft.key} draft={draft} index={i} />
+                ) : (
+                  <JobChip key={draft.key} draft={draft} index={i} />
+                )
+              )}
+              {showAddJob && (
+                <Button variant="outline" className="w-full" onClick={addJob}>
+                  + Add another job ({jobDrafts.length} of {MAX_PACK_SIZE})
+                </Button>
+              )}
+              {jobDrafts.length >= MAX_PACK_SIZE && expandedJob === null && (
+                <p className="text-[12.5px] text-ink-faint">
+                  That&apos;s the maximum of {MAX_PACK_SIZE} jobs in one go.
+                </p>
+              )}
             </div>
-            <Textarea
-              rows={9}
-              className="min-h-[210px] flex-1 resize-none rounded-lg border-2 text-[15px] leading-relaxed"
-              placeholder={
-                "--- Copied from LinkedIn ---\nSenior Product Manager, Growth\nTel Aviv · Hybrid\nWe're looking for a PM to own our activation funnel end-to-end…"
-              }
-              value={state.jdText}
-              onChange={(e) => patch({ jdText: e.target.value })}
-            />
-          </div>
+          )}
         </div>
-        {hasCvReady && state.jdText.trim().length > 0 && !hasJob && (
+        {/* 3 — Continue to the questions */}
+        {hasCvReady && (
+          <div className="flex items-stretch gap-3">
+            <div className="flex items-center">
+              <StepNum n={3} />
+            </div>
+            <Button
+              variant={cta === "dark" ? "dark" : "primary"}
+              size="lg"
+              className="flex-1 text-[16px]"
+              style={{ paddingTop: 14, paddingBottom: 14 }}
+              disabled={!canContinue}
+              onClick={continueToQuestions}
+            >
+              {busy ? (
+                <Spinner label="Reading your jobs… (up to a minute)" />
+              ) : readyDrafts.length > 1 ? (
+                `Continue with ${readyDrafts.length} jobs →`
+              ) : (
+                "Continue →"
+              )}
+            </Button>
+          </div>
+        )}
+        {hasCvReady && hasJob && missingCompany && (
           <p className="text-center text-[13px] text-ink-faint">
-            Paste a bit more of the job posting (min. 100 characters)
+            Add the company name on every job to continue.
           </p>
         )}
-        {/* 3 — Analyze */}
-        <div className="flex items-stretch gap-3">
-          <div className="flex items-center">
-            <StepNum n={3} />
-          </div>
-          <Button
-            variant={cta === "dark" ? "dark" : "primary"}
-            size="lg"
-            className="flex-1 text-[16px]"
-            style={{ paddingTop: 14, paddingBottom: 14 }}
-            disabled={!hasCvReady || !hasJob || busy}
-            onClick={analyze}
-          >
-            {busy ? (
-              <Spinner label="Analyzing your CV… (up to a minute)" />
-            ) : (
-              "Analyze my CV"
-            )}
-          </Button>
-        </div>
-        {state.profile && (
+        {/* Only once the flow has actually left this step — before that the
+            CV chip above already says everything this line would. */}
+        {state.profile && (state.furthestStep ?? 0) > 0 && (
           <p className="text-center text-[13px] text-ink-faint">
             You have an analysis in progress
             {state.profile.contact.fullName
@@ -1271,7 +1730,7 @@ export function TryNow() {
             .{" "}
             <button
               className="cursor-pointer font-semibold text-accent underline"
-              onClick={() => goTo(hasJob ? "gate" : "chat")}
+              onClick={() => goTo(STEP_ORDER[state.furthestStep ?? 0] ?? "chat")}
             >
               Continue where you left off
             </button>
@@ -1539,7 +1998,7 @@ export function TryNow() {
                 <TemplateCatalog
                   template={template}
                   onSelect={(t) => patch({ template: t })}
-                  jdText={state.jdText}
+                  jdText={primaryJd(state)}
                 />
               </div>
               {/* Primary action — deliberately alone, above the preview frame

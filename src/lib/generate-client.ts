@@ -1,5 +1,4 @@
 import { readJson } from "./fetch-json";
-import type { MasterProfile } from "./types";
 
 /**
  * Topic 1 — resilient client for the funnel's initial CV + report generation.
@@ -38,14 +37,19 @@ function isRetryableStatus(status: number): boolean {
 type GenerateData = Record<string, any> & { quota?: string };
 
 /**
- * Calls /api/try/generate, retrying transient failures within TOTAL_BUDGET_MS.
- * Returns the parsed payload on success, or `{ quota }` when the daily free
- * limit is hit (a terminal, user-facing state — never retried). Throws only
- * after the budget is exhausted or on a non-retryable error (e.g. 400).
+ * POSTs a generation request, retrying transient failures within
+ * TOTAL_BUDGET_MS. Returns the parsed payload on success, or `{ quota }` when
+ * the daily free limit is hit (a terminal, user-facing state — never retried).
+ * Throws only after the budget is exhausted or on a non-retryable error
+ * (e.g. 400 invalid payload, 402 payment required, 409 already generated).
+ *
+ * The URL is a parameter because both generation endpoints want this exact
+ * policy: the funnel's anonymous /api/try/generate and the account's
+ * /api/generate, which the run workspace fans out over several jobs at once.
  */
-export async function generateWithRetry(
-  profile: MasterProfile,
-  jdText: string
+async function postWithRetry(
+  url: string,
+  body: Record<string, unknown>
 ): Promise<GenerateData> {
   const deadline = Date.now() + TOTAL_BUDGET_MS;
   let attempt = 0;
@@ -54,10 +58,10 @@ export async function generateWithRetry(
   // Always run the first attempt; keep retrying while there is budget left.
   while (attempt === 0 || Date.now() < deadline) {
     try {
-      const res = await fetch("/api/try/generate", {
+      const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile, jdText }),
+        body: JSON.stringify(body),
       });
       const data = await readJson(res);
 
@@ -90,4 +94,24 @@ export async function generateWithRetry(
   }
 
   throw lastError;
+}
+
+/**
+ * Generate one saved job, with the same retry budget.
+ *
+ * This is what the run workspace fans out: one call per job, run a couple at a
+ * time, each its own serverless invocation with its own 300s ceiling. Running
+ * five generations inside a single request would blow that ceiling long before
+ * the fifth finished, and every result is written server-side as it lands, so a
+ * closed tab costs nothing.
+ */
+export async function generateJobWithRetry(
+  jobId: string,
+  opts: { useFreeSample?: boolean; acknowledgeRedFlags?: boolean } = {}
+): Promise<GenerateData> {
+  return postWithRetry("/api/generate", {
+    jobId,
+    useFreeSample: opts.useFreeSample ?? false,
+    acknowledgeRedFlags: opts.acknowledgeRedFlags ?? false,
+  });
 }

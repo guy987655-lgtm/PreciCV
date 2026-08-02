@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { readJson } from "@/lib/fetch-json";
@@ -24,7 +25,10 @@ import {
   makeVersion,
 } from "@/lib/cv-session";
 import { DEFAULT_TEMPLATE, effectiveSplit } from "@/lib/templates";
-import { startCheckout } from "@/lib/checkout";
+import { startCheckout, startOrderUpgradeCheckout } from "@/lib/checkout";
+import { spendCreditOnJob, useCredits } from "@/lib/use-credits";
+import { EMPTY_BALANCE, upgradableOrders } from "@/lib/credit-types";
+import { centsToUsd, packPriceCents } from "@/lib/packs";
 import { rememberExportPrefs, saveAccountPrefs } from "@/lib/prefs";
 import { asCvTheme, readAiSectionPref } from "@/lib/export-prefs";
 import type { FreeQuota } from "@/lib/free-quota";
@@ -72,6 +76,8 @@ type Props = {
     maxRewrites?: number;
     regensUsed?: number;
     maxRegens?: number;
+    /** The bundle this unlock was spent from, when it came from credits. */
+    orderId?: string | null;
   } | null;
   generation: {
     id: string;
@@ -206,10 +212,20 @@ export function JobWorkspace({
   // so the loading spinner shows immediately (no flash of the intro card).
   // Mirrors the auto-run below, so the spinner is up on first paint instead
   // of flashing the intro/"ready to tailor" card first.
-  const [busy, setBusy] = useState<"" | "checkout" | "generate">(
+  const [busy, setBusy] = useState<"" | "checkout" | "generate" | "credit">(
     !initialGen && (purchase || freeSampleAvailable) ? "generate" : ""
   );
   const [error, setError] = useState("");
+  /**
+   * Bundle credits. Only fetched for a job that still needs paying for —
+   * a paid job has nothing to spend one on, and the balance would be a
+   * request that never changes what is rendered.
+   */
+  const { balance: credits, setBalance: setCredits } = useCredits(
+    // Unpaid: to offer a credit. Paid at `match` from a bundle: to offer the
+    // whole-order upgrade. Nothing to say for a paid Full Prep job.
+    !purchase || (purchase.tier === "match" && Boolean(purchase.orderId))
+  );
   /**
    * Today's free-generation allowance. Fetched only where it matters (a job
    * with no purchase and no generation yet) and refreshed from the generate
@@ -324,7 +340,14 @@ export function JobWorkspace({
   const SAMPLE_CLEAR_CHANGES = 1;
   // match → full upgrade: charge only the difference ($1), anchored to $2.
   const upgradeUsd = (TIERS.full.priceCents - TIERS.match.priceCents) / 100;
-  const canUpgrade = purchase?.tier === "match" && !isSample;
+  /**
+   * A job unlocked from a bundle upgrades as part of that bundle, never on its
+   * own: a 5-pack buyer paying $1 per job would spend $5 where the whole-order
+   * upgrade costs $2, which punishes exactly the customer the volume pricing
+   * is meant to reward.
+   */
+  const fromBundle = Boolean(purchase?.orderId);
+  const canUpgrade = purchase?.tier === "match" && !isSample && !fromBundle;
   /**
    * The interview simulation is always generated and stored, whatever the
    * tier — so it can be shown as a real, mostly-blurred teaser to everyone who
@@ -362,6 +385,51 @@ export function JobWorkspace({
     });
     try {
       await startCheckout(job.id, tier);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong");
+      setBusy("");
+    }
+  }
+
+  /**
+   * Unlock this job with a credit from a bundle instead of paying again.
+   *
+   * Spending mints the ordinary paid `purchases` row, so everything after this
+   * point is the normal paid path: `generate` either unlocks an existing
+   * sample in place (no LLM call) or produces the paid CV. It runs with
+   * `acknowledged: false` on purpose, so a job with dealbreaker hits still
+   * routes through the red-flag modal rather than skipping it.
+   */
+  async function unlockWithCredit() {
+    setBusy("credit");
+    setError("");
+    trackButtonClick({
+      button_name: "spend_credit",
+      action: "unlock",
+      button_text: "Use 1 credit",
+      click_source: "job_workspace",
+      job_id: job.id,
+    });
+    const result = await spendCreditOnJob(job.id);
+    if (!result.ok) {
+      setError(result.message);
+      // Out of credits means the balance we rendered was stale; zero it so the
+      // card disappears and the price cards below become the way forward.
+      if (result.outOfCredits) setCredits(EMPTY_BALANCE);
+      setBusy("");
+      return;
+    }
+    setCredits(result.balance);
+    router.refresh();
+    await generate(false, false);
+  }
+
+  /** Lift a whole bundle to Full Prep — unlocks the reports on every job it paid for. */
+  async function upgradeOrder(orderId: string) {
+    setBusy("checkout");
+    setError("");
+    try {
+      await startOrderUpgradeCheckout(orderId, `/jobs/${job.id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong");
       setBusy("");
@@ -880,8 +948,91 @@ export function JobWorkspace({
   }
 
   // The workspace always has a job attached, so all three tiers are open.
+  // The bundle line sits under them rather than beside them: this page is
+  // about THIS job, and a volume picker here would compete with the decision
+  // the user is already making.
   const tierCards = (
-    <Paywall hasJob busy={busy === "checkout"} onSelect={checkout} />
+    <>
+      <Paywall hasJob busy={busy === "checkout"} onSelect={checkout} />
+      <p className="mt-3 text-center text-xs text-ink-faint">
+        Applying to more than one role?{" "}
+        <Link
+          href="/my-account"
+          className="font-semibold text-accent underline"
+        >
+          Buy unlocks in a bundle
+        </Link>{" "}
+        — 5 jobs for ${centsToUsd(packPriceCents("match", 5))}.
+      </p>
+    </>
+  );
+
+  /**
+   * Already holding bundle credits? Spending one is free and instant, so it
+   * has to come BEFORE the price cards — offering to sell something the user
+   * has already paid for is the fastest way to lose their trust.
+   *
+   * Credits are spent oldest-order-first, so `nextTier` (not the best tier
+   * they hold) is what this one unlocks.
+   */
+  const creditCard = !purchase && credits.total > 0 && (
+    <Card className="border-2 border-accent bg-selected-bg p-6 text-center">
+      <Badge tone="green">
+        {credits.total} unlock{credits.total === 1 ? "" : "s"} left
+      </Badge>
+      <h2 className="mt-2 text-lg font-semibold text-slate-900">
+        Use one of your credits
+      </h2>
+      <p className="mx-auto mt-1 max-w-md text-sm text-slate-600">
+        {credits.nextTier === "full"
+          ? "Unlocks the full CV and the interview report for this job — no extra charge."
+          : "Unlocks the full CV and the comparison report for this job — no extra charge."}
+      </p>
+      <Button
+        size="lg"
+        className="mt-4"
+        loading={busy === "credit"}
+        loadingLabel="Unlocking…"
+        onClick={unlockWithCredit}
+      >
+        Use 1 credit ({credits.total} left)
+      </Button>
+    </Card>
+  );
+
+  /**
+   * A `match` bundle can be lifted to Full Prep as a whole — every job it has
+   * already paid for gains its interview report retroactively. Shown here
+   * because this job is one of those jobs.
+   */
+  //  The bundle that paid for THIS job, not just any upgradable one the user
+  //  happens to hold — upgrading the wrong order would leave this job locked.
+  const bundleUpgrade =
+    purchase?.tier === "match" && !isSample
+      ? (upgradableOrders(credits).find((o) => o.id === purchase.orderId) ??
+        null)
+      : null;
+
+  const orderUpgradeCard = bundleUpgrade && (
+    <Card className="border-2 border-accent p-5">
+      <Badge tone="indigo">Bundle upgrade</Badge>
+      <h3 className="mt-2 font-semibold text-slate-900">
+        Add interview reports to all {bundleUpgrade.creditsTotal} jobs
+      </h3>
+      <p className="mt-1 text-sm text-slate-600">
+        One payment unlocks the interview report on every job in this bundle —
+        including the ones you&apos;ve already generated — and any credits you
+        have left become Full Prep.
+      </p>
+      <Button
+        className="mt-3"
+        loading={busy === "checkout"}
+        loadingLabel="Opening checkout…"
+        onClick={() => upgradeOrder(bundleUpgrade.id)}
+      >
+        Upgrade the bundle — ${centsToUsd(bundleUpgrade.upgradeCents)}
+      </Button>
+    </Card>
   );
 
   /* ================= render ================= */
@@ -1071,6 +1222,7 @@ export function JobWorkspace({
                   </p>
                 </Card>
               )}
+              {creditCard}
               {tierCards}
             </>
           )}
@@ -1528,6 +1680,17 @@ export function JobWorkspace({
                         >
                           Unlock for ${upgradeUsd}
                         </Button>
+                      ) : bundleUpgrade ? (
+                        <Button
+                          size="md"
+                          className="mt-2 w-full"
+                          loading={busy === "checkout"}
+                          loadingLabel="Opening checkout…"
+                          onClick={() => upgradeOrder(bundleUpgrade.id)}
+                        >
+                          Unlock all {bundleUpgrade.creditsTotal} for $
+                          {centsToUsd(bundleUpgrade.upgradeCents)}
+                        </Button>
                       ) : (
                         <button
                           className="mt-2 cursor-pointer text-xs font-semibold text-accent underline"
@@ -1561,8 +1724,16 @@ export function JobWorkspace({
                 <h2 className="mb-3 text-center text-lg font-semibold text-slate-900">
                   Like what you see? Unlock the full version
                 </h2>
+                {creditCard && <div className="mb-4">{creditCard}</div>}
                 {tierCards}
               </div>
+            )}
+
+            {/* Bundle upgrade — offered next to the blurred interview report
+                it would unlock, on this job and every other one the bundle
+                paid for. */}
+            {orderUpgradeCard && (
+              <div className="mt-6 print:hidden">{orderUpgradeCard}</div>
             )}
           </div>
         </div>

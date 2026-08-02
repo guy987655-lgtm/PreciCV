@@ -249,6 +249,69 @@ export type McqAnswer = {
   skipped?: boolean;
 };
 
+/** Shortest JD we can meaningfully tailor to. Shared by every JD input. */
+export const MIN_JD_CHARS = 100;
+
+/**
+ * One target job inside a flow. The funnel collects up to MAX_PACK_SIZE of
+ * these before asking a single merged question set for all of them.
+ *
+ * `company` is required before the flow can continue: every exported file is
+ * named after the hiring company, so a run with a missing name would produce
+ * downloads the user cannot tell apart.
+ */
+export type JobDraft = {
+  key: string;
+  jdText: string;
+  /** From /api/try/jd-meta, and always user-editable. */
+  company: string;
+  title: string;
+  /** A company/title lookup is in flight for this draft. */
+  looking: boolean;
+  /** The JD text the last lookup ran against, so it never repeats itself. */
+  lookedUpFor: string;
+  /**
+   * The user has finished with this job (blurred the textarea, or said so),
+   * which is what collapses it to a chip.
+   *
+   * Explicitly tracked rather than inferred from "the JD is long enough":
+   * that inference collapses the card the instant the text crosses
+   * MIN_JD_CHARS, which is in the middle of the user's paste.
+   */
+  committed: boolean;
+};
+
+export function emptyJobDraft(): JobDraft {
+  return {
+    key: crypto.randomUUID(),
+    jdText: "",
+    company: "",
+    title: "",
+    looking: false,
+    lookedUpFor: "",
+    committed: false,
+  };
+}
+
+/** Enough JD text to tailor to. */
+export function isJobReady(d: JobDraft): boolean {
+  return d.jdText.trim().length >= MIN_JD_CHARS;
+}
+
+/** The drafts that will actually become jobs. */
+export function readyJobs(s: FunnelState): JobDraft[] {
+  return (s.jobs ?? []).filter(isJobReady);
+}
+
+/**
+ * The one JD the single-job surfaces still key off (flow naming, snippet
+ * rewrites, report regeneration): the first ready draft. Those features act on
+ * the flow's results, which are always tailored to the first job.
+ */
+export function primaryJd(s: FunnelState): string {
+  return readyJobs(s)[0]?.jdText ?? "";
+}
+
 export type FunnelState = {
   /** unique per flow — a new flow starts on every CV upload */
   flowId: string;
@@ -270,7 +333,8 @@ export type FunnelState = {
   roleQuestionsLoaded: boolean;
   /** carousel position within the quick-check question pool */
   mcqIndex: number;
-  jdText: string;
+  /** the target jobs, in the order the user added them (max MAX_PACK_SIZE) */
+  jobs: JobDraft[];
   /** the generated deliverables — persisted so History can re-download */
   results: GenerationResult | null;
   template: CvTemplate;
@@ -328,7 +392,7 @@ export const EMPTY_FUNNEL: FunnelState = {
   answerTimes: {},
   roleQuestionsLoaded: false,
   mcqIndex: 0,
-  jdText: "",
+  jobs: [],
   results: null,
   template: "classic",
   cvTheme: "light",
@@ -386,6 +450,35 @@ export function formatMcqAnswer(a: McqAnswer): string {
   return parts.map((p, i) => `${i + 1}) ${p}`).join("  ");
 }
 
+/**
+ * Migrates the single-JD shape: a flow used to hold one `jdText` string and
+ * now holds a list of drafts. Applied on every read of persisted state — the
+ * active funnel AND History, which stores the same shape — because without it
+ * a saved flow comes back with no job at all.
+ */
+function migrateJobs(state: FunnelState): FunnelState {
+  // Length, not Array.isArray: every caller spreads EMPTY_FUNNEL first, which
+  // already supplies `jobs: []`, so an isArray guard would match a saved flow
+  // that has nothing but the legacy `jdText` and drop the user's job.
+  if (state.jobs?.length) return state;
+  const legacyJd = (state as { jdText?: string }).jdText ?? "";
+  return {
+    ...state,
+    jobs: legacyJd.trim()
+      ? [
+          {
+            ...emptyJobDraft(),
+            jdText: legacyJd,
+            company: state.greetingInfo?.company?.trim() ?? "",
+            title: state.greetingInfo?.targetJobTitle?.trim() ?? "",
+            // A saved flow's JD was already finished with.
+            committed: legacyJd.trim().length >= MIN_JD_CHARS,
+          },
+        ]
+      : [],
+  };
+}
+
 export function loadFunnel(): FunnelState | null {
   if (typeof window === "undefined") return null;
   try {
@@ -403,7 +496,11 @@ export function loadFunnel(): FunnelState | null {
         mcqAnswers[k] = { ...a, selected: a.selected ?? [] };
       }
     }
-    const state = { ...EMPTY_FUNNEL, ...(parsed as FunnelState), mcqAnswers };
+    const state = migrateJobs({
+      ...EMPTY_FUNNEL,
+      ...(parsed as FunnelState),
+      mcqAnswers,
+    });
     // Saved before the conversational-script release → skip greeting/transition
     // retroactively and restore the old always-visible-Generate behavior.
     if (!("branchChoice" in parsed) && state.profile) {
@@ -418,7 +515,7 @@ export function loadFunnel(): FunnelState | null {
     // Removed steps: "card" (dossier lives on /card) and "job" (the JD is
     // now required upfront) — route saved states somewhere sensible.
     if (["card", "job"].includes(state.step as string)) {
-      state.step = (state.jdText?.trim().length ?? 0) >= 100 ? "gate" : "upload";
+      state.step = readyJobs(state).length > 0 ? "gate" : "upload";
     }
     // furthestStep is an index into STEP_ORDER, which shrank — clamp it and
     // make sure it at least covers the (possibly migrated) current step.
@@ -477,7 +574,7 @@ export function loadHistory(): FunnelState[] {
     const raw = localStorage.getItem(HISTORY_KEY);
     const arr = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(arr)) return [];
-    return arr.map((f) => ({ ...EMPTY_FUNNEL, ...f })) as FunnelState[];
+    return arr.map((f) => migrateJobs({ ...EMPTY_FUNNEL, ...f }));
   } catch {
     return [];
   }
@@ -585,8 +682,9 @@ export function defaultProcessName(state: FunnelState): string {
     "";
   const company =
     state.results?.company?.trim() ||
+    readyJobs(state)[0]?.company?.trim() ||
     state.greetingInfo?.company?.trim() ||
-    companyFromJd(state.jdText ?? "");
+    companyFromJd(primaryJd(state));
   if (job) return company ? `${company} - ${job}` : job;
   if (company) return company;
   const date = new Date(state.savedAt || Date.now()).toLocaleDateString("en-GB", {
@@ -685,12 +783,22 @@ export function stashForSignup(state: FunnelState) {
       questionnaire: { questions },
       answers,
       storedAnswers,
-      jdText: state.jdText,
-      // Names the imported job right away — otherwise its History row reads
-      // "Untitled job" until a generation finally writes these back.
-      jobTitle: state.greetingInfo?.targetJobTitle?.trim() ?? "",
-      company:
-        state.greetingInfo?.company?.trim() || companyFromJd(state.jdText ?? ""),
+      /**
+       * Every target job, in display order. Names each one up front —
+       * otherwise its History row reads "Untitled job" until a generation
+       * finally writes them back. The greeting analysis only ever covers the
+       * first job, so it is the only draft that can fall back to it.
+       */
+      jobs: readyJobs(state).map((d, i) => ({
+        jdText: d.jdText.trim(),
+        company:
+          d.company.trim() ||
+          (i === 0 ? (state.greetingInfo?.company?.trim() ?? "") : "") ||
+          companyFromJd(d.jdText),
+        title:
+          d.title.trim() ||
+          (i === 0 ? (state.greetingInfo?.targetJobTitle?.trim() ?? "") : ""),
+      })),
       savedAt: Date.now(),
     })
   );

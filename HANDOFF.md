@@ -4,6 +4,51 @@ Point this file at a fresh session to continue exactly where we stopped.
 Pricing strategy lives in **`PRICING_MODEL.md`** — that is the source of truth
 for tiers and the payment provider.
 
+## Sequential homepage + credit allocation — 2026-08-01 (supersedes batch mode)
+
+**Batch mode is gone.** There is one funnel now, and it is the homepage.
+
+- **`/` collects the CV, then the jobs, one at a time.** Drop a CV → it parses
+  in the background (`/api/try/parse-cv`, no `jd`) and collapses to a chip →
+  paste a JD → on blur `/api/try/jd-meta` names it and it collapses to
+  `Company · Title` → `+ Add another job` appears, up to `MAX_PACK_SIZE` (5).
+  Exactly one card is ever expanded. `FunnelState.jdText` is now
+  `FunnelState.jobs: JobDraft[]`; `loadFunnel`/`loadHistory` migrate the old
+  shape, so saved flows and History rows survive.
+- **One merged question set** for every job, from `/api/try/questions`
+  (`extractJobQuestions`, renamed from `extractBatchQuestions`). It returns RAW
+  pools — the client still owns match → cap → normalize, which is what keeps a
+  guest's localStorage answer cache in play. `ChatFlow` is the only
+  questionnaire UI; `BatchQuestions` is deleted.
+- **`/api/try/import` creates N jobs** sharing a `batch_id` (kept as the run
+  grouping key — renaming the column would be a migration for nothing) and
+  absorbs what `/api/batch` did: the per-job dealbreaker scan, and folding
+  answers into `master_data.additionalFacts` **for already-onboarded users**.
+  That last one is a real fix — a returning user's answers used to reach
+  `profile_answers` only, so they were remembered for next time and ignored for
+  the jobs they were just given for.
+- **`/continue`** sends >1 job to `/run/[id]`, 1 job to `/jobs/[id]` as before.
+- **`/run/[id]`** is the old batch workspace, renamed (`RunWorkspace`,
+  `RunJob`, `runId`). New: **credit allocation.** When the run holds more jobs
+  than the balance covers, each locked row gets a checkbox capped at
+  `credits.total`, a `N of M credits allocated` line, and `Generate N reports`,
+  which spends on the SELECTED jobs only. Selection is derived from the balance
+  (no seeding effect), so returning from checkout ticks a sensible default. The
+  `BundlePaywall` leads the page when nothing is bought or built yet, and
+  demotes below the list afterwards.
+- **Free preview is unchanged**: job #1 still generates watermarked and free.
+- **Rate limiting.** `checkDailyQuota` now takes a `scope`, because the funnel
+  makes several LLM calls per flow and on the old shared counter they would have
+  eaten the free-generation allowance. `parse-cv`, `jd-meta` and `questions` all
+  charge the `funnel` bucket (`FUNNEL_DAILY_LIMIT = 40`, `src/lib/funnel-quota.ts`);
+  generation keeps the original unscoped cookie.
+- Deleted: `src/app/batch/**`, `src/app/api/batch/**`,
+  `src/components/batch-questions.tsx`, the dead `generateWithRetry`, the
+  navbar "Batch mode" item, the History promo link. `PROTECTED_PREFIXES` has
+  `/run` in place of `/batch`.
+- Still open from the batch build: the run workspace has no bundle-upgrade CTA,
+  and 9 of 12 Lemon Squeezy variants are unset so real multi-packs 503.
+
 ## Where the code is
 
 - Branch **`main`**, pushed and deployed. The old `freemium-funnel-and-oauth`
@@ -226,7 +271,148 @@ struggles with English. Worth a decision.
 `.next/types/validator.ts` still imports the removed page. Run `npm run build`
 first to regenerate it, then typecheck.
 
+## Batch mode + credit bundles — built AND verified end-to-end 2026-07-31
+
+> **Superseded 2026-08-01** — see the section at the top of this file. The
+> credit/bundle half is all still live; the `/batch` surface described below
+> was folded into the homepage and `/run/[id]`. File names in this section are
+> historical: `batch-workspace.tsx` → `src/app/run/[id]/run-workspace.tsx`,
+> `extractBatchQuestions` → `extractJobQuestions`.
+
+Migration 0010 is **applied to production**. The whole flow was driven through a
+real signed-in session against the production Supabase and works. What remains
+is Lemon Squeezy variants (real money) and one eyeball check on the download.
+
+### Verified end-to-end (batch `0b816b51`, 3 jobs)
+
+| Step | Result |
+|---|---|
+| Company extraction | Monday.com ✓, Wix.com ✓, agency-fronted posting → **""**, no guess |
+| Required company field | Submit blocked while empty, released on fill |
+| Merged questionnaire | **7 questions for 3 jobs** — exactly the 5 MCQ + 2 open cap |
+| Batch creation | 3 jobs, user-confirmed company names persisted |
+| 3-pack Basic | `orders` row `match_x3`, 3 credits, paid |
+| Spending 3 credits | 3 `purchases`, all carrying `order_id`, all `amount_cents = 0` |
+| Fan-out | Two generations ran concurrently, third queued — CONCURRENCY = 2 |
+| Company after generation | **"Confidential Fintech" survived** — proves the /api/generate guard |
+| $2 whole-order upgrade | `orders.tier` + all 3 `purchases.tier` → `full` |
+| Generations across upgrade | **20 → 20.** Zero LLM calls, as designed |
+| Post-upgrade | "Download all" went 3 → **6 files**, all filenames unique |
+| Print queue | Fired 6 dialogs in sequence; `document.title` restored and print
+  targets unmounted afterwards |
+
+**Still unconfirmed:** that the 6 saved files differ. The dialogs were all
+cancelled (see below), so nothing was written to disk. If the mount-then-paint
+callback in `batch-workspace.tsx` were broken, you would get the same CV six
+times under six correct names — saving files 1 and 3 and comparing is the check.
+
+### Bug found and fixed during verification
+
+Mid-generation the batch page offered to SELL unlocks for jobs already paid
+for ("2 jobs still locked"). `locked` was defined as "no result yet" rather than
+"no purchase yet", so every job that was merely still generating counted as
+locked. Now `unpaid = jobs.filter(j => !j.tier)`, and a paid-but-ungenerated row
+renders as **Queued**, not Locked. Verified fixed.
+
+### macOS print dialog — a real product risk
+
+On a Mac with no printer configured, the print dialog's **Print button is
+disabled**; saving requires the `PDF ⌄` dropdown → "Save as PDF". This is the
+product's ONLY export path, it fires at the moment right after payment, and the
+working action is hidden behind a dropdown labelled "PDF". The cheap mitigation
+is one line of copy above the download button telling the user what to pick;
+the real fix is server-side PDF rendering. Neither is done — the owner chose to
+check the behaviour in production first.
+
+### Not built (deliberate, flagged)
+
+- The batch workspace has **no bundle-upgrade CTA**. That offer lives only in
+  My Account, History and the job workspace, even though the batch page is the
+  highest-intent surface for it.
+
+---
+
+Two features, both code-complete, both blocked on setup you have to do.
+
+**What was built**
+
+- **Volume pricing.** `src/lib/packs.ts` holds the matrix (1–5 jobs, Basic and
+  Full, plus the whole-order upgrade). `TIERS` in `types.ts` is untouched and
+  still owns the single-unit price; every strikethrough anchor is derived from
+  it. Verified invariant: `basic(n) + upgrade(n) === full(n)` for all n.
+- **Credits.** Migration `0010` adds `orders` (a bundle) and `purchases.order_id`.
+  Buying a pack grants credits; spending one mints the ordinary per-job
+  `purchases` row, so **every existing entitlement check works unmodified** and
+  `unique (job_id)` is untouched. Credits are derived, never stored. Spending
+  goes through `spend_credit()`, which locks the order row so two tabs cannot
+  both spend the last credit.
+- **Whole-order upgrade.** `$1`/`$2` lifts a whole bundle to Full: already-
+  unlocked jobs get their interview report retroactively (one UPDATE, no LLM
+  call — the simulation was always generated and merely blurred), and unspent
+  credits become Full credits. Jobs unlocked from a bundle deliberately do
+  **not** offer the per-job `$1` upgrade.
+- **Batch mode** at `/batch` (signed-in only, added to `PROTECTED_PREFIXES`).
+  Paste up to 5 JDs → company name extracted per JD by `analyzeJdGreeting` and
+  **required** before submit → one merged questionnaire capped at the same
+  5 MCQ + 2 open a single job gets (`extractBatchQuestions`) → `/batch/[id]`
+  fans out `/api/generate` at concurrency 2.
+- **Batch download.** `printQueue` in `download.ts` chains N save dialogs on
+  `afterprint`. Filenames always carry the company. `src/app/try-now.tsx` was
+  not touched at all.
+
+**Before it can work — your actions**
+
+1. ~~Apply migration 0010~~ — **DONE**, applied to production and verified
+   read-only: `orders` + both upgrade columns, `purchases.order_id`,
+   `jobs.batch_id`, `spend_credit()`, and the read-only RLS policy on `orders`
+   (an anon INSERT is refused with `42501`, so users cannot mint credits).
+2. **Create 9 new Lemon Squeezy variants** and add their ids to the env. The
+   map is `VARIANT_ENV` in `src/lib/lemonsqueezy.ts`; the three existing vars
+   (`_MATCH`, `_FULL`, `_UPGRADE`) keep their names and cover `match_x1`,
+   `full_x1` and `upgrade_100`. Needed: `MATCH_X2..X5` ($5/$6/$7/$8),
+   `FULL_X2..X5` ($6/$8/$9/$10), `UPGRADE_2` ($2).
+   - If `checkout_data.custom_price` works on your LS plan, this collapses to
+     two variants priced per checkout — a one-function change in
+     `variantForSku`. Worth ten minutes to test before creating nine variants.
+3. **`DEV_FREE_MODE=true`** exercises the whole thing without Lemon Squeezy:
+   pack and upgrade checkouts grant instantly. Note the gate is
+   `!lsConfigured() && devFreeMode()` — with `LEMONSQUEEZY_API_KEY` present the
+   flag does nothing, so local testing also needs that key commented out.
+   **`.env.local` is currently left in that state** (line 14 commented,
+   `DEV_FREE_MODE=true`). Restore both before trusting a local payment test:
+   uncomment `LEMONSQUEEZY_API_KEY` and set `DEV_FREE_MODE=false`.
+4. Supabase **Redirect URLs** now include `http://localhost:3000/**`, which is
+   what local OAuth needs. Without it Supabase silently falls back to the
+   production Site URL and localhost never receives `/auth/callback` — the
+   symptom is a lone `…-auth-token-code-verifier` cookie and no session.
+
+**Known limits, stated deliberately**
+
+- One free preview per BATCH (job #1 only). A user can still open job #2's own
+  `/jobs/[id]` page and take its per-job free sample — unchanged behaviour, and
+  the account-wide 5/day cap in `free-quota.ts` is still the real ceiling.
+- `/api/generate` got one small change it needed: it no longer overwrites a
+  `jobs.company`/`title` that is already set. It used to write
+  `result.company || null`, which NULLed a confirmed company name whenever the
+  tailoring pass read the posting as anonymous — and the export filenames are
+  built from that name.
+- `generateWithRetry` was generalized into `postWithRetry(url, body)` so
+  `/api/generate` could reuse the same budget/backoff policy. Its old signature
+  still exists and behaves identically.
+
 ## Open items, most important first
+
+0. **SECURITY — `purchases` is user-writable.** `0001_init.sql:87` grants
+   `for all using (auth.uid() = user_id)`, so a signed-in user can insert their
+   own `{status:'paid', tier:'full'}` row straight from the browser with the
+   anon key and unlock any job for free. This predates the credit work but the
+   credit accounting sits on top of it: `spend_credit()` is carefully atomic and
+   can simply be bypassed. The fix is a SELECT-only policy plus moving the
+   remaining user-context writes to the service role — `purchases.upsert` in
+   `api/payments/checkout`, and the counter updates in `api/rewrite` and
+   `api/generations/[id]/report`. Not done here: it is a separate change that
+   needs its own testing pass, and getting a write path wrong locks out paying
+   users. `orders` does **not** repeat the mistake (read-only under RLS).
 
 1. **Decide on `QUOTA_DISABLED`.** `src/app/api/try/generate/route.ts:26` has
    it `true`, so every anonymous visitor can generate unlimited CVs on your

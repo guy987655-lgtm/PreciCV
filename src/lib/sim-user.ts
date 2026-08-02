@@ -64,11 +64,25 @@ export const SIM_STATUSES = [
 
 export type SimStatus = (typeof SIM_STATUSES)[number]["id"];
 
+/**
+ * OFF unless explicitly asked for. Set NEXT_PUBLIC_DEV_TOOLS=true in
+ * .env.local to bring the selector back.
+ *
+ * This used to also switch itself on for the whole of `NODE_ENV=development`,
+ * which made it look like a sign-in control on every local run — the chip says
+ * "Registered + Profile" while the server still sees an anonymous visitor,
+ * because this simulator only writes client-side mock state and never creates
+ * a Supabase session. It cost a real debugging session. Left wired up rather
+ * than deleted so re-enabling is an env var, not a code change; keeping it
+ * live also means it stays typechecked and linted instead of rotting in a
+ * commented-out block.
+ *
+ * If you do turn it on: it is a PREVIEW of the five user states, not an auth
+ * bypass. Anything server-rendered or behind an API route will ignore it.
+ * Read the real session with useSession() (src/lib/use-session.ts).
+ */
 export function simEnabled(): boolean {
-  return (
-    process.env.NODE_ENV === "development" ||
-    process.env.NEXT_PUBLIC_DEV_TOOLS === "true"
-  );
+  return process.env.NEXT_PUBLIC_DEV_TOOLS === "true";
 }
 
 function getSimStatus(): SimStatus {

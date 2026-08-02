@@ -76,3 +76,85 @@ export function printBoth(meta: {
     printFile("cv", meta);
   });
 }
+
+/* ------------------------------------------------------------------ */
+/* Multi-job download                                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Resolves once the current print dialog has been dismissed.
+ *
+ * The listener has to be attached BEFORE window.print() — some browsers fire
+ * `afterprint` synchronously enough that registering afterwards misses it and
+ * the queue stalls for the full 60s fallback. Same 60s escape hatch and 350ms
+ * teardown beat as printBoth, for the same reasons.
+ */
+function waitForPrintDone(): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      window.removeEventListener("afterprint", onAfterPrint);
+      clearTimeout(fallback);
+      setTimeout(resolve, 350);
+    };
+    const onAfterPrint = () => finish();
+    window.addEventListener("afterprint", onAfterPrint);
+    const fallback = setTimeout(finish, 60_000);
+  });
+}
+
+export type PrintQueueItem = {
+  /** The job this file belongs to — passed back to `mount`. */
+  jobId: string;
+  target: "cv" | "report";
+  /** Candidate name for the filename. */
+  name: string;
+  /** Hiring company. Required — see the invariant in printQueue. */
+  company: string;
+};
+
+/**
+ * Save several files in a row, strictly one dialog at a time.
+ *
+ * `mount` is the important half. printFile prints whatever `.cv-page` /
+ * `.report-page` element is in the DOM, so with N jobs the caller MUST swap
+ * the mounted document before each file and let React paint it — otherwise
+ * every dialog silently saves the same CV under N different names. The caller
+ * implements `mount` as "set the active job, then await a paint"; this
+ * function just guarantees it is awaited before the dialog opens.
+ *
+ * The company name is a hard invariant rather than a defaulted field: these
+ * files exist to be told apart, and a folder of "SpeCV-Guy-Ratzon.pdf",
+ * "SpeCV-Guy-Ratzon(1).pdf" is exactly the outcome a multi-job run is meant to
+ * prevent. The homepage makes the name mandatory before a run can be created,
+ * so reaching this throw means a bug upstream, not user input.
+ */
+export async function printQueue(
+  items: PrintQueueItem[],
+  mount: (item: PrintQueueItem) => Promise<void>,
+  onProgress?: (saved: number, total: number, next?: PrintQueueItem) => void
+): Promise<void> {
+  const unnamed = items.find((it) => !it.company.trim());
+  if (unnamed) {
+    throw new Error(
+      "Every file needs the hiring company's name before it can be saved."
+    );
+  }
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    onProgress?.(i, items.length, item);
+    await mount(item);
+    const done = waitForPrintDone();
+    printFile(item.target, { name: item.name, company: item.company });
+    await done;
+  }
+  onProgress?.(items.length, items.length);
+}
+
+/** Human label for a queued file — "Acme · Interview report". */
+export function printItemLabel(item: PrintQueueItem): string {
+  return `${item.company} · ${item.target === "report" ? "Interview report" : "CV"}`;
+}

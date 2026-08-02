@@ -7,6 +7,7 @@ import {
   llmConfigured,
   LLM_NOT_CONFIGURED_MSG,
 } from "@/lib/llm";
+import { FUNNEL_DAILY_LIMIT, funnelQuota } from "@/lib/funnel-quota";
 
 export const maxDuration = 120;
 
@@ -25,6 +26,28 @@ export const maxDuration = 120;
 export async function POST(request: Request) {
   if (!llmConfigured()) {
     return NextResponse.json({ error: LLM_NOT_CONFIGURED_MSG }, { status: 503 });
+  }
+
+  /**
+   * The funnel now fires this the moment a CV is dropped rather than on a
+   * submit click, so an abandoned upload costs an extraction. Capped per
+   * browser + IP on the funnel bucket — deliberately not the generation
+   * bucket, so reading CVs never eats the free CVs the user came for.
+   */
+  const quota = funnelQuota(request);
+  if (!quota.allowed) {
+    const res = NextResponse.json(
+      {
+        error: "quota_exceeded",
+        message:
+          `You've reached today's limit of ${FUNNEL_DAILY_LIMIT} analyses. ` +
+          `Come back after ${quota.resetAt.toLocaleString()}.`,
+        resetAt: quota.resetAt.toISOString(),
+      },
+      { status: 429 }
+    );
+    res.headers.set("Set-Cookie", quota.cookieHeader);
+    return res;
   }
 
   const formData = await request.formData();
@@ -77,7 +100,16 @@ export async function POST(request: Request) {
         ? analyzeJdGreeting(jdText, rawText).catch(() => null)
         : Promise.resolve(null),
     ]);
-    return NextResponse.json({ profile, questionnaire, mcq, rawText, greeting });
+    const res = NextResponse.json({
+      profile,
+      questionnaire,
+      mcq,
+      rawText,
+      greeting,
+    });
+    // Charged only on success — a failed extraction costs the user nothing.
+    res.headers.set("Set-Cookie", quota.commit());
+    return res;
   } catch (e) {
     console.error("try/parse-cv extraction failed:", e);
     return NextResponse.json(

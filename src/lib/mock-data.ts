@@ -1,4 +1,9 @@
-import { FunnelState, McqAnswer, capQuestionPools } from "./funnel";
+import {
+  FunnelState,
+  McqAnswer,
+  capQuestionPools,
+  emptyJobDraft,
+} from "./funnel";
 import { McqQuestionnaire, Questionnaire } from "./types";
 
 type MockQ = McqQuestionnaire["questions"][number];
@@ -210,7 +215,17 @@ export function mockFunnelState(opts?: { withJob?: boolean }): FunnelState {
     roleQuestionsLoaded: true,
     mcqIndex: 0,
     // The launch flow requires a job upfront — mocks always carry one.
-    jdText: opts?.withJob === false ? "" : MOCK_JD,
+    jobs:
+      opts?.withJob === false
+        ? []
+        : [
+            {
+              ...emptyJobDraft(),
+              jdText: MOCK_JD,
+              company: "Fiverr",
+              title: "Senior Data Analyst",
+            },
+          ],
     savedAt: Date.now(),
   };
 }

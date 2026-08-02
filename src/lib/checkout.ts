@@ -1,5 +1,6 @@
 import { readJson } from "./fetch-json";
 import type { TierId } from "./types";
+import type { PackQuantity, PackTier } from "./packs";
 
 /**
  * Starts a hosted checkout for a job and hands the browser over to it.
@@ -19,10 +20,40 @@ export async function startCheckout(
   jobId: string,
   tier: TierId
 ): Promise<never> {
+  return postCheckout({ jobId, tier });
+}
+
+/**
+ * Buy a bundle of credits — N unlocks at the volume price, spendable on any
+ * job later (src/lib/packs.ts holds the matrix). `returnTo` is where checkout
+ * comes back to; the server rejects anything that isn't a same-origin
+ * relative path.
+ */
+export async function startPackCheckout(
+  tier: PackTier,
+  quantity: PackQuantity,
+  returnTo?: string
+): Promise<never> {
+  return postCheckout({ kind: "pack", tier, quantity, returnTo });
+}
+
+/**
+ * Lift a whole paid bundle from Job Match to Full Prep. Unlocks the interview
+ * report on every job already bought with that bundle's credits, and turns the
+ * unspent ones into Full credits.
+ */
+export async function startOrderUpgradeCheckout(
+  orderId: string,
+  returnTo?: string
+): Promise<never> {
+  return postCheckout({ kind: "order_upgrade", orderId, returnTo });
+}
+
+async function postCheckout(body: Record<string, unknown>): Promise<never> {
   const res = await fetch("/api/payments/checkout", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ jobId, tier }),
+    body: JSON.stringify(body),
   });
   const data = await readJson(res);
   if (!res.ok || !data?.url) {

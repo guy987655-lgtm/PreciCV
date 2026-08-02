@@ -57,6 +57,8 @@ export function Navbar() {
   // My Account holds account deletion, and the privacy policy tells users to
   // go there. It used to be linked only from /dashboard, so removing that page
   // would have left the right-to-erasure control reachable by URL alone.
+  // No "Batch mode" entry: adding several jobs is what the homepage does now,
+  // so a second surface for it would be the same flow behind a worse door.
   const menuItems = [
     { href: "/history", label: "History" },
     { href: "/card", label: "My card" },

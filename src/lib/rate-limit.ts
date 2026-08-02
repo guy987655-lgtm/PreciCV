@@ -12,6 +12,23 @@ import { createHmac, timingSafeEqual } from "crypto";
 const COOKIE_NAME = "precicv_quota";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Independent counters for surfaces with different costs and call rates.
+ *
+ * Everything used to share one bucket, which stops working the moment a single
+ * flow makes several calls: the funnel reads up to five job descriptions
+ * before generating anything, and on a shared counter those reads would spend
+ * the whole free-generation allowance before the user saw a single CV.
+ *
+ * The unscoped bucket keeps the original cookie name so counters already in
+ * the wild survive the change.
+ */
+export type QuotaScope = "generate" | "funnel";
+
+function cookieName(scope?: QuotaScope): string {
+  return scope ? `${COOKIE_NAME}_${scope}` : COOKIE_NAME;
+}
+
 function secret(): string {
   return (
     process.env.RATE_LIMIT_SECRET ||
@@ -27,11 +44,14 @@ function sign(payload: string): string {
 
 type QuotaPayload = { count: number; windowStart: number };
 
-function parseCookie(header: string | null): QuotaPayload | null {
+function parseCookie(
+  header: string | null,
+  name: string
+): QuotaPayload | null {
   if (!header) return null;
-  const match = header.split(/;\s*/).find((c) => c.startsWith(`${COOKIE_NAME}=`));
+  const match = header.split(/;\s*/).find((c) => c.startsWith(`${name}=`));
   if (!match) return null;
-  const value = decodeURIComponent(match.slice(COOKIE_NAME.length + 1));
+  const value = decodeURIComponent(match.slice(name.length + 1));
   const [dataB64, sig] = value.split(".");
   if (!dataB64 || !sig) return null;
   try {
@@ -78,16 +98,21 @@ export type QuotaResult = {
   commit: () => string;
 };
 
-export function checkDailyQuota(request: Request, limit: number): QuotaResult {
+export function checkDailyQuota(
+  request: Request,
+  limit: number,
+  scope?: QuotaScope
+): QuotaResult {
   const now = Date.now();
+  const name = cookieName(scope);
 
-  let cookiePayload = parseCookie(request.headers.get("cookie"));
+  let cookiePayload = parseCookie(request.headers.get("cookie"), name);
   if (!cookiePayload || now - cookiePayload.windowStart > DAY_MS) {
     cookiePayload = { count: 0, windowStart: now };
   }
 
-  const ip = clientIp(request);
-  let ipPayload = ipHits.get(ip);
+  const ipKey = `${scope ?? ""}:${clientIp(request)}`;
+  let ipPayload = ipHits.get(ipKey);
   if (!ipPayload || now - ipPayload.windowStart > DAY_MS) {
     ipPayload = { count: 0, windowStart: now };
   }
@@ -104,7 +129,7 @@ export function checkDailyQuota(request: Request, limit: number): QuotaResult {
   const toHeader = (payload: QuotaPayload) => {
     const maxAge = Math.max(1, Math.floor((resetAt.getTime() - now) / 1000));
     return (
-      `${COOKIE_NAME}=${encodeURIComponent(serializeCookie(payload))}; ` +
+      `${name}=${encodeURIComponent(serializeCookie(payload))}; ` +
       `Path=/; Max-Age=${maxAge}; HttpOnly; SameSite=Lax; Secure`
     );
   };
@@ -117,7 +142,10 @@ export function checkDailyQuota(request: Request, limit: number): QuotaResult {
     cookieHeader: toHeader(cookiePayload),
     commit: () => {
       const nextCount = usedSoFar + 1;
-      ipHits.set(ip, { count: nextCount, windowStart: ipPayload!.windowStart });
+      ipHits.set(ipKey, {
+        count: nextCount,
+        windowStart: ipPayload!.windowStart,
+      });
       if (ipHits.size > 5000) {
         const cutoff = now - DAY_MS;
         for (const [k, v] of ipHits) if (v.windowStart < cutoff) ipHits.delete(k);

@@ -278,32 +278,16 @@ export type GreetingInfo = z.infer<typeof GreetingInfoSchema>;
 /**
  * Payment is the FINAL step: profile + (optionally) job description come
  * first, and the paywall appears right before generating the documents.
- * Tiers that require a job description stay locked until one is added.
+ *
+ * ONE product, deliberately. There used to be a cheaper `match` tier that
+ * bought the CV without the interview report, plus a hidden `base` tier — and
+ * that single distinction was the source of the dual download buttons, the
+ * blurred report sections, three separate upgrade checkouts and a two-card
+ * paywall at every decision point. Every purchase now includes every document,
+ * so none of that machinery has anything left to express. Volume is the only
+ * remaining axis; see PACK_PRICE_CENTS in packs.ts.
  */
 export const TIERS = {
-  base: {
-    name: "Base CV Update",
-    priceUsd: 2,
-    priceCents: 200,
-    maxRevisions: 0,
-    requiresJob: false,
-    description: "Your old CV rebuilt into an updated, modernized base CV",
-    includes: ["Updated & modernized base CV"],
-  },
-  match: {
-    name: "Job Match",
-    priceUsd: 3,
-    priceCents: 300,
-    maxRevisions: 0,
-    requiresJob: true,
-    description:
-      "Base CV + a custom CV tailored to your job + a comparison report",
-    includes: [
-      "Updated base CV",
-      "Custom CV tailored to the job",
-      "Comparison report of every change",
-    ],
-  },
   full: {
     name: "Full Prep",
     priceUsd: 4,
@@ -311,26 +295,26 @@ export const TIERS = {
     maxRevisions: 10,
     requiresJob: true,
     description:
-      "Everything in Job Match + an interview simulation report",
+      "Your tailored CV plus the comparison and interview reports — one download",
     // No AI-revisions bullet: the revision UI was removed, so promising it
     // here would sell a feature the workspace no longer exposes. maxRevisions
     // stays as-is — it still bounds /api/revise if the UI ever comes back.
-    includes: ["Everything in Job Match", "Interview simulation report"],
+    includes: [
+      "Updated base CV",
+      "Custom CV tailored to the job",
+      "Comparison report of every change",
+      "Interview simulation report",
+    ],
   },
 } as const;
 export type TierId = keyof typeof TIERS;
 
 /**
- * Displayed-only anchor for the `match → full` upgrade: the UI strikes through
- * `$UPGRADE_ANCHOR_USD` and charges the real difference
- * (`full.priceCents - match.priceCents` = $1). Purely psychological — the
- * charge is always the diff, never this value.
+ * The tier every purchase is. Legacy `purchases`/`orders` rows may still read
+ * 'base' or 'match' until migration 0011 has run against an environment, so
+ * nothing indexes TIERS by a database value — callers use TIERS.full directly.
  */
-export const UPGRADE_ANCHOR_USD = 2;
-
-/** The two tiers offered in the paywall today (`base` is kept for a future
- *  no-job entry point but hidden from the UI — see PRICING_MODEL.md §9.1). */
-export const VISIBLE_TIERS: TierId[] = ["match", "full"];
+export const ONLY_TIER: TierId = "full";
 
 /** Minimum cosine similarity between original and updated JD on revision */
 export const JD_SIMILARITY_THRESHOLD = 0.85;

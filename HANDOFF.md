@@ -4,6 +4,63 @@ Point this file at a fresh session to continue exactly where we stopped.
 Pricing strategy lives in **`PRICING_MODEL.md`** — that is the source of truth
 for tiers and the payment provider.
 
+## One product + design preview — 2026-08-02 (supersedes the two-tier model)
+
+**There is one thing to buy.** The `match` tier ($3, tailored CV without the
+interview report) and the hidden `base` tier are gone. Every purchase is
+**Full Prep, $4**, and includes the CV, the comparison report and the interview
+simulation report. Pack prices are unchanged from the old Full row:
+**$4 / $6 / $8 / $9 / $10** for 1–5 jobs.
+
+That single distinction was the source of everything below it, so all of this
+was deleted rather than adapted:
+
+- `UPGRADE_ANCHOR_USD`, `VISIBLE_TIERS`, `PackTier`, `PACK_UPGRADE_CENTS`,
+  `upgradeSku*`, `parsePackSku` (unused), `isPackTier`.
+- The `order_upgrade` checkout shape, `orderUpgradeCheckout`,
+  `applyOrderUpgrade`, `startOrderUpgradeCheckout`, and the webhook's upgrade
+  branch. `packs.ts` is now a one-dimensional table keyed by quantity.
+- `CreditBalance.byTier` / `.nextTier` / `CreditOrder.upgradeCents` — a credit
+  is a credit.
+- `simLocked` in the job workspace narrowed from
+  `isSample || tier === "match"` to just `isSample`; the blur path survives for
+  free samples only. `printFile("cv")` gave way to `printBoth` everywhere, and
+  History's split `CV (PDF)` / `Report (PDF)` buttons are one button again.
+- Both paywalls (`paywall.tsx`, `bundle-paywall.tsx`) are single-card. The
+  quantity pills are the only choice left in the bundle one.
+
+**Grandfathering.** `supabase/migrations/0011_single_tier.sql` moves every
+`purchases`/`orders` row off `match`/`base` onto `full`. It costs nothing: the
+interview simulation was always generated and stored for every tier and merely
+rendered blurred, so old Job Match buyers gain their reports with zero LLM
+calls — the same effect the retired `applyOrderUpgrade` had. **You have to run
+this by hand in the Supabase SQL Editor.** The `tier` CHECK constraints and the
+dead `orders.upgrade_*` columns are deliberately left alone.
+
+**No Lemon Squeezy work needed.** `full_x1` resolves to the existing
+`LEMONSQUEEZY_VARIANT_FULL` at its own $4 price; 2–5 ride it with
+`custom_price`. `.env.example` is down to that one variant — `MATCH`,
+`UPGRADE` and `UPGRADE_2` are no longer read.
+
+**Design preview on `/run/[id]`.** "Your applications" listed jobs and sold
+credits but never showed a CV, so the 21 designs were only discoverable by
+opening a single job. `src/components/design-preview-modal.tsx` renders
+`src/lib/sample-cv.ts` (moved out of `src/app/demo/demo-data.ts`, which now
+re-exports it) through the existing `CvRenderer`, with `TemplateCatalog`,
+`ThemeToggle` and `SplitToggle` reused as-is. Everything is a local draft until
+**Use this design**, which writes three places: `rememberExportPrefs`
+(device), `saveAccountPrefs` (account) and the new
+`PATCH /api/run/[id]/design` (every non-sample generation in the batch).
+
+**Bug fixed on the way.** `GET /api/run/[id]/documents` never selected
+`cv_theme` / `split_view`, and the run's print mount passed neither — so every
+batch download came out light-mode and non-split whatever the user had chosen.
+Both now travel with the document and reach `CvRenderer`. Without this, "Use
+this design" would have changed a setting without changing the file. The same
+route's `InterviewSimulationSchema.parse(g.simulation ?? {})` would have thrown
+on a row with no stored simulation once the tier gate was removed; it is a
+`safeParse` returning `null` now.
+
 ## Sequential homepage + credit allocation — 2026-08-01 (supersedes batch mode)
 
 **Batch mode is gone.** There is one funnel now, and it is the homepage.
@@ -46,8 +103,9 @@ for tiers and the payment provider.
   `src/components/batch-questions.tsx`, the dead `generateWithRetry`, the
   navbar "Batch mode" item, the History promo link. `PROTECTED_PREFIXES` has
   `/run` in place of `/batch`.
-- Still open from the batch build: the run workspace has no bundle-upgrade CTA,
-  and 9 of 12 Lemon Squeezy variants are unset so real multi-packs 503.
+- Was open from the batch build: the run workspace had no bundle-upgrade CTA.
+  Moot as of 2026-08-02 — there is no upgrade to offer. The run workspace does
+  now carry a **Preview designs** entry point; see the top section.
 
 ## Where the code is
 
@@ -329,6 +387,8 @@ check the behaviour in production first.
 - The batch workspace has **no bundle-upgrade CTA**. That offer lives only in
   My Account, History and the job workspace, even though the batch page is the
   highest-intent surface for it.
+  **Superseded 2026-08-02:** the whole upgrade path was removed with the second
+  tier, so there is nothing left to surface here.
 
 ---
 
@@ -366,14 +426,17 @@ Two features, both code-complete, both blocked on setup you have to do.
    read-only: `orders` + both upgrade columns, `purchases.order_id`,
    `jobs.batch_id`, `spend_credit()`, and the read-only RLS policy on `orders`
    (an anon INSERT is refused with `42501`, so users cannot mint credits).
-2. **Create 9 new Lemon Squeezy variants** and add their ids to the env. The
-   map is `VARIANT_ENV` in `src/lib/lemonsqueezy.ts`; the three existing vars
-   (`_MATCH`, `_FULL`, `_UPGRADE`) keep their names and cover `match_x1`,
-   `full_x1` and `upgrade_100`. Needed: `MATCH_X2..X5` ($5/$6/$7/$8),
-   `FULL_X2..X5` ($6/$8/$9/$10), `UPGRADE_2` ($2).
-   - If `checkout_data.custom_price` works on your LS plan, this collapses to
-     two variants priced per checkout — a one-function change in
-     `variantForSku`. Worth ten minutes to test before creating nine variants.
+2. ~~Create 9 new Lemon Squeezy variants~~ — **not needed.** `custom_price`
+   works on this store (verified against the live API: a checkout on the $3
+   Job Match variant with `custom_price: 800` renders **$8.00**, and
+   `product_options.name` retitles it "Job Match — 5-pack"). `resolveVariant`
+   in `src/lib/lemonsqueezy.ts` falls every pack and the $2 upgrade back to its
+   family's single-unlock variant, priced per checkout from `packs.ts`.
+   - `createLsCheckout` refuses to return a URL unless LS echoes the exact
+     `custom_price` it was sent, so a store that ever stopped honouring it
+     would fail the checkout rather than sell a 5-pack for $3.
+   - The `VARIANT_ENV` ids still win when set: creating a real dashboard
+     variant later is a pure env change, no code.
 3. **`DEV_FREE_MODE=true`** exercises the whole thing without Lemon Squeezy:
    pack and upgrade checkouts grant instantly. Note the gate is
    `!lsConfigured() && devFreeMode()` — with `LEMONSQUEEZY_API_KEY` present the

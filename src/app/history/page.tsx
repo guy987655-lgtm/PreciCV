@@ -15,21 +15,15 @@ import {
   saveFunnel,
   updateHistoryEntry,
 } from "@/lib/funnel";
-import { printBoth, printFile } from "@/lib/download";
-import { startCheckout, startOrderUpgradeCheckout } from "@/lib/checkout";
+import { printBoth } from "@/lib/download";
 import { useCredits } from "@/lib/use-credits";
-import { upgradableOrders } from "@/lib/credit-types";
-import { centsToUsd } from "@/lib/packs";
 import { trackButtonClick } from "@/lib/analytics";
-import { TIERS, UPGRADE_ANCHOR_USD } from "@/lib/types";
 import { Badge, Button, Card, Toast } from "@/components/ui";
 import { LoadingAnnounce, Skeleton, SkeletonRows } from "@/components/skeleton";
 import { Navbar } from "@/components/navbar";
 import { CvRenderer } from "@/components/cv-renderer";
 import { ReportPage } from "@/components/report-page";
 import { useSession } from "@/lib/use-session";
-
-type PrintTarget = "cv" | "report" | "both";
 
 /** A flow saved server-side (see GET /api/jobs). */
 type SavedJob = {
@@ -48,27 +42,6 @@ type SavedJob = {
 
 /** Max length for a user-chosen process name (PRD 4.5.6). */
 const MAX_PROCESS_NAME = 50;
-
-/** match → full costs only the difference, anchored to the $2 list price. */
-const UPGRADE_USD = (TIERS.full.priceCents - TIERS.match.priceCents) / 100;
-
-/**
- * This job bought the tailored CV but not the interview reports.
- *
- * Mirrors `canUpgrade` in the job workspace: a real (non-sample) paid `match`
- * purchase is exactly the state the $1 upgrade exists for. A job unlocked from
- * a bundle is excluded — it upgrades with its whole bundle for $1–$2 total,
- * and charging $1 per job would make the volume discount worse the more jobs
- * the user actually used. The bundle banner above the list offers that.
- */
-function canAddReports(j: SavedJob): boolean {
-  return j.tier === "match" && !j.isSample && !j.orderId;
-}
-
-/** Paid `match` jobs that upgrade as part of a bundle rather than alone. */
-function isBundleMatch(j: SavedJob): boolean {
-  return j.tier === "match" && !j.isSample && Boolean(j.orderId);
-}
 
 /** Human title for a flow: an explicit rename wins, else the derived default. */
 function flowTitle(f: FunnelState): string {
@@ -221,10 +194,7 @@ export default function HistoryPage() {
     };
   }, [signedIn]);
   // The flow being printed — rendered into hidden print targets first.
-  const [printJob, setPrintJob] = useState<{
-    flow: FunnelState;
-    target: PrintTarget;
-  } | null>(null);
+  const [printJob, setPrintJob] = useState<{ flow: FunnelState } | null>(null);
 
   // Inline process renaming (PRD Topic 4) — one id at a time across both
   // lists; local flow ids and job uuids never collide.
@@ -236,15 +206,7 @@ export default function HistoryPage() {
   // The row whose Resume / download is in flight, so only that row goes busy.
   const [resumingId, setResumingId] = useState<string | null>(null);
   const [resumePending, startResume] = useTransition();
-  // The job whose reports upgrade is being checked out, and its error if the
-  // checkout could not be opened (kept per-row: a page-level banner would be
-  // ambiguous once there are several purchased jobs).
-  const [upgradingId, setUpgradingId] = useState<string | null>(null);
-  const [upgradeError, setUpgradeError] = useState<{
-    jobId: string;
-    message: string;
-  } | null>(null);
-  /** Unlock credits and the bundles they came from. Signed-in only. */
+  /** Unlock credits left to spend. Signed-in only. */
   const { balance: credits, loaded: creditsLoaded } = useCredits(signedIn);
 
   function refresh() {
@@ -335,57 +297,6 @@ export default function HistoryPage() {
     }
   }
 
-  /**
-   * Buy the interview reports for a job that only owns the CV. Goes straight
-   * to checkout — the server charges the $1 difference against the existing
-   * paid `match` row, so there is nothing to choose here.
-   */
-  async function addReports(job: SavedJob) {
-    setUpgradingId(job.id);
-    setUpgradeError(null);
-    trackButtonClick({
-      button_name: "upgrade_to_full",
-      action: "checkout",
-      button_text: "Add interview reports",
-      click_source: "history",
-      job_id: job.id,
-    });
-    try {
-      await startCheckout(job.id, "full");
-    } catch (e) {
-      setUpgradeError({
-        jobId: job.id,
-        message: e instanceof Error ? e.message : "Checkout failed",
-      });
-      setUpgradingId(null);
-    }
-  }
-
-  /**
-   * Lift a whole bundle to Full Prep. Shares `upgradingId` with the per-job
-   * upgrade above — a job id and an order id can never collide, and the two
-   * paths are mutually exclusive for any given job anyway.
-   */
-  async function addBundleReports(orderId: string) {
-    setUpgradingId(orderId);
-    setUpgradeError(null);
-    trackButtonClick({
-      button_name: "upgrade_bundle_to_full",
-      action: "checkout",
-      button_text: "Add interview reports to bundle",
-      click_source: "history",
-    });
-    try {
-      await startOrderUpgradeCheckout(orderId, "/history");
-    } catch (e) {
-      setUpgradeError({
-        jobId: orderId,
-        message: e instanceof Error ? e.message : "Checkout failed",
-      });
-      setUpgradingId(null);
-    }
-  }
-
   async function undoRemoveJob() {
     const job = deletedJob;
     if (!job) return;
@@ -408,7 +319,7 @@ export default function HistoryPage() {
   // the time this effect runs — print, flag the downloads, clean up.
   useEffect(() => {
     if (!printJob) return;
-    const { flow, target } = printJob;
+    const { flow } = printJob;
     if (!flow.results) {
       setPrintJob(null);
       return;
@@ -417,15 +328,12 @@ export default function HistoryPage() {
       name: flow.profile?.contact.fullName,
       company: flow.results.company,
     };
-    if (target === "both") printBoth(meta);
-    else printFile(target, meta);
+    printBoth(meta);
 
-    const flags =
-      target === "cv"
-        ? { downloadedCv: true }
-        : target === "report"
-          ? { downloadedReport: true }
-          : { downloadedCv: true, downloadedReport: true };
+    // Both files always travel together, so both flags always move together.
+    // They stay two fields rather than one so existing saved flows keep
+    // reading correctly — see FunnelState in src/lib/funnel.ts.
+    const flags = { downloadedCv: true, downloadedReport: true };
     const current = loadFunnel();
     if (current?.profile && current.flowId === flow.flowId) {
       saveFunnel({ ...current, ...flags });
@@ -484,8 +392,7 @@ export default function HistoryPage() {
     const isResuming = resumePending && resumingId === flow.flowId;
     // Printing goes through a render-then-print effect, so the click and the
     // print dialog are a beat apart — the button has to say so meanwhile.
-    const printingTarget =
-      printJob?.flow.flowId === flow.flowId ? printJob.target : null;
+    const isPrinting = printJob?.flow.flowId === flow.flowId;
     return (
       <Card key={flow.flowId || "active"} className="p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -547,37 +454,17 @@ export default function HistoryPage() {
 
           <div className="flex flex-wrap items-center gap-2">
             {completed ? (
-              bothDownloaded ? (
-                <>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    loading={printingTarget === "cv"}
-                    loadingLabel="Opening…"
-                    onClick={() => setPrintJob({ flow, target: "cv" })}
-                  >
-                    CV (PDF)
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    loading={printingTarget === "report"}
-                    loadingLabel="Opening…"
-                    onClick={() => setPrintJob({ flow, target: "report" })}
-                  >
-                    Report (PDF)
-                  </Button>
-                </>
-              ) : (
-                <Button
-                  size="sm"
-                  loading={printingTarget === "both"}
-                  loadingLabel="Opening…"
-                  onClick={() => setPrintJob({ flow, target: "both" })}
-                >
-                  Download my files (2 PDFs)
-                </Button>
-              )
+              <Button
+                size="sm"
+                variant={bothDownloaded ? "outline" : "primary"}
+                loading={isPrinting}
+                loadingLabel="Opening…"
+                onClick={() => setPrintJob({ flow })}
+              >
+                {bothDownloaded
+                  ? "Download again (2 PDFs)"
+                  : "Download my files (2 PDFs)"}
+              </Button>
             ) : (
               <Button
                 size="sm"
@@ -633,8 +520,8 @@ export default function HistoryPage() {
           </p>
         )}
 
-        {/* Credits and bundle upgrades — account-wide, so they belong above the
-            list rather than repeated on every row that could use them. */}
+        {/* Credits — account-wide, so they belong above the list rather than
+            repeated on every row that could use them. */}
         {!loading && signedIn && creditsLoaded && credits.total > 0 && (
           <Card className="mt-6 flex flex-wrap items-center gap-3 p-4">
             <div className="min-w-0 flex-1">
@@ -653,31 +540,6 @@ export default function HistoryPage() {
             </Link>
           </Card>
         )}
-        {!loading &&
-          signedIn &&
-          creditsLoaded &&
-          upgradableOrders(credits).map((order) => (
-            <Card key={order.id} className="mt-3 flex flex-wrap items-center gap-3 p-4">
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold text-ink">
-                  Add interview reports to your {order.creditsTotal}-job bundle
-                </p>
-                <p className="mt-0.5 text-[12.5px] text-ink-soft">
-                  One payment covers every job in the bundle, including the ones
-                  you already generated.
-                </p>
-              </div>
-              <Button
-                size="sm"
-                loading={upgradingId === order.id}
-                loadingLabel="Opening checkout…"
-                onClick={() => addBundleReports(order.id)}
-              >
-                Upgrade — ${centsToUsd(order.upgradeCents)}
-              </Button>
-            </Card>
-          ))}
-
         {loading && (
           <div className="mt-6">
             <LoadingAnnounce label="Loading your flows…" />
@@ -751,50 +613,14 @@ export default function HistoryPage() {
                     <p className="mt-0.5 text-[12.5px] text-ink-faint">
                       {new Date(j.createdAt).toLocaleDateString()}
                     </p>
-                    {canAddReports(j) && (
-                      <p className="mt-1 text-[12.5px] text-ink-soft">
-                        Add the interview simulation — the questions they are
-                        likely to ask, and how to answer each one.
-                      </p>
-                    )}
-                    {isBundleMatch(j) && (
-                      <p className="mt-1 text-[12.5px] text-ink-soft">
-                        Interview report available with the bundle upgrade
-                        above.
-                      </p>
-                    )}
-                    {upgradeError?.jobId === j.id && (
-                      <p className="mt-1 text-[12px] font-medium text-red-600">
-                        {upgradeError.message}
-                      </p>
-                    )}
                   </div>
-                  {canAddReports(j) || isBundleMatch(j) ? (
-                    <Badge tone="slate">CV only</Badge>
-                  ) : j.tier ? (
+                  {j.tier ? (
                     <Badge tone="indigo">Purchased</Badge>
                   ) : j.isSample ? (
                     <Badge tone="amber">Preview</Badge>
                   ) : !j.hasResult ? (
                     <Badge tone="amber">Not finished</Badge>
                   ) : null}
-                  {/* Job Match bought the CV alone. The interview reports were
-                      only reachable from inside the job page, so a buyer who
-                      decided later had no way back to the $1 upgrade. */}
-                  {canAddReports(j) && (
-                    <Button
-                      size="sm"
-                      loading={upgradingId === j.id}
-                      loadingLabel="Opening checkout…"
-                      onClick={() => addReports(j)}
-                    >
-                      Add interview reports —{" "}
-                      <span className="line-through opacity-70">
-                        ${UPGRADE_ANCHOR_USD}
-                      </span>{" "}
-                      ${UPGRADE_USD}
-                    </Button>
-                  )}
                   <Link
                     href={`/jobs/${j.id}`}
                     className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-full border-[1.5px] border-border-strong bg-transparent px-[22px] py-[9px] text-sm font-semibold text-ink-soft transition-all duration-150 hover:bg-card"

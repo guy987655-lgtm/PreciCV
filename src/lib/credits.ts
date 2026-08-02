@@ -1,13 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { PackTier, isPackTier } from "@/lib/packs";
 import {
   CreditBalance,
   CreditOrder,
   EMPTY_BALANCE,
-  orderUpgradeCents,
 } from "@/lib/credit-types";
 
-export { EMPTY_BALANCE, orderUpgradeCents };
+export { EMPTY_BALANCE };
 export type { CreditBalance, CreditOrder };
 
 /**
@@ -33,7 +31,6 @@ export type { CreditBalance, CreditOrder };
 type OrderRow = {
   id: string;
   sku: string;
-  tier: string;
   credits_total: number;
   created_at: string;
 };
@@ -44,7 +41,7 @@ export async function readCreditBalance(
 ): Promise<CreditBalance> {
   const { data: orderRows, error } = await supabase
     .from("orders")
-    .select("id, sku, tier, credits_total, created_at")
+    .select("id, sku, credits_total, created_at")
     .eq("user_id", userId)
     .eq("status", "paid")
     // FIFO: oldest first, matching the spend order.
@@ -75,86 +72,22 @@ export async function readCreditBalance(
     if (key) usedBy.set(key, (usedBy.get(key) ?? 0) + 1);
   }
 
-  const byTier: Record<PackTier, number> = { match: 0, full: 0 };
-  let nextTier: PackTier | null = null;
-
+  let total = 0;
   const detailed: CreditOrder[] = orders.map((o) => {
-    const tier: PackTier = isPackTier(o.tier) ? o.tier : "match";
     const used = usedBy.get(o.id) ?? 0;
     const left = Math.max(0, o.credits_total - used);
-    byTier[tier] += left;
-    if (left > 0 && nextTier === null) nextTier = tier;
+    total += left;
     return {
       id: o.id,
       sku: o.sku,
-      tier,
       creditsTotal: o.credits_total,
       creditsUsed: used,
       creditsLeft: left,
       createdAt: o.created_at,
-      upgradeCents: tier === "match" ? orderUpgradeCents(o.credits_total) : 0,
     };
   });
 
-  return {
-    total: byTier.match + byTier.full,
-    byTier,
-    nextTier,
-    orders: detailed,
-  };
-}
-
-/* ------------------------------------------------------------------ */
-/* Whole-order upgrade                                                 */
-/* ------------------------------------------------------------------ */
-
-/**
- * Lift a paid `match` order to `full` — the entire order, including the jobs
- * whose credits were already spent.
- *
- * The second UPDATE is the whole retroactive-unlock feature. The interview
- * simulation is generated and stored for EVERY tier and merely rendered
- * blurred (`simLocked` in jobs/[id]/workspace.tsx is `purchase.tier ===
- * "match"`), so flipping the tier on the already-minted purchases reveals the
- * reports the user has been looking at, with no LLM call and no new generation
- * rows.
- *
- * Requires a service-role client: `orders` is read-only under RLS, on purpose.
- * Idempotent — a webhook redelivery re-runs both updates to the same values.
- */
-export async function applyOrderUpgrade(
-  admin: SupabaseClient,
-  orderId: string,
-  paid: { amountCents: number; providerRef: string | null }
-): Promise<{ ok: boolean; error?: string }> {
-  const { error: orderError } = await admin
-    .from("orders")
-    .update({
-      tier: "full",
-      upgrade_amount_cents: paid.amountCents,
-      upgrade_provider_ref: paid.providerRef,
-    })
-    .eq("id", orderId);
-  if (orderError) {
-    console.error("[credits] order upgrade failed:", orderError);
-    return { ok: false, error: orderError.message };
-  }
-
-  const { error: purchaseError } = await admin
-    .from("purchases")
-    .update({ tier: "full" })
-    .eq("order_id", orderId);
-  if (purchaseError) {
-    // The order is already `full`, so new spends get Full — but the jobs
-    // already unlocked stay locked out of their reports. Loud, because it
-    // needs a manual fix rather than a retry.
-    console.error(
-      "[credits] order upgraded but purchases cascade failed:",
-      purchaseError
-    );
-    return { ok: false, error: purchaseError.message };
-  }
-  return { ok: true };
+  return { total, orders: detailed };
 }
 
 /* ------------------------------------------------------------------ */

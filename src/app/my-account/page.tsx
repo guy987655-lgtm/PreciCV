@@ -7,12 +7,8 @@ import { loadFunnel } from "@/lib/funnel";
 import { trackButtonClick, resetAnalytics } from "@/lib/analytics";
 import { useSession } from "@/lib/use-session";
 import { useCredits } from "@/lib/use-credits";
-import { upgradableOrders } from "@/lib/credit-types";
-import {
-  startOrderUpgradeCheckout,
-  startPackCheckout,
-} from "@/lib/checkout";
-import { PackQuantity, PackTier, centsToUsd } from "@/lib/packs";
+import { startPackCheckout } from "@/lib/checkout";
+import { PackQuantity } from "@/lib/packs";
 import type { FreeQuota } from "@/lib/free-quota";
 import { Badge, Button, Card } from "@/components/ui";
 import { BundlePaywall } from "@/components/bundle-paywall";
@@ -47,34 +43,22 @@ export default function MyAccountPage() {
   const { balance: credits, loaded: creditsLoaded } = useCredits(
     Boolean(user) && !sessionLoading
   );
-  const [packBusy, setPackBusy] = useState<PackTier | null>(null);
-  const [upgradeBusy, setUpgradeBusy] = useState("");
+  const [packBusy, setPackBusy] = useState(false);
 
-  async function buyPack(tier: PackTier, quantity: PackQuantity) {
-    setPackBusy(tier);
+  async function buyPack(quantity: PackQuantity) {
+    setPackBusy(true);
     setError("");
     trackButtonClick({
       button_name: "buy_credit_pack",
       action: "checkout",
-      button_text: `${quantity}× ${tier}`,
+      button_text: `${quantity}× Full Prep`,
       click_source: "my_account_page",
     });
     try {
-      await startPackCheckout(tier, quantity, "/my-account");
+      await startPackCheckout(quantity, "/my-account");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong");
-      setPackBusy(null);
-    }
-  }
-
-  async function upgradeBundle(orderId: string) {
-    setUpgradeBusy(orderId);
-    setError("");
-    try {
-      await startOrderUpgradeCheckout(orderId, "/my-account");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong");
-      setUpgradeBusy("");
+      setPackBusy(false);
     }
   }
 
@@ -199,11 +183,8 @@ export default function MyAccountPage() {
             {credits.total > 0 ? (
               <p className="mt-2 text-sm text-ink-soft">
                 You have <strong>{credits.total}</strong> unlock
-                {credits.total === 1 ? "" : "s"} left
-                {credits.byTier.full > 0 && credits.byTier.match > 0
-                  ? ` (${credits.byTier.match} Job Match, ${credits.byTier.full} Full Prep)`
-                  : ""}
-                . Spend one on any job — they don&apos;t expire.
+                {credits.total === 1 ? "" : "s"} left. Spend one on any job —
+                they don&apos;t expire.
               </p>
             ) : (
               <p className="mt-2 text-sm text-ink-soft">
@@ -212,38 +193,12 @@ export default function MyAccountPage() {
               </p>
             )}
 
-            {/* Bundles that can still gain the interview reports. */}
-            {upgradableOrders(credits).map((order) => (
-              <div
-                key={order.id}
-                className="mt-4 rounded-[14px] border-[1.5px] border-border bg-bg p-4"
-              >
-                <p className="text-sm font-semibold text-ink">
-                  {order.creditsTotal}-job bundle · Job Match
-                </p>
-                <p className="mt-1 text-[13px] text-ink-soft">
-                  {order.creditsUsed} of {order.creditsTotal} used. Add the
-                  interview report to every job in this bundle — including the
-                  ones you already generated.
-                </p>
-                <Button
-                  size="sm"
-                  className="mt-3"
-                  loading={upgradeBusy === order.id}
-                  loadingLabel="Opening checkout…"
-                  onClick={() => upgradeBundle(order.id)}
-                >
-                  Upgrade to Full Prep — ${centsToUsd(order.upgradeCents)}
-                </Button>
-              </div>
-            ))}
-
             <div className="mt-5 border-t border-border pt-5">
               <h3 className="mb-3 text-sm font-semibold text-ink">
                 {credits.total > 0 ? "Buy more" : "Buy unlocks"}
               </h3>
               <BundlePaywall
-                busyTier={packBusy}
+                busy={packBusy}
                 onSelect={buyPack}
                 hint="Credits work on any job, whenever you're ready."
               />

@@ -8,8 +8,8 @@ import { trackButtonClick } from "@/lib/analytics";
 import { generateJobWithRetry } from "@/lib/generate-client";
 import { spendCreditOnJob, useCredits } from "@/lib/use-credits";
 import { startPackCheckout } from "@/lib/checkout";
-import { PackQuantity, PackTier, isPackQuantity } from "@/lib/packs";
-import { DEFAULT_TEMPLATE, asTemplate } from "@/lib/templates";
+import { PackQuantity, isPackQuantity } from "@/lib/packs";
+import { DEFAULT_TEMPLATE, asTemplate, effectiveSplit } from "@/lib/templates";
 import {
   PrintQueueItem,
   printItemLabel,
@@ -25,7 +25,17 @@ import { Badge, Button, Card, Modal } from "@/components/ui";
 import { ProgressBar } from "@/components/progress-bar";
 import { BundlePaywall } from "@/components/bundle-paywall";
 import { CvRenderer } from "@/components/cv-renderer";
+import {
+  DesignPreviewModal,
+  type DesignChoice,
+} from "@/components/design-preview-modal";
 import { ReportPage } from "@/components/report-page";
+import { asCvTheme } from "@/lib/export-prefs";
+import {
+  preferredExportPrefs,
+  rememberExportPrefs,
+  saveAccountPrefs,
+} from "@/lib/prefs";
 
 export type RunJob = {
   id: string;
@@ -44,6 +54,9 @@ type RunDocument = {
   title: string;
   company: string;
   template: string;
+  /** The design this document prints in — see GET /api/run/[id]/documents. */
+  cvTheme: string;
+  splitView: boolean;
   cv: TailoredCv;
   diff: DiffReport;
   simulation: InterviewSimulation | null;
@@ -102,7 +115,24 @@ export function RunWorkspace({
   const [rows, setRows] = useState<Record<string, RowState>>({});
   const [error, setError] = useState("");
   const [running, setRunning] = useState(false);
-  const [packBusy, setPackBusy] = useState<PackTier | null>(null);
+  const [packBusy, setPackBusy] = useState(false);
+  /**
+   * The design modal, and the design it opens on.
+   *
+   * The seed is read in the click handler rather than inside the modal: this
+   * page is server-rendered and localStorage is not readable there, so reading
+   * it during render would hydrate a different design than the server painted.
+   * A click is unambiguously client-side.
+   */
+  const [designSeed, setDesignSeed] = useState<Partial<DesignChoice> | null>(
+    null
+  );
+  const [designBusy, setDesignBusy] = useState(false);
+  const designOpen = designSeed !== null;
+
+  function openDesign() {
+    setDesignSeed(preferredExportPrefs());
+  }
   const { balance: credits, setBalance: setCredits, refresh: refreshCredits } =
     useCredits(true);
 
@@ -142,10 +172,9 @@ export function RunWorkspace({
     | null
   >(null);
 
-  const fileCount = ready.reduce(
-    (n, j) => n + (j.tier === "full" ? 2 : 1),
-    0
-  );
+  // Two files per ready job — the CV and the interview report. Every purchase
+  // owns both, so there is no per-job tier to add up.
+  const fileCount = ready.length * 2;
 
   /* ---------------- credit allocation ---------------- */
 
@@ -333,10 +362,10 @@ export function RunWorkspace({
       return;
     }
     setCredits(result.balance);
-    patchJob(job.id, { tier: result.balance.nextTier ?? "match" });
+    patchJob(job.id, { tier: "full" });
     // The job is paid now — generate it (or unlock its preview in place,
     // which /api/generate does without another LLM call).
-    await runOne({ ...job, tier: "match" }, false);
+    await runOne({ ...job, tier: "full" }, false);
     router.refresh();
   }
 
@@ -369,20 +398,66 @@ export function RunWorkspace({
       }
       unlocked++;
       setCredits(result.balance);
-      patchJob(job.id, { tier: result.balance.nextTier ?? "match" });
+      patchJob(job.id, { tier: "full" });
     }
     // Only what was just paid for — see allowSample.
     await runAllAcknowledged(false);
   }
 
-  async function buyPack(tier: PackTier, quantity: PackQuantity) {
-    setPackBusy(tier);
+  /* ---------------- design ---------------- */
+
+  /**
+   * Commit a design chosen in the preview modal.
+   *
+   * Three writes, because a design has three homes: the device default, the
+   * account default, and the generations already built in this run. Skipping
+   * the last one is what would make Apply a lie — the batch download prints
+   * each job from its own stored row, so an unpatched run keeps saving PDFs in
+   * the old design however emphatically the user picked a new one.
+   */
+  async function applyDesign(choice: DesignChoice) {
+    setDesignBusy(true);
+    setError("");
+    trackButtonClick({
+      button_name: "apply_design",
+      action: "select",
+      button_text: "Use this design",
+      click_source: "run_workspace",
+    });
+    rememberExportPrefs(choice);
+    void saveAccountPrefs({
+      defaultTemplate: choice.template,
+      export: choice,
+    });
+    try {
+      const res = await fetch(`/api/run/${runId}/design`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(choice),
+      });
+      // A run with nothing generated yet has no rows to patch, and that is not
+      // a failure — the preference is saved and the next CV picks it up.
+      if (!res.ok && ready.length > 0) {
+        const data = await readJson(res);
+        throw new Error(data?.error ?? "Could not apply that design");
+      }
+      setDesignSeed(null);
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not apply that design");
+    } finally {
+      setDesignBusy(false);
+    }
+  }
+
+  async function buyPack(quantity: PackQuantity) {
+    setPackBusy(true);
     setError("");
     try {
-      await startPackCheckout(tier, quantity, `/run/${runId}`);
+      await startPackCheckout(quantity, `/run/${runId}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong");
-      setPackBusy(null);
+      setPackBusy(false);
     }
   }
 
@@ -496,7 +571,7 @@ export function RunWorkspace({
         defaultQuantity={
           isPackQuantity(needCredits) ? (needCredits as PackQuantity) : 5
         }
-        busyTier={packBusy}
+        busy={packBusy}
         onSelect={buyPack}
         hint={
           paywallLeads
@@ -504,6 +579,16 @@ export function RunWorkspace({
             : `${needCredits} job${needCredits === 1 ? "" : "s"} still locked.`
         }
       />
+      {/* Seeing the 21 designs is a reason to buy, so the way to see them sits
+          with the offer as well as up in the action row. */}
+      <p className="mt-3 text-center text-xs text-ink-faint">
+        <button
+          className="cursor-pointer font-semibold text-accent underline"
+          onClick={openDesign}
+        >
+          See what the designs look like →
+        </button>
+      </p>
     </div>
   );
 
@@ -591,6 +676,11 @@ export function RunWorkspace({
                 Download all ({fileCount} file{fileCount === 1 ? "" : "s"})
               </Button>
             )}
+            {/* Always available: the designs are worth seeing before you buy,
+                not only once there is a document to restyle. */}
+            <Button variant="outline" onClick={openDesign}>
+              Preview designs
+            </Button>
           </div>
 
           {downloading && queueTotal > 0 && (
@@ -662,10 +752,7 @@ export function RunWorkspace({
                     )}
                   </p>
                   <p className="mt-0.5 text-[12.5px] text-ink-faint">
-                    {status === "ready" &&
-                      (job.tier === "full"
-                        ? "CV + interview report ready"
-                        : "CV ready")}
+                    {status === "ready" && "CV + interview report ready"}
                     {status === "preview" &&
                       "Free preview — watermarked, not downloadable"}
                     {status === "locked" &&
@@ -781,16 +868,34 @@ export function RunWorkspace({
         </div>
       </Modal>
 
+      {designOpen && (
+        <DesignPreviewModal
+          jdText={jobs.map((j) => `${j.title} ${j.company}`).join(" ")}
+          busy={designBusy}
+          onApply={applyDesign}
+          onClose={() => setDesignSeed(null)}
+        />
+      )}
+
       {/* The one document currently being printed. Exactly one CV and at most
           one report is ever in the DOM — see mountForPrint. */}
-      {activeDoc && printMount?.target === "cv" && (
-        <div className="print-cv-holder cv-print-reset">
-          <CvRenderer
-            cv={activeDoc.cv}
-            template={asTemplate(activeDoc.template) ?? DEFAULT_TEMPLATE}
-          />
-        </div>
-      )}
+      {activeDoc &&
+        printMount?.target === "cv" &&
+        (() => {
+          // Theme and split used to be dropped here, so every batch download
+          // printed light and non-split however the user had set the design.
+          const template = asTemplate(activeDoc.template) ?? DEFAULT_TEMPLATE;
+          return (
+            <div className="print-cv-holder cv-print-reset">
+              <CvRenderer
+                cv={activeDoc.cv}
+                template={template}
+                theme={asCvTheme(activeDoc.cvTheme) ?? "light"}
+                split={effectiveSplit(template, activeDoc.splitView)}
+              />
+            </div>
+          );
+        })()}
       {activeDoc && printMount?.target === "report" && activeDoc.simulation && (
         <ReportPage
           results={{

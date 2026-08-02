@@ -98,8 +98,7 @@ export async function GET() {
       hasResult: genBy.has(j.id),
       isSample: genBy.get(j.id)?.is_sample ?? false,
       tier: paidBy.get(j.id)?.tier ?? null,
-      /** Set when this unlock was spent from a bundle — such a job upgrades
-       *  with its whole bundle, never on its own. */
+      /** Set when this unlock was spent from a bundle credit. */
       orderId: paidBy.get(j.id)?.order_id ?? null,
     })),
   });

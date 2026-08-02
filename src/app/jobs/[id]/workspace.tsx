@@ -15,8 +15,6 @@ import {
   RewriteLength,
   TailoredCv,
   TIERS,
-  TierId,
-  UPGRADE_ANCHOR_USD,
 } from "@/lib/types";
 import {
   CvVersion,
@@ -25,14 +23,14 @@ import {
   makeVersion,
 } from "@/lib/cv-session";
 import { DEFAULT_TEMPLATE, effectiveSplit } from "@/lib/templates";
-import { startCheckout, startOrderUpgradeCheckout } from "@/lib/checkout";
+import { startCheckout } from "@/lib/checkout";
 import { spendCreditOnJob, useCredits } from "@/lib/use-credits";
-import { EMPTY_BALANCE, upgradableOrders } from "@/lib/credit-types";
+import { EMPTY_BALANCE } from "@/lib/credit-types";
 import { centsToUsd, packPriceCents } from "@/lib/packs";
 import { rememberExportPrefs, saveAccountPrefs } from "@/lib/prefs";
 import { asCvTheme, readAiSectionPref } from "@/lib/export-prefs";
 import type { FreeQuota } from "@/lib/free-quota";
-import { printBoth, printFile } from "@/lib/download";
+import { printBoth } from "@/lib/download";
 import { Badge, Button, Card, Modal, Spinner, Toast } from "@/components/ui";
 import { ReportSectionsSkeleton } from "@/components/skeleton";
 import { Navbar } from "@/components/navbar";
@@ -69,7 +67,8 @@ type Props = {
     dealbreakerHits: DealbreakerHit[];
   };
   purchase: {
-    tier: TierId;
+    /** Whatever the row says — legacy rows may predate the single tier. */
+    tier: string;
     revisionsUsed: number;
     maxRevisions: number;
     rewritesUsed?: number;
@@ -221,11 +220,7 @@ export function JobWorkspace({
    * a paid job has nothing to spend one on, and the balance would be a
    * request that never changes what is rendered.
    */
-  const { balance: credits, setBalance: setCredits } = useCredits(
-    // Unpaid: to offer a credit. Paid at `match` from a bundle: to offer the
-    // whole-order upgrade. Nothing to say for a paid Full Prep job.
-    !purchase || (purchase.tier === "match" && Boolean(purchase.orderId))
-  );
+  const { balance: credits, setBalance: setCredits } = useCredits(!purchase);
   /**
    * Today's free-generation allowance. Fetched only where it matters (a job
    * with no purchase and no generation yet) and refreshed from the generate
@@ -241,7 +236,6 @@ export function JobWorkspace({
   }, [capped]);
   const [redFlagModal, setRedFlagModal] = useState(false);
   const [pendingSample, setPendingSample] = useState(false);
-  const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
   // The user reviews + edits first; files (PDF export) unlock on approval.
   const [approved, setApproved] = useState(false);
@@ -338,53 +332,31 @@ export function JobWorkspace({
   const isSample = Boolean(generation?.isSample);
   // Free sample keeps the first change readable; the rest render blurred.
   const SAMPLE_CLEAR_CHANGES = 1;
-  // match → full upgrade: charge only the difference ($1), anchored to $2.
-  const upgradeUsd = (TIERS.full.priceCents - TIERS.match.priceCents) / 100;
   /**
-   * A job unlocked from a bundle upgrades as part of that bundle, never on its
-   * own: a 5-pack buyer paying $1 per job would spend $5 where the whole-order
-   * upgrade costs $2, which punishes exactly the customer the volume pricing
-   * is meant to reward.
+   * The interview simulation is always generated and stored, so it can be shown
+   * as a real, mostly-blurred teaser to a free sample. Buying is the only thing
+   * that reveals it — and buying anything reveals it, since there is one
+   * product and it includes every document.
    */
-  const fromBundle = Boolean(purchase?.orderId);
-  const canUpgrade = purchase?.tier === "match" && !isSample && !fromBundle;
-  /**
-   * The interview simulation is always generated and stored, whatever the
-   * tier — so it can be shown as a real, mostly-blurred teaser to everyone who
-   * has not bought Full Prep. That makes the section itself the driver for the
-   * +$1 upgrade instead of a feature nobody knows exists.
-   */
-  const simLocked = isSample || purchase?.tier === "match";
-  /**
-   * What the export button actually produces. Job Match owns the CV only —
-   * its interview report is never mounted as a print target, so promising
-   * "2 PDFs" handed that tier a second, empty file.
-   */
-  const exportLabel = simLocked ? "Export CV (PDF)" : "Export my files (2 PDFs)";
+  const simLocked = isSample;
+  /** Every purchase owns both files, so the label never has to hedge. */
+  const exportLabel = "Export my files (2 PDFs)";
   /** Questions left fully readable while locked; the rest blur. */
   const SIM_CLEAR_QUESTIONS = 1;
-  /** Is there simulation content to render a section for? */
-  const hasSimulationSection = Boolean(
-    generation?.simulation &&
-      (generation.simulation.pitch ||
-        generation.simulation.questions.length > 0)
-  );
 
   /* ---------------- payment ---------------- */
-  // `isUpgrade` only shapes analytics — the server detects the paid `match`
-  // row on this job and charges the $1 difference for a `full` checkout.
-  async function checkout(tier: TierId, isUpgrade = false) {
+  async function checkout() {
     setBusy("checkout");
     setError("");
     trackButtonClick({
-      button_name: isUpgrade ? "upgrade_to_full" : `buy_${tier}`,
+      button_name: "buy_full",
       action: "checkout",
-      button_text: isUpgrade ? "Upgrade to Full Prep" : `Buy ${TIERS[tier].name}`,
+      button_text: `Buy ${TIERS.full.name}`,
       click_source: "job_workspace",
       job_id: job.id,
     });
     try {
-      await startCheckout(job.id, tier);
+      await startCheckout(job.id);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong");
       setBusy("");
@@ -422,18 +394,6 @@ export function JobWorkspace({
     setCredits(result.balance);
     router.refresh();
     await generate(false, false);
-  }
-
-  /** Lift a whole bundle to Full Prep — unlocks the reports on every job it paid for. */
-  async function upgradeOrder(orderId: string) {
-    setBusy("checkout");
-    setError("");
-    try {
-      await startOrderUpgradeCheckout(orderId, `/jobs/${job.id}`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong");
-      setBusy("");
-    }
   }
 
   /* ---------------- generation (paid credit or free sample) --------- */
@@ -768,18 +728,15 @@ export function JobWorkspace({
         )
       );
     }
-    // Job Match buys the CV only — printing "both" would hand it a second,
-    // empty file since the report print target is not mounted for that tier.
+    // Every download is both files. Export is only reachable once a job is
+    // paid for, and a purchase owns the CV and the report alike.
     const meta = {
       name: generation?.cv.contact.fullName,
       company: job.company,
     };
-    const job2 = simLocked
-      ? Promise.resolve(printFile("cv", meta))
-      : printBoth(meta);
     // Stay busy until the last dialog is handed over, so clicks queued behind
     // a blocking print() cannot stack a burst of dialogs (see printBoth).
-    void job2.finally(() => {
+    void printBoth(meta).finally(() => {
       exportInFlight.current = false;
       setPrinting(false);
     });
@@ -947,9 +904,8 @@ export function JobWorkspace({
     setPrintRequest(true);
   }
 
-  // The workspace always has a job attached, so all three tiers are open.
-  // The bundle line sits under them rather than beside them: this page is
-  // about THIS job, and a volume picker here would compete with the decision
+  // The bundle line sits under the price card rather than beside it: this page
+  // is about THIS job, and a volume picker here would compete with the decision
   // the user is already making.
   const tierCards = (
     <>
@@ -962,7 +918,7 @@ export function JobWorkspace({
         >
           Buy unlocks in a bundle
         </Link>{" "}
-        — 5 jobs for ${centsToUsd(packPriceCents("match", 5))}.
+        — 5 jobs for ${centsToUsd(packPriceCents(5))}.
       </p>
     </>
   );
@@ -971,9 +927,6 @@ export function JobWorkspace({
    * Already holding bundle credits? Spending one is free and instant, so it
    * has to come BEFORE the price cards — offering to sell something the user
    * has already paid for is the fastest way to lose their trust.
-   *
-   * Credits are spent oldest-order-first, so `nextTier` (not the best tier
-   * they hold) is what this one unlocks.
    */
   const creditCard = !purchase && credits.total > 0 && (
     <Card className="border-2 border-accent bg-selected-bg p-6 text-center">
@@ -984,9 +937,8 @@ export function JobWorkspace({
         Use one of your credits
       </h2>
       <p className="mx-auto mt-1 max-w-md text-sm text-slate-600">
-        {credits.nextTier === "full"
-          ? "Unlocks the full CV and the interview report for this job — no extra charge."
-          : "Unlocks the full CV and the comparison report for this job — no extra charge."}
+        Unlocks the full CV, the comparison report and the interview report for
+        this job — no extra charge.
       </p>
       <Button
         size="lg"
@@ -996,41 +948,6 @@ export function JobWorkspace({
         onClick={unlockWithCredit}
       >
         Use 1 credit ({credits.total} left)
-      </Button>
-    </Card>
-  );
-
-  /**
-   * A `match` bundle can be lifted to Full Prep as a whole — every job it has
-   * already paid for gains its interview report retroactively. Shown here
-   * because this job is one of those jobs.
-   */
-  //  The bundle that paid for THIS job, not just any upgradable one the user
-  //  happens to hold — upgrading the wrong order would leave this job locked.
-  const bundleUpgrade =
-    purchase?.tier === "match" && !isSample
-      ? (upgradableOrders(credits).find((o) => o.id === purchase.orderId) ??
-        null)
-      : null;
-
-  const orderUpgradeCard = bundleUpgrade && (
-    <Card className="border-2 border-accent p-5">
-      <Badge tone="indigo">Bundle upgrade</Badge>
-      <h3 className="mt-2 font-semibold text-slate-900">
-        Add interview reports to all {bundleUpgrade.creditsTotal} jobs
-      </h3>
-      <p className="mt-1 text-sm text-slate-600">
-        One payment unlocks the interview report on every job in this bundle —
-        including the ones you&apos;ve already generated — and any credits you
-        have left become Full Prep.
-      </p>
-      <Button
-        className="mt-3"
-        loading={busy === "checkout"}
-        loadingLabel="Opening checkout…"
-        onClick={() => upgradeOrder(bundleUpgrade.id)}
-      >
-        Upgrade the bundle — ${centsToUsd(bundleUpgrade.upgradeCents)}
       </Button>
     </Card>
   );
@@ -1108,9 +1025,8 @@ export function JobWorkspace({
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border-2 border-emerald-300 bg-emerald-50/60 p-4 print:hidden">
           <p className="text-sm text-emerald-900">
             <strong>Review your tailored CV.</strong> Edit anything inline,
-            keep or remove sections — or approve it as-is. Your final{" "}
-            {simLocked ? "CV file is" : "files (CV + simulation report) are"}{" "}
-            created after approval.
+            keep or remove sections — or approve it as-is. Your final files
+            (CV + simulation report) are created after approval.
           </p>
           <Button
             size="lg"
@@ -1133,10 +1049,8 @@ export function JobWorkspace({
       {generation && !isSample && approved && (
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-300 bg-emerald-50 p-4 print:hidden">
           <p className="text-sm text-emerald-900">
-            <strong>Approved ✓</strong>{" "}
-            {simLocked
-              ? "Your tailored CV is ready to export as a PDF."
-              : "Your final files are ready — the tailored CV and your interview simulation report, as two PDFs."}
+            <strong>Approved ✓</strong> Your final files are ready — the
+            tailored CV and your interview simulation report, as two PDFs.
           </p>
           <div className="flex gap-2">
             <Button variant="ghost" onClick={() => setApproved(false)}>
@@ -1234,7 +1148,7 @@ export function JobWorkspace({
           the fallback if that run failed. */}
       {purchase && !generation && (
         <Card className="mx-auto max-w-xl p-8 text-center print:hidden">
-          <Badge tone="indigo">{TIERS[purchase.tier].name} tier active</Badge>
+          <Badge tone="indigo">{TIERS.full.name} active</Badge>
           {busy === "generate" ? (
             <div className="mt-4">
               <Spinner label="Tailoring your CV… (30–90 seconds)" />
@@ -1340,32 +1254,6 @@ export function JobWorkspace({
               </div>
             </Card>
 
-            {/* Upgrade match → full for the $1 difference (anchored to $2).
-                Only when the simulation section below the CV is absent — that
-                section carries the same CTA and shows what you actually get,
-                so rendering both would be two buttons for one purchase. */}
-            {canUpgrade && !hasSimulationSection && (
-              <Card className="border-2 border-accent p-5 print:hidden">
-                <h2 className="font-semibold text-slate-900">
-                  Get interview-ready
-                </h2>
-                <p className="mt-1 text-sm text-slate-600">
-                  Add the interview simulation report — the questions they are
-                  likely to ask, and how to answer each one.
-                </p>
-                <Button
-                  variant="primary"
-                  className="mt-3 w-full"
-                  onClick={() => setUpgradeOpen(true)}
-                >
-                  Upgrade to Full Prep —{" "}
-                  <span className="line-through opacity-70">
-                    ${UPGRADE_ANCHOR_USD}
-                  </span>{" "}
-                  ${upgradeUsd}
-                </Button>
-              </Card>
-            )}
               </>
             )}
           </div>
@@ -1593,7 +1481,7 @@ export function JobWorkspace({
             </Card>
 
             {/* Interview simulation report — visible to everyone, but mostly
-                blurred until Full Prep is owned (see simLocked). */}
+                blurred for a free sample (see simLocked). */}
             {generation.simulation &&
               (generation.simulation.pitch ||
                 generation.simulation.questions.length > 0) && (
@@ -1664,45 +1552,24 @@ export function JobWorkspace({
                     })}
                   </div>
 
-                  {/* Unlock CTA — a paid `match` user goes straight to the $1
-                      upgrade; a free sample still has to buy a tier. */}
+                  {/* Unlock CTA — only a free sample sees this now, and the
+                      one purchase it points at includes this report. */}
                   {simLocked && (
                     <div className="mt-3 rounded-lg bg-slate-50 px-3 py-2.5">
                       <p className="text-xs text-slate-600">
                         🔒 {generation.simulation.questions.length} likely
                         questions with guidance on how to answer each one.
                       </p>
-                      {canUpgrade ? (
-                        <Button
-                          size="md"
-                          className="mt-2 w-full"
-                          onClick={() => setUpgradeOpen(true)}
-                        >
-                          Unlock for ${upgradeUsd}
-                        </Button>
-                      ) : bundleUpgrade ? (
-                        <Button
-                          size="md"
-                          className="mt-2 w-full"
-                          loading={busy === "checkout"}
-                          loadingLabel="Opening checkout…"
-                          onClick={() => upgradeOrder(bundleUpgrade.id)}
-                        >
-                          Unlock all {bundleUpgrade.creditsTotal} for $
-                          {centsToUsd(bundleUpgrade.upgradeCents)}
-                        </Button>
-                      ) : (
-                        <button
-                          className="mt-2 cursor-pointer text-xs font-semibold text-accent underline"
-                          onClick={() =>
-                            document
-                              .getElementById("unlock-pricing")
-                              ?.scrollIntoView({ behavior: "smooth" })
-                          }
-                        >
-                          See unlock options →
-                        </button>
-                      )}
+                      <button
+                        className="mt-2 cursor-pointer text-xs font-semibold text-accent underline"
+                        onClick={() =>
+                          document
+                            .getElementById("unlock-pricing")
+                            ?.scrollIntoView({ behavior: "smooth" })
+                        }
+                      >
+                        See unlock options →
+                      </button>
                     </div>
                   )}
                 </Card>
@@ -1729,20 +1596,13 @@ export function JobWorkspace({
               </div>
             )}
 
-            {/* Bundle upgrade — offered next to the blurred interview report
-                it would unlock, on this job and every other one the bundle
-                paid for. */}
-            {orderUpgradeCard && (
-              <div className="mt-6 print:hidden">{orderUpgradeCard}</div>
-            )}
           </div>
         </div>
       )}
 
-      {/* Hidden interview-report print target (second download file). Full
-          Prep only — the simulation is generated for every tier, so gating on
-          `!isSample` alone shipped it to $3 Job Match buyers as well. */}
-      {generation && !isSample && !simLocked && generation.simulation && (
+      {/* Hidden interview-report print target (second download file). Every
+          purchase includes it; a free sample is the only thing that doesn't. */}
+      {generation && !isSample && generation.simulation && (
         <ReportPage
           results={{
             cv: generation.cv,
@@ -1804,46 +1664,6 @@ export function JobWorkspace({
         </div>
       </Modal>
 
-      {/* Upgrade offer — a single-option "pricing view": match → full for the
-          $1 difference, shown with the $2 anchor struck through. */}
-      <Modal
-        open={upgradeOpen}
-        onClose={() => setUpgradeOpen(false)}
-        title="Upgrade to Full Prep"
-      >
-        <Card className="border-2 border-accent p-5">
-          <div className="flex items-center justify-between gap-2">
-            <h3 className="font-bold text-ink">{TIERS.full.name}</h3>
-            <Badge tone="indigo">Upgrade</Badge>
-          </div>
-          <p className="mt-1 font-display text-3xl font-extrabold text-ink">
-            <span className="mr-2 align-middle text-xl font-bold text-ink-faint line-through">
-              ${UPGRADE_ANCHOR_USD}
-            </span>
-            ${upgradeUsd}
-            <span className="font-sans text-sm font-normal text-ink-faint">
-              {" "}
-              one-time
-            </span>
-          </p>
-          <ul className="mt-3 space-y-1.5 text-sm text-ink-soft">
-            <li>✓ Interview simulation report</li>
-            <li>✓ Likely questions, with guidance on how to answer</li>
-            <li>✓ Keeps everything you already unlocked</li>
-          </ul>
-        </Card>
-        <div className="mt-5 flex justify-end gap-3">
-          <Button variant="ghost" onClick={() => setUpgradeOpen(false)}>
-            Cancel
-          </Button>
-          <Button
-            loading={busy === "checkout"}
-            onClick={() => checkout("full", true)}
-          >
-            {`Upgrade for $${upgradeUsd}`}
-          </Button>
-        </div>
-      </Modal>
       </main>
     </>
   );

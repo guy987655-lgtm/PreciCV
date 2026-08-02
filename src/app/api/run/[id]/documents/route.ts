@@ -43,42 +43,42 @@ export async function GET(
   }
 
   const ids = jobs.map((j) => j.id);
-  const [{ data: gens }, { data: paid }] = await Promise.all([
-    supabase
-      .from("generations")
-      .select("id, job_id, cv, diff, simulation, template, is_sample")
-      .eq("user_id", user.id)
-      .eq("revision_number", 0)
-      .in("job_id", ids),
-    supabase
-      .from("purchases")
-      .select("job_id, tier")
-      .eq("user_id", user.id)
-      .eq("status", "paid")
-      .in("job_id", ids),
-  ]);
+  const { data: gens } = await supabase
+    .from("generations")
+    .select(
+      "id, job_id, cv, diff, simulation, template, cv_theme, split_view, is_sample"
+    )
+    .eq("user_id", user.id)
+    .eq("revision_number", 0)
+    .in("job_id", ids);
 
   const jobBy = new Map(jobs.map((j) => [j.id, j]));
-  const tierBy = new Map((paid ?? []).map((p) => [p.job_id, p.tier as string]));
 
   const documents = (gens ?? [])
     .filter((g) => !g.is_sample)
     .map((g) => {
       const job = jobBy.get(g.job_id as string);
-      // Job Match owns the CV alone — its interview report is not a file the
-      // buyer paid for, so it must not travel to the client as a print target.
-      const includeReport = tierBy.get(g.job_id as string) === "full";
+      // Every purchase includes the interview report, so there is no tier to
+      // check — only whether the simulation was actually stored. safeParse
+      // rather than parse: a row whose simulation never landed should cost the
+      // user its report, not the whole download.
+      const simulation = g.simulation
+        ? InterviewSimulationSchema.safeParse(g.simulation)
+        : null;
       return {
         jobId: g.job_id as string,
         generationId: g.id as string,
         title: job?.title ?? "",
         company: job?.company ?? "",
         template: (g.template as string) ?? "classic",
+        // The design the download prints in. These used to be dropped here,
+        // which is why every batch download came out light and non-split
+        // however the user had set it.
+        cvTheme: (g.cv_theme as string) ?? "light",
+        splitView: Boolean(g.split_view),
         cv: TailoredCvSchema.parse(g.cv),
         diff: DiffReportSchema.parse(g.diff),
-        simulation: includeReport
-          ? InterviewSimulationSchema.parse(g.simulation ?? {})
-          : null,
+        simulation: simulation?.success ? simulation.data : null,
       };
     });
 

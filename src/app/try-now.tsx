@@ -40,6 +40,8 @@ import {
   isJobReady,
   isMcqAnswered,
   loadFunnel,
+  needsCompanyLookup,
+  needsCompanyName,
   normalizeMcqPool,
   primaryJd,
   profileWithAnswers,
@@ -684,6 +686,26 @@ export function TryNow() {
     }
   }, []);
 
+  /**
+   * Look up the jobs that never got the chance.
+   *
+   * The lookup normally fires on blur, which a draft read back from
+   * localStorage never has — a returning user's job came back committed, with
+   * an empty company and no lookup behind it, so the flow asked them for a
+   * name it had never tried to find and blocked Continue until they typed one.
+   * One at a time: setting `lookedUpFor` up front drops that draft out of the
+   * predicate, so the effect re-runs and takes the next.
+   */
+  useEffect(() => {
+    if (!hydrated) return;
+    const pending = (state.jobs ?? []).find(needsCompanyLookup);
+    // The setState this reaches is the lookup marking the draft in-flight,
+    // which is the point: it is what shows the spinner and what stops this
+    // effect from firing the same request twice.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (pending) void lookUpJobMeta(pending);
+  }, [hydrated, state.jobs, lookUpJobMeta]);
+
   /** Leaving a job's textarea collapses it to a chip and names it. */
   function commitJob(draft: JobDraft) {
     if (!isJobReady(draft)) return;
@@ -1240,8 +1262,11 @@ export function TryNow() {
     openedJob ?? jobDrafts.find((d) => !d.committed)?.key ?? null;
   const readyDrafts = readyJobs(state);
   const hasJob = readyDrafts.length > 0;
-  /** Every exported file is named after the employer — so it is required. */
+  /** Every exported file is named after the employer — so it is required.
+   *  This gates Continue; the ASKING is `askForCompany`, which waits for the
+   *  lookup so the flow never blames the user for a name it never sought. */
   const missingCompany = readyDrafts.some((d) => !d.company.trim());
+  const askForCompany = readyDrafts.some(needsCompanyName);
   const canContinue = hasCvReady && hasJob && !missingCompany && !busy;
   const stepIdx = STEP_ORDER.indexOf(state.step);
 
@@ -1283,7 +1308,7 @@ export function TryNow() {
         body: (
           <>
             <strong>Your profile is ready.</strong> Paste a job description to
-            see your match — it unlocks the Job Match and Full Prep tiers.
+            see your match — a tailored CV needs one.
           </>
         ),
         action: (
@@ -1382,7 +1407,9 @@ export function TryNow() {
   /** One finished job: what it is, plus the controls to revisit it. */
   function JobChip({ draft, index }: { draft: JobDraft; index: number }) {
     const chars = draft.jdText.trim().length;
-    const needsCompany = !draft.company.trim();
+    // Only once the lookup has actually run and come back empty — see
+    // needsCompanyName. An unread posting has nothing to report yet.
+    const needsCompany = needsCompanyName(draft);
     return (
       <div className="flex flex-col gap-2 rounded-2xl border-[1.5px] border-border bg-card p-3.5">
         <div className="flex items-center gap-2.5">
@@ -1424,7 +1451,7 @@ export function TryNow() {
         </div>
         {/* Every exported file is named after the employer, so a job with no
             company would produce downloads the user cannot tell apart. */}
-        {needsCompany && !draft.looking && (
+        {needsCompany && (
           <div>
             <label className="text-[12.5px] font-semibold text-ink-soft">
               Company{" "}
@@ -1725,7 +1752,7 @@ export function TryNow() {
             </Button>
           </div>
         )}
-        {hasCvReady && hasJob && missingCompany && (
+        {hasCvReady && hasJob && askForCompany && (
           <p className="text-center text-[13px] text-ink-faint">
             Add the company name on every job to continue.
           </p>
@@ -2325,7 +2352,7 @@ export function TryNow() {
           </div>
           <Heading
             title="Choose what to generate"
-            sub={`Your profile${hasJob ? " and job are" : " is"} ready. Pick a tier — your documents are generated right after payment.`}
+            sub={`Your profile${hasJob ? " and job are" : " is"} ready. Your documents are generated right after payment.`}
           />
           <Paywall
             hasJob={hasJob}

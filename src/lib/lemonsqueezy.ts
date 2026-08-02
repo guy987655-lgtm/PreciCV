@@ -31,32 +31,37 @@ export function devFreeMode(): boolean {
 /**
  * SKU → the env var holding its Lemon Squeezy variant id.
  *
- * One variant per PRICE, because Lemon Squeezy variants carry their price in
- * the dashboard. The volume matrix in src/lib/packs.ts has ten pack prices,
- * and upgrades are keyed by price rather than pack size (five pack sizes, two
- * upgrade prices) — twelve variants in total, of which three already exist and
- * keep their original env var names so nothing has to be re-entered.
+ * OPTIONAL, all of it apart from full_x1. `custom_price` is supported on this
+ * store (verified against the live API: a checkout created on the $4 Full Prep
+ * variant with `custom_price: 800` renders $8.00), so every pack SKU falls back
+ * to the single-unlock variant priced per checkout — see resolveVariant.
+ * Without that fallback, four of these five SKUs were unset and every
+ * multi-job checkout 503'd with "isn't available for purchase yet".
  *
- * If Lemon Squeezy's `checkout_data.custom_price` turns out to be available on
- * this store, this whole map collapses to two variants priced per checkout —
- * that change is confined to this one function.
+ * An id set here still WINS. Creating a real dashboard variant for a pack is
+ * therefore a pure config change: fill in the env var and that SKU stops using
+ * a custom price, with its dashboard name and price taking over.
  */
 const VARIANT_ENV: Record<string, string> = {
-  // Singles — the original three, unchanged.
-  match_x1: "LEMONSQUEEZY_VARIANT_MATCH",
+  // The single unlock, sold at the variant's own dashboard price ($4).
   full_x1: "LEMONSQUEEZY_VARIANT_FULL",
-  upgrade_100: "LEMONSQUEEZY_VARIANT_UPGRADE",
   // Packs.
-  match_x2: "LEMONSQUEEZY_VARIANT_MATCH_X2",
-  match_x3: "LEMONSQUEEZY_VARIANT_MATCH_X3",
-  match_x4: "LEMONSQUEEZY_VARIANT_MATCH_X4",
-  match_x5: "LEMONSQUEEZY_VARIANT_MATCH_X5",
   full_x2: "LEMONSQUEEZY_VARIANT_FULL_X2",
   full_x3: "LEMONSQUEEZY_VARIANT_FULL_X3",
   full_x4: "LEMONSQUEEZY_VARIANT_FULL_X4",
   full_x5: "LEMONSQUEEZY_VARIANT_FULL_X5",
-  // The $2 whole-order upgrade (3-, 4- and 5-packs).
-  upgrade_200: "LEMONSQUEEZY_VARIANT_UPGRADE_2",
+};
+
+/**
+ * The variant a SKU falls back to when it has none of its own: the single
+ * unlock, sold at whatever price the checkout carries. `full_x4` rides the
+ * Full Prep variant with a custom price.
+ *
+ * One entry, because there is one product. The old `match` and `upgrade`
+ * families disappeared with the second tier.
+ */
+const BASE_VARIANT_ENV: Record<string, string> = {
+  full: "LEMONSQUEEZY_VARIANT_FULL",
 };
 
 /** Resolve the Lemon Squeezy variant id for a SKU (see src/lib/packs.ts). */
@@ -65,10 +70,26 @@ export function variantForSku(sku: string): string | undefined {
   return envName ? process.env[envName] : undefined;
 }
 
+/**
+ * Which variant to sell a SKU on, and whether the price has to travel with the
+ * checkout. `custom: true` means the variant's dashboard price is NOT the
+ * price being charged — createLsCheckout must send `custom_price` and refuse
+ * to return a URL unless Lemon Squeezy confirms it took the number.
+ */
+export function resolveVariant(
+  sku: string
+): { id: string; custom: boolean } | undefined {
+  const exact = variantForSku(sku);
+  if (exact) return { id: exact, custom: false };
+  const envName = BASE_VARIANT_ENV[sku.split("_")[0]];
+  const base = envName ? process.env[envName] : undefined;
+  return base ? { id: base, custom: true } : undefined;
+}
+
 /** Which SKUs have no variant configured — surfaced by the checkout route so a
  *  missing env var fails with a nameable cause instead of a generic 500. */
 export function missingVariantSkus(): string[] {
-  return Object.keys(VARIANT_ENV).filter((sku) => !variantForSku(sku));
+  return Object.keys(VARIANT_ENV).filter((sku) => !resolveVariant(sku));
 }
 
 const LS_HEADERS = () => ({
@@ -82,7 +103,7 @@ const LS_HEADERS = () => ({
  * echoed back verbatim on the order webhook (`meta.custom_data`), so it carries
  * the ids the webhook needs to grant what was bought:
  *
- *   single job unlock → { user_id, job_id, tier }
+ *   single job unlock → { user_id, job_id }
  *   credit bundle     → { user_id, order_id, sku }
  *
  * The webhook branches on which of `job_id` / `order_id` is present.
@@ -93,10 +114,17 @@ export async function createLsCheckout(opts: {
   /** Lemon Squeezy requires every custom value to be a string. */
   custom: Record<string, string>;
   redirectUrl: string;
+  /** What this SKU costs, per the app's own pricing (src/lib/packs.ts). Sent
+   *  as the checkout's price whenever the SKU has no variant of its own. */
+  amountCents: number;
+  /** Product name and blurb on the hosted page. Only used with a custom price
+   *  — a dedicated variant already carries its own, set in the dashboard. */
+  label?: string;
+  description?: string;
 }): Promise<string> {
   const storeId = process.env.LEMONSQUEEZY_STORE_ID!;
-  const variantId = variantForSku(opts.sku);
-  if (!variantId) {
+  const variant = resolveVariant(opts.sku);
+  if (!variant) {
     throw new Error(`No Lemon Squeezy variant configured for ${opts.sku}`);
   }
 
@@ -107,15 +135,25 @@ export async function createLsCheckout(opts: {
       data: {
         type: "checkouts",
         attributes: {
+          // `custom_price` is a checkout attribute, NOT part of checkout_data.
+          ...(variant.custom ? { custom_price: opts.amountCents } : {}),
           checkout_data: {
             email: opts.email,
             custom: opts.custom,
           },
-          product_options: { redirect_url: opts.redirectUrl },
+          product_options: {
+            redirect_url: opts.redirectUrl,
+            // Otherwise a 5-pack would be titled "Job Match" on the payment
+            // page, because it is riding the single-unlock variant.
+            ...(variant.custom && opts.label ? { name: opts.label } : {}),
+            ...(variant.custom && opts.description
+              ? { description: opts.description }
+              : {}),
+          },
         },
         relationships: {
           store: { data: { type: "stores", id: storeId } },
-          variant: { data: { type: "variants", id: variantId } },
+          variant: { data: { type: "variants", id: variant.id } },
         },
       },
     }),
@@ -127,8 +165,23 @@ export async function createLsCheckout(opts: {
   }
 
   const json = (await res.json()) as {
-    data?: { id?: string; attributes?: { url?: string } };
+    data?: { id?: string; attributes?: { url?: string; custom_price?: number } };
   };
+  /**
+   * Never hand back a URL at a price we did not set. If a plan or product type
+   * ever ignores `custom_price`, the checkout would silently fall back to the
+   * single-unlock price — a 5-pack sold for $3. Failing here surfaces as the
+   * ordinary "couldn't start checkout" message instead of undercharging.
+   */
+  if (
+    variant.custom &&
+    json.data?.attributes?.custom_price !== opts.amountCents
+  ) {
+    throw new Error(
+      `Lemon Squeezy ignored the custom price for ${opts.sku} ` +
+        `(sent ${opts.amountCents}, got ${json.data?.attributes?.custom_price})`
+    );
+  }
   const url = json.data?.attributes?.url;
   if (!url) throw new Error("Lemon Squeezy checkout returned no URL");
   return url;

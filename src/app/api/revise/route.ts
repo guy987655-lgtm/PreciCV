@@ -69,14 +69,10 @@ export async function POST(request: Request) {
   if (!purchase) {
     return NextResponse.json({ error: "payment_required" }, { status: 402 });
   }
-  const tierInfo = TIERS[purchase.tier as keyof typeof TIERS];
-  if (!tierInfo || tierInfo.maxRevisions === 0) {
-    return NextResponse.json(
-      { error: "AI revisions require the Full Prep tier" },
-      { status: 403 }
-    );
-  }
-  const maxRevisions = tierInfo.maxRevisions;
+  // Any paid purchase is Full Prep, so owning the job is the whole check —
+  // the tier column is not read here (legacy rows may still say 'match' until
+  // migration 0011 runs, and those buyers are grandfathered in).
+  const maxRevisions = TIERS.full.maxRevisions;
   if ((purchase.revisions_used ?? 0) >= maxRevisions) {
     return NextResponse.json(
       { error: `All ${maxRevisions} revisions for this job have been used` },

@@ -298,6 +298,30 @@ export function isJobReady(d: JobDraft): boolean {
   return d.jdText.trim().length >= MIN_JD_CHARS;
 }
 
+/** The company lookup has run against this draft's CURRENT text and finished. */
+export function isJobLookedUp(d: JobDraft): boolean {
+  return !d.looking && d.lookedUpFor === d.jdText.trim();
+}
+
+/**
+ * Ask the user for the company name — because we looked and could not find it.
+ *
+ * Deliberately NOT "the company field is empty": a draft restored from an
+ * earlier session, or one whose lookup is still in flight, also has an empty
+ * company, and telling those users we couldn't find a name in a posting we
+ * never read is simply false. It showed up the instant the upload step
+ * appeared, before they had pasted anything into this flow at all.
+ */
+export function needsCompanyName(d: JobDraft): boolean {
+  return isJobReady(d) && !d.company.trim() && isJobLookedUp(d);
+}
+
+/** A ready job whose company was never looked up (restored flow) — see the
+ *  backfill in try-now.tsx, which is what stops needsCompanyName from lying. */
+export function needsCompanyLookup(d: JobDraft): boolean {
+  return d.committed && isJobReady(d) && !d.company.trim() && !isJobLookedUp(d);
+}
+
 /** The drafts that will actually become jobs. */
 export function readyJobs(s: FunnelState): JobDraft[] {
   return (s.jobs ?? []).filter(isJobReady);
@@ -460,7 +484,7 @@ function migrateJobs(state: FunnelState): FunnelState {
   // Length, not Array.isArray: every caller spreads EMPTY_FUNNEL first, which
   // already supplies `jobs: []`, so an isArray guard would match a saved flow
   // that has nothing but the legacy `jdText` and drop the user's job.
-  if (state.jobs?.length) return state;
+  if (state.jobs?.length) return { ...state, jobs: state.jobs.map(settle) };
   const legacyJd = (state as { jdText?: string }).jdText ?? "";
   return {
     ...state,
@@ -477,6 +501,16 @@ function migrateJobs(state: FunnelState): FunnelState {
         ]
       : [],
   };
+}
+
+/**
+ * `looking` is in-flight state, and nothing is in flight after a page load: a
+ * draft saved mid-lookup would come back with a spinner that never stops. The
+ * request also never finished, so it loses its claim on the text it was
+ * reading and the backfill in try-now.tsx simply runs it again.
+ */
+function settle(d: JobDraft): JobDraft {
+  return d.looking ? { ...d, looking: false, lookedUpFor: "" } : d;
 }
 
 export function loadFunnel(): FunnelState | null {

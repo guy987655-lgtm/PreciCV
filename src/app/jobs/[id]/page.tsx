@@ -57,8 +57,6 @@ export default async function JobPage({
     .limit(1)
     .maybeSingle();
 
-  const tier = purchase?.tier as keyof typeof TIERS | undefined;
-
   // One free sample PER JOB (it used to be one per account): every new job
   // gets a taste. Available while this job is unpaid and not yet generated —
   // the "one generation per job" rule is what caps it at one.
@@ -75,9 +73,11 @@ export default async function JobPage({
       purchase={
         purchase
           ? {
-              tier: tier!,
+              // Legacy rows may still say 'base'/'match'; every paid purchase
+              // is Full Prep now, so the quotas come from there regardless.
+              tier: (purchase.tier as string) ?? "full",
               revisionsUsed: purchase.revisions_used ?? 0,
-              maxRevisions: tier ? TIERS[tier].maxRevisions : 0,
+              maxRevisions: TIERS.full.maxRevisions,
               rewritesUsed: purchase.rewrites_used ?? 0,
               maxRewrites: MAX_REWRITES,
               regensUsed: purchase.report_regens_used ?? 0,

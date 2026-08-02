@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { verifyLsWebhook } from "@/lib/lemonsqueezy";
-import { applyOrderUpgrade } from "@/lib/credits";
 
 /**
  * Lemon Squeezy webhook — verifies the signature and grants what was bought.
@@ -9,13 +8,14 @@ import { applyOrderUpgrade } from "@/lib/credits";
  * we need travel in `meta.custom_data` (set when the checkout was created),
  * and which ids are present is what says WHAT was bought:
  *
- *   { user_id, job_id, tier }        → one job unlock. For an upgrade the tier
- *                                      is `full`, so the same upsert lifts the
- *                                      existing paid `match` row.
- *   { user_id, order_id, sku }       → a credit bundle; flip the order to paid.
- *   { ..., order_id, upgrade: "1" }  → lift a whole bundle match → full,
- *                                      including the jobs already unlocked
- *                                      from it.
+ *   { user_id, job_id }        → one job unlock.
+ *   { user_id, order_id, sku } → a credit bundle; flip the order to paid.
+ *
+ * There is one product, so nothing here reads a tier — everything granted is
+ * `full`. `custom_data` from a checkout created before that change may still
+ * carry `tier` or `upgrade`; both are ignored rather than trusted, which is
+ * also the right answer for the money (a legacy `match` checkout that lands
+ * now grants the reports too, matching migration 0011's grandfathering).
  */
 export async function POST(request: Request) {
   const rawBody = await request.text();
@@ -50,22 +50,17 @@ export async function POST(request: Request) {
     return NextResponse.json({ received: true });
   }
 
-  const { user_id, job_id, tier, order_id, upgrade } =
-    event.meta?.custom_data ?? {};
+  const { user_id, job_id, order_id, upgrade } = event.meta?.custom_data ?? {};
   const amountCents = event.data?.attributes?.total ?? 0;
   const providerRef = event.data?.id ?? null;
   const admin = createAdminClient();
 
-  // ---- bundle: whole-order upgrade -------------------------------------
-  if (user_id && order_id && upgrade === "1") {
-    const applied = await applyOrderUpgrade(admin, order_id, {
-      amountCents,
-      providerRef,
-    });
-    // 500 asks Lemon Squeezy to redeliver; applyOrderUpgrade is idempotent.
-    if (!applied.ok) {
-      return NextResponse.json({ error: "upgrade_failed" }, { status: 500 });
-    }
+  // ---- in-flight legacy upgrade ----------------------------------------
+  // A whole-order match → full upgrade bought just before the single-product
+  // release. Its order is already paid and already grants everything, so the
+  // only thing left to do is acknowledge: falling through would overwrite the
+  // order's amount_cents with the upgrade's few dollars.
+  if (order_id && upgrade === "1") {
     return NextResponse.json({ received: true });
   }
 
@@ -88,12 +83,12 @@ export async function POST(request: Request) {
   }
 
   // ---- single job unlock -----------------------------------------------
-  if (user_id && job_id && tier) {
+  if (user_id && job_id) {
     await admin.from("purchases").upsert(
       {
         user_id,
         job_id,
-        tier,
+        tier: "full",
         status: "paid",
         amount_cents: amountCents,
         provider_ref: providerRef,

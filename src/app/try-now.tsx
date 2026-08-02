@@ -1670,6 +1670,17 @@ export function TryNow() {
                     : "Paste the job description"}
                 </span>
               </div>
+              {/* "+ Add another job" only exists once a job has been filed
+                  away, so a first-timer spends the entire time pasting with
+                  nothing on screen saying several jobs are even possible —
+                  and then clicks Continue with one. This line is what tells
+                  them, so it shows exactly when the button cannot. */}
+              {!showAddJob && jobDrafts.length < MAX_PACK_SIZE && (
+                <p className="text-[12.5px] text-ink-faint">
+                  Applying to more than one? You can add up to {MAX_PACK_SIZE}{" "}
+                  jobs — and you still answer just one set of questions.
+                </p>
+              )}
               {jobDrafts.map((draft, i) =>
                 expandedJob === draft.key ? (
                   <JobEditor key={draft.key} draft={draft} index={i} />

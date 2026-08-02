@@ -1,6 +1,7 @@
 "use client";
 
 import { TIERS } from "@/lib/types";
+import { freeMode } from "@/lib/free-mode";
 import { Button, Card, Spinner } from "@/components/ui";
 
 /**
@@ -26,6 +27,8 @@ export function Paywall({
 }) {
   const tier = TIERS.full;
   const locked = tier.requiresJob && !hasJob;
+  // The beta gives this away; the card stays, only its price does not.
+  const free = freeMode();
 
   return (
     <Card
@@ -35,10 +38,10 @@ export function Paywall({
     >
       <h3 className="font-bold text-ink">{tier.name}</h3>
       <p className="mt-1 font-display text-3xl font-extrabold text-ink">
-        ${tier.priceUsd}
+        {free ? "Free" : `$${tier.priceUsd}`}
         <span className="font-sans text-sm font-normal text-ink-faint">
           {" "}
-          one-time
+          {free ? "while in beta" : "one-time"}
         </span>
       </p>
       <ul className="mt-3 flex-1 space-y-1.5 text-sm text-ink-soft">
@@ -62,7 +65,13 @@ export function Paywall({
         </>
       ) : (
         <Button className="mt-4 w-full" disabled={busy} onClick={onSelect}>
-          {busy ? <Spinner /> : `Get ${tier.name} — $${tier.priceUsd}`}
+          {busy ? (
+            <Spinner />
+          ) : free ? (
+            "Unlock free"
+          ) : (
+            `Get ${tier.name} — $${tier.priceUsd}`
+          )}
         </Button>
       )}
     </Card>

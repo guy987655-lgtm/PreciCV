@@ -158,12 +158,36 @@ environments in LS — do not assume ids carry over):
 5. Update the six `LEMONSQUEEZY_*` vars + `NEXT_PUBLIC_APP_URL` in Vercel, and
    confirm `DEV_FREE_MODE` is `false` or absent. **Redeploy** — env changes do
    not apply to an existing deployment.
-6. One real $3 purchase → verify the three checks below → refund.
+6. Set **`NEXT_PUBLIC_FREE_MODE=false`** — this is what ends the free beta and
+   sends users back to a real checkout. It is inlined at build time, so it only
+   takes effect on the redeploy above; verify afterwards that the paywall shows
+   $4 again and that clicking it produces a Lemon Squeezy URL.
+7. One real $3 purchase → verify the three checks below → refund.
 
 ⚠️ While the store is in test mode and the checkout is wired to production,
 anyone who finds the site can complete a purchase with LS's public test card
 and unlock paid content for free. Low exposure while unmarketed; do not leave
 it that way.
+
+### The free beta (`NEXT_PUBLIC_FREE_MODE`)
+
+Until approval lands, the product is given away rather than sold. The paywall
+still renders — only its price is relabelled — and `/api/payments/checkout`
+grants the `purchases` row (or the credit `orders` row) itself instead of
+calling Lemon Squeezy. Every downstream gate keys off that paid row, so none of
+them needed touching, and the real payment path plus its webhook are untouched
+and still live. See `src/lib/free-mode.ts`.
+
+Two consequences worth knowing:
+
+- **No usage cap.** A free unlock behaves exactly like a paid one, which means
+  it is exempt from the 5/day free-sample limit in `src/lib/free-quota.ts`.
+  Nothing stops one user from generating all day, on our LLM bill. If that
+  starts to hurt, the narrow fix is to make `readFreeQuota` count unlocks
+  granted under free mode.
+- **Free grants are permanent.** Turning the flag off does not revoke anything:
+  those rows carry `amount_cents: 0`, stay `paid`, and will show up as zero in
+  any revenue figure.
 
 ## Verifying a payment actually landed
 

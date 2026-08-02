@@ -9,6 +9,7 @@ import { generateJobWithRetry } from "@/lib/generate-client";
 import { spendCreditOnJob, useCredits } from "@/lib/use-credits";
 import { startPackCheckout } from "@/lib/checkout";
 import { PackQuantity, isPackQuantity } from "@/lib/packs";
+import { freeMode } from "@/lib/free-mode";
 import { DEFAULT_TEMPLATE, asTemplate, effectiveSplit } from "@/lib/templates";
 import {
   PrintQueueItem,
@@ -575,7 +576,7 @@ export function RunWorkspace({
         onSelect={buyPack}
         hint={
           paywallLeads
-            ? `You added ${unpaid.length} job${unpaid.length === 1 ? "" : "s"}. Buy fewer credits than that and you choose which ones we build.`
+            ? `You added ${unpaid.length} job${unpaid.length === 1 ? "" : "s"}. ${freeMode() ? "Take" : "Buy"} fewer credits than that and you choose which ones we build.`
             : `${needCredits} job${needCredits === 1 ? "" : "s"} still locked.`
         }
       />

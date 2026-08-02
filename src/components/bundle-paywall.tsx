@@ -11,6 +11,7 @@ import {
   packPriceCents,
   packSavingPct,
 } from "@/lib/packs";
+import { freeMode } from "@/lib/free-mode";
 import { Badge, Button, Card } from "@/components/ui";
 
 /**
@@ -42,7 +43,11 @@ export function BundlePaywall({
   const [qty, setQty] = useState<PackQuantity>(defaultQuantity);
   const price = packPriceCents(qty);
   const list = packListCents(qty);
-  const discounted = packHasDiscount(qty);
+  // Nothing to save when nothing is charged: the beta hides every discount cue
+  // (badge, strikethrough, per-unit price) but keeps the picker, which still
+  // decides how many credits get granted.
+  const free = freeMode();
+  const discounted = !free && packHasDiscount(qty);
 
   return (
     <div>
@@ -68,7 +73,7 @@ export function BundlePaywall({
               }`}
             >
               {n} {n === 1 ? "job" : "jobs"}
-              {pct > 0 && (
+              {!free && pct > 0 && (
                 <span className="ml-1.5 text-[11px] font-bold text-accent">
                   −{pct}%
                 </span>
@@ -93,18 +98,20 @@ export function BundlePaywall({
               ${centsToUsd(list)}
             </span>
           )}
-          ${centsToUsd(price)}
+          {free ? "Free" : `$${centsToUsd(price)}`}
           <span className="font-sans text-sm font-normal text-ink-faint">
             {" "}
-            one-time
+            {free ? "while in beta" : "one-time"}
           </span>
         </p>
         <p className="mt-0.5 text-xs text-ink-faint">
           {qty === 1
             ? "One job unlock"
-            : `${qty} job unlocks — $${centsToUsd(
-                Math.round(price / qty)
-              )} each`}
+            : free
+              ? `${qty} job unlocks`
+              : `${qty} job unlocks — $${centsToUsd(
+                  Math.round(price / qty)
+                )} each`}
         </p>
 
         <ul className="mt-3 flex-1 space-y-1.5 text-sm text-ink-soft">
@@ -121,12 +128,16 @@ export function BundlePaywall({
         <Button
           className="mt-4 w-full"
           loading={busy}
-          loadingLabel="Opening checkout…"
+          loadingLabel={free ? "Unlocking…" : "Opening checkout…"}
           onClick={() => onSelect(qty)}
         >
-          {qty === 1
-            ? `Get ${TIERS.full.name} — $${centsToUsd(price)}`
-            : `Get ${qty} for $${centsToUsd(price)}`}
+          {free
+            ? qty === 1
+              ? "Unlock free"
+              : `Get ${qty} unlocks free`
+            : qty === 1
+              ? `Get ${TIERS.full.name} — $${centsToUsd(price)}`
+              : `Get ${qty} for $${centsToUsd(price)}`}
         </Button>
       </Card>
     </div>

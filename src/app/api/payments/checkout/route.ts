@@ -7,6 +7,7 @@ import {
   devFreeMode,
   lsConfigured,
 } from "@/lib/lemonsqueezy";
+import { freeMode } from "@/lib/free-mode";
 import { TIERS } from "@/lib/types";
 import {
   PackQuantity,
@@ -47,6 +48,19 @@ function safeReturnTo(value: string | undefined, fallback: string): string {
 
 function withPaidFlag(path: string): string {
   return path.includes("?") ? `${path}&paid=1` : `${path}?paid=1`;
+}
+
+/**
+ * Whether to hand over what was "bought" without taking money. Two unrelated
+ * reasons, and the difference matters:
+ *
+ *   FREE_MODE      the beta, live IN PRODUCTION while Lemon Squeezy reviews the
+ *                  store. Applies even though LS is fully configured.
+ *   DEV_FREE_MODE  local testing before an LS store exists at all — hence the
+ *                  `!lsConfigured()`, which keeps it from ever firing in prod.
+ */
+function grantWithoutPayment(): boolean {
+  return freeMode() || (!lsConfigured() && devFreeMode());
 }
 
 export async function POST(request: Request) {
@@ -117,8 +131,9 @@ async function singleCheckout(
 
   const amountCents = tierInfo.priceCents;
 
-  // Local testing path before Lemon Squeezy is configured.
-  if (!lsConfigured() && devFreeMode()) {
+  // Granted outright: the free beta, or local testing before LS is configured.
+  // The 409 above still stands, so this cannot double-grant a job either.
+  if (grantWithoutPayment()) {
     await supabase.from("purchases").upsert(
       {
         user_id: user.id,
@@ -130,7 +145,8 @@ async function singleCheckout(
       },
       { onConflict: "job_id" }
     );
-    return NextResponse.json({ url: `${appUrl}/jobs/${jobId}?paid=dev` });
+    const flag = freeMode() ? "free" : "dev";
+    return NextResponse.json({ url: `${appUrl}/jobs/${jobId}?paid=${flag}` });
   }
   if (!lsConfigured()) {
     return NextResponse.json(
@@ -198,7 +214,7 @@ async function packCheckout(
   // goes through the service role.
   const admin = createAdminClient();
 
-  if (!lsConfigured() && devFreeMode()) {
+  if (grantWithoutPayment()) {
     const { data: order, error } = await admin
       .from("orders")
       .insert({

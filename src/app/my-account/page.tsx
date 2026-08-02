@@ -10,6 +10,7 @@ import { useCredits } from "@/lib/use-credits";
 import { startPackCheckout } from "@/lib/checkout";
 import { PackQuantity } from "@/lib/packs";
 import type { FreeQuota } from "@/lib/free-quota";
+import { freeMode } from "@/lib/free-mode";
 import { Badge, Button, Card } from "@/components/ui";
 import { BundlePaywall } from "@/components/bundle-paywall";
 import { ConfirmCountdownModal } from "@/components/confirm-countdown-modal";
@@ -136,8 +137,12 @@ export default function MyAccountPage() {
 
         {/* Today's free allowance. Shown here as well as at the point of use,
             so a user who wonders why generation stopped has somewhere to look
-            instead of guessing at a limit nothing ever mentioned. */}
-        {quota && (
+            instead of guessing at a limit nothing ever mentioned.
+
+            Hidden during the free beta: the cap only ever applied to watermarked
+            samples, and when unlocking is free and unlimited a progress bar
+            counting down to a wall the user will never hit is just noise. */}
+        {quota && !freeMode() && (
           <Card className="mt-6 p-6">
             <h2 className="font-semibold text-ink">Free CVs today</h2>
             <p className="mt-2 text-sm text-ink-soft">
@@ -188,14 +193,21 @@ export default function MyAccountPage() {
               </p>
             ) : (
               <p className="mt-2 text-sm text-ink-soft">
-                Applying to several roles? Buying unlocks in a bundle costs less
-                per job, and you can spend them whenever you like.
+                {freeMode()
+                  ? "Applying to several roles? Grab a handful of unlocks now — they're free while we're in beta, and you can spend them whenever you like."
+                  : "Applying to several roles? Buying unlocks in a bundle costs less per job, and you can spend them whenever you like."}
               </p>
             )}
 
             <div className="mt-5 border-t border-border pt-5">
               <h3 className="mb-3 text-sm font-semibold text-ink">
-                {credits.total > 0 ? "Buy more" : "Buy unlocks"}
+                {freeMode()
+                  ? credits.total > 0
+                    ? "Get more"
+                    : "Get unlocks"
+                  : credits.total > 0
+                    ? "Buy more"
+                    : "Buy unlocks"}
               </h3>
               <BundlePaywall
                 busy={packBusy}

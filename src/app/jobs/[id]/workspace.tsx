@@ -27,6 +27,7 @@ import { startCheckout } from "@/lib/checkout";
 import { spendCreditOnJob, useCredits } from "@/lib/use-credits";
 import { EMPTY_BALANCE } from "@/lib/credit-types";
 import { centsToUsd, packPriceCents } from "@/lib/packs";
+import { freeMode } from "@/lib/free-mode";
 import { rememberExportPrefs, saveAccountPrefs } from "@/lib/prefs";
 import { asCvTheme, readAiSectionPref } from "@/lib/export-prefs";
 import type { FreeQuota } from "@/lib/free-quota";
@@ -910,16 +911,21 @@ export function JobWorkspace({
   const tierCards = (
     <>
       <Paywall hasJob busy={busy === "checkout"} onSelect={checkout} />
-      <p className="mt-3 text-center text-xs text-ink-faint">
-        Applying to more than one role?{" "}
-        <Link
-          href="/my-account"
-          className="font-semibold text-accent underline"
-        >
-          Buy unlocks in a bundle
-        </Link>{" "}
-        — 5 jobs for ${centsToUsd(packPriceCents(5))}.
-      </p>
+      {/* Volume pricing is not a reason to go anywhere while the beta gives
+          single unlocks away — the bundle line would be selling a discount off
+          a price nobody is paying. */}
+      {!freeMode() && (
+        <p className="mt-3 text-center text-xs text-ink-faint">
+          Applying to more than one role?{" "}
+          <Link
+            href="/my-account"
+            className="font-semibold text-accent underline"
+          >
+            Buy unlocks in a bundle
+          </Link>{" "}
+          — 5 jobs for ${centsToUsd(packPriceCents(5))}.
+        </p>
+      )}
     </>
   );
 
@@ -1091,7 +1097,7 @@ export function JobWorkspace({
                 <Card className="border-2 border-emerald-300 bg-emerald-50/40 p-6 text-center">
                   <Badge tone="green">Sample for this job</Badge>
                   <h2 className="mt-2 text-lg font-semibold text-slate-900">
-                    See it before you pay
+                    {freeMode() ? "See it before you unlock" : "See it before you pay"}
                   </h2>
                   <p className="mx-auto mt-1 max-w-md text-sm text-slate-600">
                     Generate a real tailored CV for this job, shown as a
@@ -1126,9 +1132,9 @@ export function JobWorkspace({
                     You&apos;ve used today&apos;s {quota?.limit ?? ""} free CVs
                   </h2>
                   <p className="mx-auto mt-1 max-w-md text-sm text-slate-600">
-                    Buy this one and it generates right away — paid CVs
-                    don&apos;t count toward the free limit. Otherwise your free
-                    CVs reset
+                    {freeMode() ? "Unlock" : "Buy"} this one and it generates
+                    right away — unlocked CVs don&apos;t count toward the free
+                    limit. Otherwise your free CVs reset
                     {quota?.resetAt
                       ? ` ${new Date(quota.resetAt).toLocaleString()}`
                       : " tomorrow"}
@@ -1186,7 +1192,9 @@ export function JobWorkspace({
       {purchase && generation && isSample && (
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50 p-4 print:hidden">
           <p className="text-sm text-indigo-900">
-            <strong>Payment received.</strong>{" "}
+            <strong>
+              {freeMode() ? "This job is unlocked." : "Payment received."}
+            </strong>{" "}
             {busy === "generate"
               ? "Unlocking your full version…"
               : "Unlock your CV to enable editing, templates and PDF export."}
@@ -1293,8 +1301,8 @@ export function JobWorkspace({
             {isSample && (
               <p className="mb-2 text-xs text-amber-700 print:hidden">
                 🔒 Watermarked preview — every section shows its first half;
-                the rest is blurred. Purchase this job to unlock the complete
-                CV, edit it and download.
+                the rest is blurred. {freeMode() ? "Unlock" : "Purchase"} this
+                job to get the complete CV, edit it and download.
               </p>
             )}
             <div

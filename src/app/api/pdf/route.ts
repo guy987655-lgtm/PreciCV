@@ -88,6 +88,15 @@ export async function POST(request: Request) {
           e instanceof PdfRenderError
             ? "We couldn't build your PDF. Please try again in a moment."
             : "Download failed. Please try again in a moment.",
+        /**
+         * The renderer only ever fails on the serverless path, which cannot be
+         * exercised locally — the first failure was diagnosed by guesswork
+         * against a generic sentence. Preview deployments say what actually
+         * broke; production keeps its own counsel.
+         */
+        ...(process.env.VERCEL_ENV === "preview"
+          ? { reason: e instanceof Error ? e.message : String(e) }
+          : {}),
       },
       { status: 502 }
     );

@@ -69,12 +69,25 @@ async function getBrowser(): Promise<Browser> {
     return cached;
   }
 
-  const chromium = (await import("@sparticuz/chromium")).default;
+  /**
+   * `@sparticuz/chromium` is CommonJS (`module.exports = Chromium`), so which
+   * of these two the bundler hands back depends on how it applies ESM interop
+   * — and getting it wrong throws before anything else runs.
+   */
+  const mod = await import("@sparticuz/chromium");
+  const chromium = (mod.default ?? mod) as typeof mod.default;
+
   cached = await puppeteer.launch({
     args: chromium.args,
-    defaultViewport: null,
+    defaultViewport: chromium.defaultViewport,
     executablePath: await chromium.executablePath(),
-    headless: true,
+    /**
+     * NOT `true`. This is a headless-SHELL build, and chromium.args already
+     * carries `--headless='shell'`; passing `true` makes puppeteer add
+     * `--headless=new` on top, and the shell binary exits on the conflicting
+     * flag. It fails in about a second and reads exactly like a crash.
+     */
+    headless: chromium.headless,
   });
   return cached;
 }

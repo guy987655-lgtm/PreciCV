@@ -26,6 +26,23 @@ class NonRetryableError extends Error {
   }
 }
 
+/**
+ * A generation failure that carries the server's error CODE, not just its
+ * sentence. Callers need the code to tell a dead end apart from a hiccup —
+ * "already_generated" wants a fresh revision offered, everything else wants
+ * a retry.
+ */
+export class GenerateError extends Error {
+  constructor(
+    message: string,
+    readonly code = "",
+    readonly generationId = ""
+  ) {
+    super(message);
+    this.name = "GenerateError";
+  }
+}
+
 /** HTTP statuses worth retrying — transient server/gateway failures. */
 function isRetryableStatus(status: number): boolean {
   // 408 request timeout, 5xx server/gateway errors (incl. Vercel 504, 502
@@ -71,13 +88,21 @@ async function postWithRetry(
       }
       if (res.ok) return data as GenerateData;
 
-      const message: string = data.error ?? `Generation failed (${res.status})`;
+      // `message` is the human sentence; `error` is the machine code. Older
+      // routes only send `error`, so it is still the fallback.
+      const message: string =
+        data.message ?? data.error ?? `Generation failed (${res.status})`;
+      const failure = new GenerateError(
+        message,
+        typeof data.error === "string" ? data.error : "",
+        typeof data.generationId === "string" ? data.generationId : ""
+      );
       // Non-transient (e.g. 400 invalid payload, 503 not configured) — no
       // point retrying, fail immediately.
       if (!isRetryableStatus(res.status)) {
-        throw new NonRetryableError(new Error(message));
+        throw new NonRetryableError(failure);
       }
-      lastError = new Error(message);
+      lastError = failure;
     } catch (e) {
       // A non-retryable HTTP failure already recorded above rethrows here —
       // let it propagate; retrying it can't help.
@@ -114,4 +139,30 @@ export async function generateJobWithRetry(
     useFreeSample: opts.useFreeSample ?? false,
     acknowledgeRedFlags: opts.acknowledgeRedFlags ?? false,
   });
+}
+
+/**
+ * What "generate a new version anyway" asks for when there are no specific
+ * instructions — the user wants another take, not a particular change.
+ */
+export const FRESH_VERSION_INSTRUCTIONS =
+  "Produce a fresh tailored version of this CV for the same job. Vary the " +
+  "wording and emphasis where it genuinely helps the application, and keep " +
+  "every fact exactly as it is.";
+
+/**
+ * Generate a NEW version of a job that already has one — the way out of the
+ * "already generated" dead end.
+ *
+ * /api/generate is hard-capped at one revision-0 row per job, so it can only
+ * ever refuse; /api/revise writes revision N+1, which is what the job page
+ * then loads (it reads the latest revision). This spends one of the job's
+ * bounded revisions and never a credit — the route requires an existing paid
+ * purchase before it does anything.
+ */
+export async function reviseJobWithRetry(
+  jobId: string,
+  instructions: string = FRESH_VERSION_INSTRUCTIONS
+): Promise<GenerateData> {
+  return postWithRetry("/api/revise", { jobId, instructions });
 }

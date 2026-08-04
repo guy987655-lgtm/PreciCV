@@ -110,3 +110,48 @@ export function isPassed(
   const st = itemStatus(item, state, extraSkipped);
   return st !== "pending";
 }
+
+/**
+ * How far the CORE set — everything the flow asks by default (the capped MCQ
+ * budget plus the open questions) — has got. Optional role-bank questions are
+ * excluded: they only exist after the user opts in, so they can never hold the
+ * flow back.
+ *
+ * `coreDone` means nothing is still PENDING, which is deliberately not the same
+ * as "everything was answered". Skipping is an offered, legitimate way to
+ * resolve a question, and treating a skip as unresolved is what used to leave
+ * the user with no way to finish: every exit from the questionnaire hung off
+ * this flag, so one skipped open question hid the generate CTA for good.
+ */
+export type SeqProgress = {
+  core: SeqItem[];
+  /** Core items needing no further prompting (answered, auto-filled, skipped). */
+  resolved: number;
+  /** Core items genuinely answered — the honest number for user-facing copy. */
+  answered: number;
+  /** Core items still pending, in asking order. */
+  pending: SeqItem[];
+  coreDone: boolean;
+};
+
+export function sequenceProgress(
+  seq: SeqItem[],
+  state: FunnelState,
+  extraSkipped: Set<string>
+): SeqProgress {
+  const core = seq.filter((it) => it.phase !== 2);
+  const pending: SeqItem[] = [];
+  let answered = 0;
+  for (const item of core) {
+    const st = itemStatus(item, state, extraSkipped);
+    if (st === "pending") pending.push(item);
+    else if (st !== "skipped") answered++;
+  }
+  return {
+    core,
+    resolved: core.length - pending.length,
+    answered,
+    pending,
+    coreDone: pending.length === 0,
+  };
+}

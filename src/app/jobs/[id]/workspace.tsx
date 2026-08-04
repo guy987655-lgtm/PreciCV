@@ -24,6 +24,7 @@ import {
 } from "@/lib/cv-session";
 import { DEFAULT_TEMPLATE, effectiveSplit } from "@/lib/templates";
 import { startCheckout } from "@/lib/checkout";
+import { reviseJobWithRetry } from "@/lib/generate-client";
 import { spendCreditOnJob, useCredits } from "@/lib/use-credits";
 import { EMPTY_BALANCE } from "@/lib/credit-types";
 import { centsToUsd, packPriceCents } from "@/lib/packs";
@@ -31,7 +32,7 @@ import { freeMode } from "@/lib/free-mode";
 import { rememberExportPrefs, saveAccountPrefs } from "@/lib/prefs";
 import { asCvTheme, readAiSectionPref } from "@/lib/export-prefs";
 import type { FreeQuota } from "@/lib/free-quota";
-import { printBoth } from "@/lib/download";
+import { downloadBoth } from "@/lib/download";
 import { Badge, Button, Card, Modal, Spinner, Toast } from "@/components/ui";
 import { ReportSectionsSkeleton } from "@/components/skeleton";
 import { Navbar } from "@/components/navbar";
@@ -94,6 +95,8 @@ type Props = {
   freeSampleAvailable?: boolean;
   /** Arrived here straight from checkout (?paid=…). */
   justPaid?: boolean;
+  /** The run this job belongs to, when it has one — where Back goes. */
+  runId?: string | null;
 };
 
 /**
@@ -205,6 +208,7 @@ export function JobWorkspace({
   generation: initialGen,
   freeSampleAvailable = false,
   justPaid = false,
+  runId = null,
 }: Props) {
   const router = useRouter();
   const [generation, setGeneration] = useState(initialGen);
@@ -235,6 +239,18 @@ export function JobWorkspace({
   useEffect(() => {
     cappedRef.current = capped;
   }, [capped]);
+  /**
+   * This job already holds a generation (the 409 from /api/generate). A dead
+   * end until now: the page showed the sentence as a bare error and the
+   * auto-run quietly fired a second request to be refused again.
+   */
+  const [duplicate, setDuplicate] = useState(false);
+  const duplicateRef = useRef(false);
+  useEffect(() => {
+    duplicateRef.current = duplicate;
+  }, [duplicate]);
+  /** Building a fresh revision via /api/revise. */
+  const [revising, setRevising] = useState(false);
   const [redFlagModal, setRedFlagModal] = useState(false);
   const [pendingSample, setPendingSample] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
@@ -321,6 +337,10 @@ export function JobWorkspace({
   );
   const maxRewrites = purchase?.maxRewrites ?? MAX_REWRITES;
   const maxRegens = purchase?.maxRegens ?? MAX_REPORT_REGENS;
+  /** Fresh versions left for this job — /api/revise enforces the same bound. */
+  const revisionsLeft = purchase
+    ? Math.max(0, purchase.maxRevisions - purchase.revisionsUsed)
+    : 0;
 
   // §2.2 isDirty — true from the first change relative to lastSavedState.
   const isDirty =
@@ -340,8 +360,9 @@ export function JobWorkspace({
    * product and it includes every document.
    */
   const simLocked = isSample;
-  /** Every purchase owns both files, so the label never has to hedge. */
-  const exportLabel = "Export my files (2 PDFs)";
+  /** Every purchase owns both files, so the label never has to hedge — and
+   *  the count is left off it: a verb reads better without a parenthetical. */
+  const exportLabel = "Download my files";
   /** Questions left fully readable while locked; the rest blur. */
   const SIM_CLEAR_QUESTIONS = 1;
 
@@ -374,6 +395,9 @@ export function JobWorkspace({
    * routes through the red-flag modal rather than skipping it.
    */
   async function unlockWithCredit() {
+    // A full generation means the job is already paid for; spending here could
+    // only end in the "already generated" refusal with a credit gone.
+    if (generation && !generation.isSample) return;
     setBusy("credit");
     setError("");
     trackButtonClick({
@@ -447,8 +471,19 @@ export function JobWorkspace({
           });
           throw new Error(data.message ?? "Daily free limit reached.");
         }
+        /**
+         * The job already holds a generation. Nothing was written and no
+         * credit was touched — /api/generate refuses before either — but the
+         * user cannot tell that from an error, and retrying can only fail the
+         * same way. Flagged so the page can offer a fresh version instead.
+         */
+        if (data.error === "already_generated") {
+          setDuplicate(true);
+          throw new Error(data.message ?? "This job already has a CV.");
+        }
         throw new Error(data.message ?? data.error ?? "Generation failed");
       }
+      setDuplicate(false);
       if (typeof data.freeRemaining === "number") {
         setQuota((q) => (q ? { ...q, remaining: data.freeRemaining } : q));
       }
@@ -488,6 +523,38 @@ export function JobWorkspace({
     }
   }
 
+  /**
+   * Generate a NEW version of a job that already holds one.
+   *
+   * /api/generate is capped at one revision-0 row per job, so it can only
+   * refuse; /api/revise writes the next revision, and this page reads the
+   * LATEST one — so the refresh is what puts the new CV on screen. Spends one
+   * of the job's bounded revisions and no credit (the route requires an
+   * existing paid purchase before it does anything).
+   */
+  async function generateFreshVersion() {
+    setRevising(true);
+    setError("");
+    trackButtonClick({
+      button_name: "generate_new_version",
+      action: "generate",
+      button_text: "Generate a new version",
+      click_source: "job_workspace",
+      job_id: job.id,
+    });
+    try {
+      await reviseJobWithRetry(job.id);
+      setDuplicate(false);
+      router.refresh();
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : "Could not generate a new version"
+      );
+    } finally {
+      setRevising(false);
+    }
+  }
+
   // Nobody should have to press a button to see what they came for. Free
   // users get this job's sample auto-run on arrival; buyers returning from
   // checkout get the real thing auto-run the same way, so payment lands
@@ -520,9 +587,15 @@ export function JobWorkspace({
       // finished the questions (or paid).
       const ok = await generate(false, asSample);
       // Red flags stop generation on purpose (the modal is waiting on the
-      // user) — that is not a failure to retry. Neither is the daily cap:
-      // retrying it just burns a second request to be refused again.
-      if (!ok && hits.length === 0 && !cappedRef.current) {
+      // user) — that is not a failure to retry. Neither is the daily cap, nor
+      // a job that already holds a CV: retrying either just burns a second
+      // request to be refused again.
+      if (
+        !ok &&
+        hits.length === 0 &&
+        !cappedRef.current &&
+        !duplicateRef.current
+      ) {
         await generate(false, asSample);
       }
     })();
@@ -548,6 +621,28 @@ export function JobWorkspace({
     void generate(true, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [purchase, generation?.isSample]);
+
+  /**
+   * Arriving on `#resume` — the run dashboard sends the user straight here
+   * after generating their free preview.
+   *
+   * The browser's own hash scrolling is no use: this route has a loading.tsx,
+   * so at the moment the hash is applied the CV does not exist yet. Waiting
+   * for the generation to be on screen is what makes the landing reliable,
+   * and a frame after that lets CvRenderer's fit pass settle first.
+   */
+  const scrolledToCv = useRef(false);
+  useEffect(() => {
+    if (scrolledToCv.current || !generation) return;
+    if (window.location.hash !== "#resume") return;
+    scrolledToCv.current = true;
+    const t = setTimeout(() => {
+      document
+        .getElementById("resume")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 120);
+    return () => clearTimeout(t);
+  }, [generation]);
 
   /**
    * Lemon Squeezy confirms payment out-of-band, so landing on ?paid=1 often
@@ -731,16 +826,32 @@ export function JobWorkspace({
     }
     // Every download is both files. Export is only reachable once a job is
     // paid for, and a purchase owns the CV and the report alike.
-    const meta = {
-      name: generation?.cv.contact.fullName,
-      company: job.company,
-    };
-    // Stay busy until the last dialog is handed over, so clicks queued behind
-    // a blocking print() cannot stack a burst of dialogs (see printBoth).
-    void printBoth(meta).finally(() => {
+    if (generation) {
+      void downloadBoth({
+        meta: {
+          name: generation.cv.contact.fullName,
+          company: job.company,
+        },
+        cv: generation.cv,
+        template: (generation.template as CvTemplate) ?? "classic",
+        theme: cvTheme,
+        split: splitView,
+        diff: generation.diff,
+        simulation: generation.simulation ?? null,
+        jobTitle: job.title,
+        company: job.company,
+      })
+        .catch((e: unknown) =>
+          setError(e instanceof Error ? e.message : "Download failed")
+        )
+        .finally(() => {
+          exportInFlight.current = false;
+          setPrinting(false);
+        });
+    } else {
       exportInFlight.current = false;
       setPrinting(false);
-    });
+    }
     setPrintRequest(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [printRequest, reportBusy]);
@@ -965,7 +1076,9 @@ export function JobWorkspace({
       {/* The shared top bar — same logo and tabs as the rest of the site
           (it used to be a bespoke text link, which read as a different brand). */}
       <div className="print:hidden">
-        <Navbar />
+        {/* A job opened from its run goes back to that run, however the user
+            got here — including a cold landing from a shared link. */}
+        <Navbar backHref={runId ? `/run/${runId}` : undefined} />
       </div>
       <main className="mx-auto max-w-[1400px] px-4 py-8">
       <header className="mb-6 flex flex-wrap items-center justify-between gap-3 print:hidden">
@@ -1266,8 +1379,10 @@ export function JobWorkspace({
             )}
           </div>
 
-          {/* Right pane: the CV — editable when owned, watermarked when sample */}
-          <div>
+          {/* Right pane: the CV — editable when owned, watermarked when sample.
+              `#resume` is the landing target after a free sample is generated
+              on the run dashboard (see the auto-navigation in run-workspace). */}
+          <div id="resume" className="scroll-mt-24">
             {/* Design catalog — owned CVs AND free samples, so preview users
                 can taste every design before paying. */}
             <div className="mb-3 flex flex-col gap-3 print:hidden">
@@ -1641,7 +1756,43 @@ export function JobWorkspace({
         <Toast message="Edits discarded" actionLabel="Undo" onAction={undoReset} />
       )}
 
-      {error && <p className="mt-4 text-center text-sm text-red-600 print:hidden">{error}</p>}
+      {/* This job already holds a CV. Not an error the user caused and not one
+          that cost them anything — so it asks a question and offers the only
+          action that can actually work, rather than a retry that cannot. */}
+      {duplicate ? (
+        <Card className="mx-auto mt-4 max-w-[560px] p-5 text-center print:hidden">
+          <p className="text-[14.5px] font-semibold text-ink">
+            This job already has a generated CV — no credit was charged.
+          </p>
+          <p className="mt-1 text-[13.5px] text-ink-soft">
+            {revisionsLeft > 0
+              ? `Do you want to generate a new version anyway? It uses one of this job's ${revisionsLeft} remaining revisions, not a credit.`
+              : purchase
+                ? "You've used every revision for this job, so the current version is the final one."
+                : "Unlock this job first — new versions are part of the full version."}
+          </p>
+          <div className="mt-4 flex flex-wrap justify-center gap-2">
+            {revisionsLeft > 0 && (
+              <Button
+                loading={revising}
+                loadingLabel="Building a new version… (30–90s)"
+                onClick={generateFreshVersion}
+              >
+                Generate new
+              </Button>
+            )}
+            <Button variant="outline" onClick={() => setDuplicate(false)}>
+              Keep the current one
+            </Button>
+          </div>
+        </Card>
+      ) : (
+        error && (
+          <p className="mt-4 text-center text-sm text-red-600 print:hidden">
+            {error}
+          </p>
+        )
+      )}
 
       {/* PRD §4.3 warning modal */}
       <Modal

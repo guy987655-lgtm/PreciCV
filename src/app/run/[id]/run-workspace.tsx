@@ -2,35 +2,42 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { readJson } from "@/lib/fetch-json";
 import { trackButtonClick } from "@/lib/analytics";
-import { generateJobWithRetry } from "@/lib/generate-client";
+import {
+  GenerateError,
+  generateJobWithRetry,
+  reviseJobWithRetry,
+} from "@/lib/generate-client";
 import { spendCreditOnJob, useCredits } from "@/lib/use-credits";
+import type { CreditBalance } from "@/lib/credit-types";
 import { startPackCheckout } from "@/lib/checkout";
 import { PackQuantity, isPackQuantity } from "@/lib/packs";
 import { freeMode } from "@/lib/free-mode";
-import { DEFAULT_TEMPLATE, asTemplate, effectiveSplit } from "@/lib/templates";
+import { DEFAULT_TEMPLATE, asTemplate } from "@/lib/templates";
 import {
-  PrintQueueItem,
-  printItemLabel,
-  printQueue,
+  DownloadQueueItem,
+  downloadItemLabel,
+  downloadQueue,
 } from "@/lib/download";
 import type {
   DealbreakerHit,
   DiffReport,
   InterviewSimulation,
+  MasterProfile,
   TailoredCv,
 } from "@/lib/types";
 import { Badge, Button, Card, Modal } from "@/components/ui";
+import { LoadingAnnounce } from "@/components/skeleton";
 import { ProgressBar } from "@/components/progress-bar";
+import { WaitQuestionsModal } from "@/components/wait-questions-modal";
 import { BundlePaywall } from "@/components/bundle-paywall";
-import { CvRenderer } from "@/components/cv-renderer";
+import { UNLOCK_SECTION_ID } from "@/components/credit-chip";
 import {
   DesignPreviewModal,
   type DesignChoice,
 } from "@/components/design-preview-modal";
-import { ReportPage } from "@/components/report-page";
 import { asCvTheme } from "@/lib/export-prefs";
 import {
   preferredExportPrefs,
@@ -68,10 +75,18 @@ type RowState =
   | { kind: "idle" }
   | { kind: "generating" }
   | { kind: "unlocking" }
-  | { kind: "failed"; message: string };
+  /** `code` is the server's machine-readable reason, when it sent one. */
+  | { kind: "failed"; message: string; code?: string };
 
 /** How many generations run at once. */
 const CONCURRENCY = 2;
+
+/**
+ * How long a run has to be going before we offer something to do. Short
+ * enough to catch the wait, long enough that a run which finishes quickly
+ * never interrupts at all.
+ */
+const WAIT_PROMPT_MS = 15_000;
 
 /**
  * What a row is, in the order the UI cares about.
@@ -106,10 +121,13 @@ export function RunWorkspace({
   runId,
   initialJobs,
   candidateName,
+  profile,
 }: {
   runId: string;
   initialJobs: RunJob[];
   candidateName: string;
+  /** Feeds the optional questions offered during a long run. */
+  profile: MasterProfile | null;
 }) {
   const router = useRouter();
   const [jobs, setJobs] = useState<RunJob[]>(initialJobs);
@@ -117,6 +135,12 @@ export function RunWorkspace({
   const [error, setError] = useState("");
   const [running, setRunning] = useState(false);
   const [packBusy, setPackBusy] = useState(false);
+  /* ---- the wait: how much of this run is done, and what to offer ---- */
+  const [runTotal, setRunTotal] = useState(0);
+  const [runDone, setRunDone] = useState(0);
+  const [waitOpen, setWaitOpen] = useState(false);
+  /** Dismissed once → never volunteered again this run (the button remains). */
+  const waitDismissed = useRef(false);
   /**
    * The design modal, and the design it opens on.
    *
@@ -142,10 +166,6 @@ export function RunWorkspace({
   const [savedCount, setSavedCount] = useState(0);
   const [queueTotal, setQueueTotal] = useState(0);
   const [queueLabel, setQueueLabel] = useState("");
-  const [docs, setDocs] = useState<Record<string, RunDocument>>({});
-  /** The single document currently mounted as a print target. */
-  const [printMount, setPrintMount] = useState<PrintQueueItem | null>(null);
-  const mountResolve = useRef<(() => void) | null>(null);
 
   const ready = jobs.filter((j) => j.hasResult && !j.isSample);
   const previews = jobs.filter((j) => j.isSample);
@@ -225,6 +245,109 @@ export function RunWorkspace({
     setJobs((js) => js.map((j) => (j.id === jobId ? { ...j, ...next } : j)));
   }
 
+  /* ---------------- staying in sync with the server ---------------- */
+
+  /**
+   * Re-read the whole run from the server.
+   *
+   * This page is force-dynamic, so a hard load is always fresh — but coming
+   * back from a job page is a CLIENT-side navigation served out of the router
+   * cache, and a sample generated over there is invisible to it. The user then
+   * pressed Generate All against a stale list.
+   *
+   * GET /api/run/[id] has always returned exactly this state (its own comment
+   * claims "the run workspace polls this rather than holding progress in
+   * memory") — nothing had ever called it.
+   */
+  const applyRun = useCallback(
+    (data: unknown) => {
+      const payload = data as
+        | { jobs?: RunJob[]; credits?: CreditBalance }
+        | null;
+      if (!payload) return;
+      // An empty list means the read failed in some way we cannot see from
+      // here; keeping what is on screen beats blanking the page.
+      if (payload.jobs?.length) setJobs(payload.jobs);
+      if (payload.credits) setCredits(payload.credits);
+    },
+    [setCredits]
+  );
+
+  /**
+   * Returning to the tab fires `focus` AND `visibilitychange`, and a user
+   * flicking between windows fires them repeatedly — this collapses that into
+   * one read. Only a rate limit: an explicit post-generation refresh passes
+   * `force` so it is never the one that gets dropped.
+   */
+  const lastRefresh = useRef(0);
+  const REFRESH_GAP_MS = 2_000;
+
+  const refreshRun = useCallback(
+    async (force = false) => {
+      const now = Date.now();
+      if (!force && now - lastRefresh.current < REFRESH_GAP_MS) return;
+      lastRefresh.current = now;
+      try {
+        const res = await fetch(`/api/run/${runId}`, { cache: "no-store" });
+        if (!res.ok) return;
+        applyRun(await readJson(res));
+      } catch {
+        // Last known state stays on screen and the next focus tries again.
+      }
+    },
+    [runId, applyRun]
+  );
+
+  /**
+   * Mid-run the server is behind the optimistic row state by design, so a
+   * refresh landing then would undo rows the user is watching finish.
+   */
+  const runningRef = useRef(false);
+  useEffect(() => {
+    runningRef.current = running;
+  }, [running]);
+
+  /**
+   * A run long enough to be a wait gets the optional questions offered.
+   * Timer-driven rather than immediate: a run that finishes in ten seconds
+   * should never interrupt at all.
+   */
+  useEffect(() => {
+    if (!running || waitDismissed.current || !profile) return;
+    const t = setTimeout(() => setWaitOpen(true), WAIT_PROMPT_MS);
+    return () => clearTimeout(t);
+  }, [running, profile]);
+
+  // On arrival, and whenever the tab comes back to the foreground — which is
+  // exactly when a generation finished in another tab, or a router-cached
+  // navigation put a stale list on screen.
+  useEffect(() => {
+    // Fetched inline rather than by calling refreshRun(), so the setState
+    // lands in a promise callback instead of the effect body — the same shape
+    // as the balance fetch in use-credits.ts.
+    let alive = true;
+    fetch(`/api/run/${runId}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (alive) applyRun(data);
+      })
+      .catch(() => {
+        /* last known state stays on screen */
+      });
+    const onFocus = () => {
+      if (document.visibilityState === "visible" && !runningRef.current) {
+        void refreshRun();
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      alive = false;
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [runId, applyRun, refreshRun]);
+
   /* ---------------- generation ---------------- */
 
   /**
@@ -235,7 +358,7 @@ export function RunWorkspace({
    * burn the whole daily allowance (5/day, see src/lib/free-quota.ts) and five
    * LLM calls before anyone had paid anything.
    */
-  async function runOne(job: RunJob, asSample: boolean) {
+  async function runOne(job: RunJob, asSample: boolean): Promise<boolean> {
     setRow(job.id, { kind: "generating" });
     try {
       const data = await generateJobWithRetry(job.id, {
@@ -244,7 +367,7 @@ export function RunWorkspace({
       });
       if (data.quota) {
         setRow(job.id, { kind: "failed", message: data.quota as string });
-        return;
+        return false;
       }
       patchJob(job.id, {
         hasResult: true,
@@ -253,14 +376,43 @@ export function RunWorkspace({
         title: (data.jobTitle as string) || job.title,
       });
       setRow(job.id, { kind: "idle" });
+      return true;
     } catch (e) {
       const message = e instanceof Error ? e.message : "Generation failed";
+      const code = e instanceof GenerateError ? e.code : "";
       setRow(job.id, {
         kind: "failed",
+        code,
         message:
           message === "payment_required"
             ? "Unlock this job to generate it."
             : message,
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Generate a NEW version of a job that already holds one.
+   *
+   * The only way out of the "already generated" state: /api/generate can
+   * only refuse (one revision-0 row per job), so this goes through
+   * /api/revise, which writes the next revision. It spends one of the job's
+   * bounded revisions and no credit.
+   */
+  async function reviseOne(job: RunJob) {
+    setRow(job.id, { kind: "generating" });
+    setError("");
+    try {
+      await reviseJobWithRetry(job.id);
+      patchJob(job.id, { hasResult: true, isSample: false });
+      setRow(job.id, { kind: "idle" });
+      await refreshRun(true);
+      router.refresh();
+    } catch (e) {
+      setRow(job.id, {
+        kind: "failed",
+        message: e instanceof Error ? e.message : "Could not generate a new version",
       });
     }
   }
@@ -314,22 +466,52 @@ export function RunWorkspace({
     // free preview. Recomputed here rather than captured, so a credit spent
     // mid-run is picked up on the next pass.
     const anySample = jobs.some((j) => j.isSample);
-    const queue = jobs.filter((j) => !j.hasResult);
+    /**
+     * What still needs doing.
+     *
+     * A generated SAMPLE counts. This used to be `!j.hasResult`, so a job
+     * holding a watermarked preview was walked straight past — including
+     * right after a credit had been spent on it, since unlockSelected spends
+     * first and then delegates here. The job stayed a sample forever: outside
+     * `ready`, outside the file count, which is how the dashboard came to
+     * report four of five jobs and eight of ten files no matter how many
+     * times the button was pressed. (Opening the job and coming back fixed it
+     * only because the job workspace runs its own unlock-in-place effect.)
+     */
+    const queue = jobs.filter((j) => !j.hasResult || j.isSample);
     let sampleTaken = anySample || !allowSample;
 
     const tasks = queue.map((job) => {
       const paid = Boolean(job.tier);
+      // Already generated: the only thing left to do is unlock a paid sample
+      // in place, which /api/generate does without a second LLM call.
+      if (job.hasResult) {
+        return { job, run: paid && job.isSample, asSample: false };
+      }
       const asSample = !paid && !sampleTaken;
       if (asSample) sampleTaken = true;
-      return { job, paid, asSample };
+      return { job, run: paid || asSample, asSample };
     });
-    const runnable = tasks.filter((t) => t.paid || t.asSample);
+    const runnable = tasks.filter((t) => t.run);
+
+    /**
+     * The free preview, generated on its own — the "Start with a free
+     * preview" click. That one gets to end on the CV itself (see below);
+     * a bulk run does not, because navigating away mid-run would abandon
+     * the other jobs the user is watching.
+     */
+    const soloSample = runnable.length === 1 && runnable[0].asSample;
+
+    setRunTotal(runnable.length);
+    setRunDone(0);
 
     let cursor = 0;
+    const succeeded = new Map<string, boolean>();
     async function worker() {
       while (cursor < runnable.length) {
         const task = runnable[cursor++];
-        await runOne(task.job, task.asSample);
+        succeeded.set(task.job.id, await runOne(task.job, task.asSample));
+        setRunDone((n) => n + 1);
       }
     }
     await Promise.all(
@@ -337,7 +519,18 @@ export function RunWorkspace({
     );
 
     setRunning(false);
+    // The files are what the user came for — nothing else stays in the way.
+    setWaitOpen(false);
+    // The server is the authority on what actually landed — an optimistic row
+    // that failed quietly, or a job finished in another tab, is corrected here.
+    await refreshRun(true);
     router.refresh();
+
+    // Straight to the finished CV rather than leaving the user to spot the
+    // Open button — the preview landing is the whole point of generating it.
+    if (soloSample && succeeded.get(runnable[0].job.id)) {
+      router.push(`/jobs/${runnable[0].job.id}#resume`);
+    }
   }
 
   /* ---------------- unlocking ---------------- */
@@ -353,6 +546,10 @@ export function RunWorkspace({
   }
 
   async function unlockAcknowledged(job: RunJob) {
+    // A job holding a full generation is already paid for. Spending here
+    // could only end in the "already generated" refusal, so it never gets
+    // that far.
+    if (job.hasResult && !job.isSample) return;
     setRow(job.id, { kind: "unlocking" });
     setError("");
     const result = await spendCreditOnJob(job.id);
@@ -367,6 +564,7 @@ export function RunWorkspace({
     // The job is paid now — generate it (or unlock its preview in place,
     // which /api/generate does without another LLM call).
     await runOne({ ...job, tier: "full" }, false);
+    await refreshRun(true);
     router.refresh();
   }
 
@@ -384,6 +582,8 @@ export function RunWorkspace({
     let unlocked = 0;
     for (const job of selectedJobs) {
       if (job.tier) continue;
+      // Already generated in full → already paid for. See unlockAcknowledged.
+      if (job.hasResult && !job.isSample) continue;
       const result = await spendCreditOnJob(job.id);
       if (!result.ok) {
         // The balance can move under a stale tab, so the atomic spend is still
@@ -465,31 +665,12 @@ export function RunWorkspace({
   /* ---------------- download ---------------- */
 
   /**
-   * Resolves the pending `mount` once React has committed the new print target
-   * AND the browser has had a frame to lay it out.
-   *
-   * Without this the queue prints whatever was already in the DOM — the same
-   * CV saved N times under N different names, which looks like the download
-   * worked right up until the user opens the files.
+   * NOTE: this used to mount one document at a time into the DOM and wait two
+   * animation frames before each print dialog — without that the queue printed
+   * whatever happened to be on screen, saving the same CV under N names. The
+   * server renders each document independently now, so the whole choreography
+   * (and the hidden print targets it fed) is gone.
    */
-  useEffect(() => {
-    if (!printMount) return;
-    const outer = requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        mountResolve.current?.();
-        mountResolve.current = null;
-      });
-    });
-    return () => cancelAnimationFrame(outer);
-  }, [printMount]);
-
-  function mountForPrint(item: PrintQueueItem): Promise<void> {
-    return new Promise((resolve) => {
-      mountResolve.current = resolve;
-      setPrintMount(item);
-    });
-  }
-
   async function downloadAll() {
     if (downloading) return;
     setDownloading(true);
@@ -510,27 +691,30 @@ export function RunWorkspace({
       const documents = (data.documents ?? []) as RunDocument[];
       const byJob: Record<string, RunDocument> = {};
       for (const d of documents) byJob[d.jobId] = d;
-      setDocs(byJob);
 
       // CV then report, job by job, in the order they appear on screen — so
-      // the save dialogs arrive in the order the user is looking at.
-      const items: PrintQueueItem[] = [];
+      // the files arrive in the order the user is looking at.
+      const items: DownloadQueueItem[] = [];
       for (const job of jobs) {
         const doc = byJob[job.id];
         if (!doc) continue;
-        items.push({
-          jobId: job.id,
-          target: "cv",
-          name: candidateName,
+        const template = asTemplate(doc.template) ?? DEFAULT_TEMPLATE;
+        const payload = {
+          meta: { name: candidateName, company: doc.company || job.company },
+          cv: doc.cv,
+          template,
+          // Theme and split come from the stored row, so a batch download
+          // honours the design each job was actually built in.
+          theme: asCvTheme(doc.cvTheme) ?? ("light" as const),
+          split: doc.splitView,
+          diff: doc.diff,
+          simulation: doc.simulation,
+          jobTitle: doc.title || job.title,
           company: doc.company || job.company,
-        });
+        };
+        items.push({ key: job.id, target: "cv", payload });
         if (doc.simulation) {
-          items.push({
-            jobId: job.id,
-            target: "report",
-            name: candidateName,
-            company: doc.company || job.company,
-          });
+          items.push({ key: job.id, target: "report", payload });
         }
       }
       if (items.length === 0) {
@@ -539,22 +723,20 @@ export function RunWorkspace({
 
       setQueueTotal(items.length);
       setSavedCount(0);
-      await printQueue(items, mountForPrint, (saved, total, next) => {
+      await downloadQueue(items, (saved, total, next) => {
         setSavedCount(saved);
-        setQueueLabel(next ? printItemLabel(next) : "");
+        setQueueLabel(next ? downloadItemLabel(next) : "");
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Download failed");
     } finally {
       setDownloading(false);
-      setPrintMount(null);
       setQueueLabel("");
     }
   }
 
   /* ---------------- render ---------------- */
 
-  const activeDoc = printMount ? docs[printMount.jobId] : null;
   const needCredits = Math.max(0, unpaid.length - credits.total);
   /**
    * Nothing bought, nothing built yet: this is the moment right after the
@@ -562,7 +744,12 @@ export function RunWorkspace({
    */
   const paywallLeads = needCredits > 0 && generated === 0 && credits.total === 0;
   const paywallEl = needCredits > 0 && (
-    <div className={paywallLeads ? "mt-6" : "mt-8"}>
+    // The id is what the navbar's "Add credits" scrolls to — the job
+    // workspace's pricing block already carries it.
+    <div
+      id={UNLOCK_SECTION_ID}
+      className={`scroll-mt-24 ${paywallLeads ? "mt-6" : "mt-8"}`}
+    >
       <h2 className="mb-3 text-center text-lg font-semibold text-ink">
         {paywallLeads
           ? `Unlock your ${unpaid.length} tailored CV${unpaid.length === 1 ? "" : "s"}`
@@ -609,6 +796,14 @@ export function RunWorkspace({
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <p className="text-sm font-semibold text-ink">
               {generated} of {jobs.length} generated
+              {/* A locked preview is generated but not downloadable, so the
+                  bare number would contradict the download button. */}
+              {previews.length > 0 && (
+                <span className="font-normal text-ink-faint">
+                  {" "}
+                  · {previews.length} still a locked preview
+                </span>
+              )}
             </p>
             {credits.total > 0 && (
               <Badge tone="green">
@@ -621,6 +816,42 @@ export function RunWorkspace({
             max={jobs.length}
             label={`${generated} of ${jobs.length} CVs generated`}
           />
+
+          {/* The wait itself. A bulk run is minutes long, and a bare progress
+              bar is where people give up — so say how long, say it plainly,
+              and offer something worth doing in the meantime. */}
+          {running && (
+            <div className="mt-4 rounded-2xl border-[1.5px] border-green-100 bg-green-50 p-4">
+              <p className="text-[14.5px] font-bold text-accent-deep">
+                Sit back — this takes a few minutes.
+              </p>
+              <p className="mt-1 text-[13.5px] leading-relaxed text-accent-deep/80">
+                We&apos;re tailoring {runTotal} CV{runTotal === 1 ? "" : "s"}{" "}
+                and writing an interview report for each one. Everything is
+                saved as it lands, so you can leave this page and come back.
+              </p>
+              {runTotal > 0 && (
+                <div className="mt-3">
+                  <ProgressBar
+                    value={runDone}
+                    max={runTotal}
+                    label={`${runDone} of ${runTotal} jobs finished`}
+                  />
+                </div>
+              )}
+              <LoadingAnnounce
+                label={`Generating job ${Math.min(runDone + 1, runTotal)} of ${runTotal}`}
+              />
+              {profile && !waitOpen && (
+                <button
+                  onClick={() => setWaitOpen(true)}
+                  className="mt-3 cursor-pointer text-[13px] font-semibold text-accent underline"
+                >
+                  Answer a few quick questions while you wait →
+                </button>
+              )}
+            </div>
+          )}
 
           {/* How the credits on hand are being spread across the run. Only
               worth saying when there is an allocation to make — with enough
@@ -673,8 +904,11 @@ export function RunWorkspace({
                 loading={downloading}
                 loadingLabel="Saving…"
                 onClick={downloadAll}
+                // The count moved off the label (it read as clutter) but is
+                // still worth having on hover, and in the progress line below.
+                title={`${fileCount} file${fileCount === 1 ? "" : "s"} — a CV and an interview report for each ready job`}
               >
-                Download all ({fileCount} file{fileCount === 1 ? "" : "s"})
+                Download all
               </Button>
             )}
             {/* Always available: the designs are worth seeing before you buy,
@@ -765,9 +999,18 @@ export function RunWorkspace({
                     {status === "queued" && "Paid — ready to generate"}
                     {status === "generating" && "Tailoring your CV… (30–90s)"}
                     {status === "unlocking" && "Applying your credit…"}
-                    {status === "failed" && state.kind === "failed" && (
-                      <span className="text-red-600">{state.message}</span>
-                    )}
+                    {status === "failed" &&
+                      state.kind === "failed" &&
+                      (state.code === "already_generated" ? (
+                        // Not a failure the user caused, and nothing was
+                        // charged — so it reads as a question, not an alarm.
+                        <span className="text-ink-soft">
+                          {state.message} Do you want to generate a new version
+                          anyway?
+                        </span>
+                      ) : (
+                        <span className="text-red-600">{state.message}</span>
+                      ))}
                   </p>
                   {job.dealbreakerHits.length > 0 && (
                     <p className="mt-0.5 text-[12.5px] font-medium text-amber-800">
@@ -795,15 +1038,36 @@ export function RunWorkspace({
                       Use 1 credit
                     </Button>
                   )}
-                {status === "failed" && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => runOne(job, !job.tier && previews.length === 0)}
-                  >
-                    Retry
-                  </Button>
-                )}
+                {/* An "already generated" failure is not a hiccup — retrying
+                    it can only fail the same way. Offer the one thing that
+                    does work: a fresh version. Unpaid jobs get the unlock
+                    button above instead (a revision needs a purchase). */}
+                {status === "failed" &&
+                  state.kind === "failed" &&
+                  state.code === "already_generated" &&
+                  Boolean(job.tier) && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={running}
+                      onClick={() => reviseOne(job)}
+                    >
+                      Generate new
+                    </Button>
+                  )}
+                {status === "failed" &&
+                  state.kind === "failed" &&
+                  state.code !== "already_generated" && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        runOne(job, !job.tier && previews.length === 0)
+                      }
+                    >
+                      Retry
+                    </Button>
+                  )}
                 {job.hasResult && (
                   <Link
                     href={`/jobs/${job.id}`}
@@ -869,44 +1133,23 @@ export function RunWorkspace({
         </div>
       </Modal>
 
+      {/* Something to do while the run finishes — optional, dismissable, and
+          every answer it collects lands on the user's card. */}
+      <WaitQuestionsModal
+        open={waitOpen}
+        profile={profile}
+        onClose={() => {
+          waitDismissed.current = true;
+          setWaitOpen(false);
+        }}
+      />
+
       {designOpen && (
         <DesignPreviewModal
           jdText={jobs.map((j) => `${j.title} ${j.company}`).join(" ")}
           busy={designBusy}
           onApply={applyDesign}
           onClose={() => setDesignSeed(null)}
-        />
-      )}
-
-      {/* The one document currently being printed. Exactly one CV and at most
-          one report is ever in the DOM — see mountForPrint. */}
-      {activeDoc &&
-        printMount?.target === "cv" &&
-        (() => {
-          // Theme and split used to be dropped here, so every batch download
-          // printed light and non-split however the user had set the design.
-          const template = asTemplate(activeDoc.template) ?? DEFAULT_TEMPLATE;
-          return (
-            <div className="print-cv-holder cv-print-reset">
-              <CvRenderer
-                cv={activeDoc.cv}
-                template={template}
-                theme={asCvTheme(activeDoc.cvTheme) ?? "light"}
-                split={effectiveSplit(template, activeDoc.splitView)}
-              />
-            </div>
-          );
-        })()}
-      {activeDoc && printMount?.target === "report" && activeDoc.simulation && (
-        <ReportPage
-          results={{
-            cv: activeDoc.cv,
-            diff: activeDoc.diff,
-            simulation: activeDoc.simulation,
-            jobTitle: activeDoc.title,
-            company: activeDoc.company,
-          }}
-          candidateName={candidateName}
         />
       )}
     </div>

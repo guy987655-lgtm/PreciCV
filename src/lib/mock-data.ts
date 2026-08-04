@@ -145,6 +145,7 @@ export function mockFunnelState(opts?: { withJob?: boolean }): FunnelState {
     reportStale: false,
     sharpenSuggestions: {},
     autoFilledIds: [],
+    skippedIds: [],
     knownIds: [],
     processName: "",
     greetingInfo: null,

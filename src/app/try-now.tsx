@@ -62,7 +62,7 @@ import {
 import { readAiSectionPref } from "@/lib/export-prefs";
 import { findCachedAnswers } from "@/lib/answer-cache";
 import { EMPTY_MATCH, MatchedAnswers, mergeMatches } from "@/lib/answer-match";
-import { printBoth, printFile } from "@/lib/download";
+import { downloadBoth, downloadPdf } from "@/lib/download";
 import { simMeta, useSimUser } from "@/lib/sim-user";
 import { useSession } from "@/lib/use-session";
 import {
@@ -126,6 +126,253 @@ function CheckCircle({ size = 26 }: { size?: number }) {
     >
       ✓
     </span>
+  );
+}
+
+/** Centered step heading. */
+function Heading({ title, sub }: { title: string; sub: string }) {
+  return (
+    <div className="text-center">
+      <h2 className="font-display text-[30px] font-extrabold tracking-tight text-ink">
+        {title}
+      </h2>
+      <p className="mt-2 text-[15px] text-ink-soft">{sub}</p>
+    </div>
+  );
+}
+
+/** Step-back control — moves between funnel steps, not between routes. */
+function BackButton({ onClick }: { onClick: () => void }) {
+  return (
+    <Button variant="ghost" size="md" onClick={onClick}>
+      ← Back
+    </Button>
+  );
+}
+
+/**
+ * The hiring company for one job.
+ *
+ * Typed into LOCAL state and written to the flow only on an explicit save.
+ * It used to write on every keystroke, and since the field only rendered
+ * while `needsCompanyName(draft)` — which is false the moment `company` is
+ * non-empty — the first character saved a one-letter company name and made
+ * the input vanish. Keeping the draft local means the field stays open for
+ * exactly as long as the user is typing in it.
+ */
+function CompanyField({
+  initial,
+  required,
+  onSave,
+  onCancel,
+}: {
+  initial: string;
+  /** The lookup came back empty, so this job cannot continue without a name. */
+  required: boolean;
+  onSave: (name: string) => void;
+  onCancel?: () => void;
+}) {
+  const [value, setValue] = useState(initial);
+  const name = value.trim();
+  const save = () => {
+    if (name) onSave(name);
+  };
+  return (
+    <div>
+      <label className="text-[12.5px] font-semibold text-ink-soft">
+        Company{" "}
+        <span className="font-normal text-ink-faint">
+          (used to name your downloaded files)
+        </span>
+      </label>
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        <Input
+          autoFocus
+          className={`flex-1 ${required ? "border-amber-400 bg-amber-50/40" : ""}`}
+          placeholder="e.g. Monday.com"
+          value={value}
+          aria-invalid={required || undefined}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              save();
+            }
+            if (e.key === "Escape" && onCancel) onCancel();
+          }}
+        />
+        <Button size="sm" disabled={!name} onClick={save}>
+          Save
+        </Button>
+        {onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="cursor-pointer text-[12.5px] font-semibold text-ink-faint underline hover:text-ink"
+          >
+            Cancel
+          </button>
+        )}
+      </div>
+      {required && (
+        <p className="mt-1 text-[12.5px] font-medium text-amber-800">
+          We couldn&apos;t find the company in this posting — add it so your
+          files are named for the right employer.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** One finished job: what it is, plus the controls to revisit it. */
+function JobChip({
+  draft,
+  index,
+  onEditJd,
+  onRemove,
+  onSaveCompany,
+}: {
+  draft: JobDraft;
+  index: number;
+  onEditJd: () => void;
+  onRemove: () => void;
+  onSaveCompany: (name: string) => void;
+}) {
+  const chars = draft.jdText.trim().length;
+  // Only once the lookup has actually run and come back empty — see
+  // needsCompanyName. An unread posting has nothing to report yet.
+  const needsCompany = needsCompanyName(draft);
+  // A name that came back wrong (or from the wrong company) was unreachable
+  // once saved: the chip's Edit reopens the JD, which has no company field.
+  const [editingCompany, setEditingCompany] = useState(false);
+  const showCompanyField = needsCompany || editingCompany;
+  return (
+    <div className="flex flex-col gap-2 rounded-2xl border-[1.5px] border-border bg-card p-3.5">
+      <div className="flex items-center gap-2.5">
+        <CheckCircle size={22} />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[14.5px] font-bold text-ink">
+            {draft.company.trim() || `Job ${index + 1}`}
+            {draft.title.trim() && (
+              <span className="font-normal text-ink-faint">
+                {" "}
+                · {draft.title.trim()}
+              </span>
+            )}
+            {draft.company.trim() && !showCompanyField && (
+              <button
+                type="button"
+                onClick={() => setEditingCompany(true)}
+                title="Change the company name"
+                className="ms-1.5 cursor-pointer text-[12px] font-semibold text-accent"
+              >
+                ✎
+              </button>
+            )}
+          </span>
+          <span className="block text-[12.5px] text-ink-faint">
+            {draft.looking
+              ? "Reading the posting…"
+              : `${chars.toLocaleString("en-GB")} characters pasted`}
+          </span>
+        </span>
+        {draft.looking && <Spinner />}
+        <button
+          type="button"
+          onClick={onEditJd}
+          className="cursor-pointer text-[12.5px] font-semibold text-accent underline"
+        >
+          Edit
+        </button>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="cursor-pointer text-[12.5px] font-semibold text-ink-faint underline hover:text-ink"
+        >
+          Remove
+        </button>
+      </div>
+      {/* Every exported file is named after the employer, so a job with no
+          company would produce downloads the user cannot tell apart. */}
+      {showCompanyField && (
+        <CompanyField
+          // Remounts with the stored value each time the field is opened.
+          key={editingCompany ? "edit" : "ask"}
+          initial={draft.company}
+          required={needsCompany}
+          onSave={(name) => {
+            onSaveCompany(name);
+            setEditingCompany(false);
+          }}
+          onCancel={
+            editingCompany ? () => setEditingCompany(false) : undefined
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+/** The one open job card: paste here, blur to file it away. */
+function JobEditor({
+  draft,
+  index,
+  total,
+  onChangeJd,
+  onCommit,
+  onRemove,
+}: {
+  draft: JobDraft;
+  index: number;
+  total: number;
+  onChangeJd: (jdText: string) => void;
+  onCommit: () => void;
+  onRemove: () => void;
+}) {
+  const typed = draft.jdText.trim().length;
+  return (
+    <div className="flex flex-col gap-2 rounded-2xl border-[2.5px] border-accent bg-card p-3.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[14.5px] font-bold text-ink">
+          {total > 1 ? `Job ${index + 1}` : "The job you want"}
+        </span>
+        {total > 1 && (
+          <button
+            type="button"
+            onClick={onRemove}
+            className="cursor-pointer text-[12.5px] font-semibold text-ink-faint underline hover:text-ink"
+          >
+            Remove
+          </button>
+        )}
+      </div>
+      <Textarea
+        autoFocus={total > 1}
+        rows={8}
+        className="min-h-[190px] resize-none rounded-lg border-2 text-[15px] leading-relaxed"
+        placeholder={
+          "--- Copied from LinkedIn ---\nSenior Product Manager, Growth\nTel Aviv · Hybrid\nWe're looking for a PM to own our activation funnel end-to-end…"
+        }
+        value={draft.jdText}
+        onChange={(e) => onChangeJd(e.target.value)}
+        onBlur={onCommit}
+      />
+      {typed > 0 && typed < MIN_JD_CHARS ? (
+        <p className="text-[12.5px] text-ink-faint">
+          Paste a bit more of the job posting (min. {MIN_JD_CHARS} characters)
+        </p>
+      ) : (
+        typed >= MIN_JD_CHARS && (
+          <button
+            type="button"
+            onClick={onCommit}
+            className="cursor-pointer self-start text-[13px] font-semibold text-accent underline"
+          >
+            Done with this job
+          </button>
+        )
+      )}
+    </div>
   );
 }
 
@@ -239,9 +486,12 @@ export function TryNow() {
    */
   const simulationMissing =
     results !== null && results.simulation.questions.length === 0;
+  // The file count used to live in the label; it read as clutter next to a
+  // verb. What the button hands over is spelled out in the notice below it
+  // when the simulation is missing, which is the only case worth flagging.
   const downloadLabel = simulationMissing
-    ? "Download my CV (PDF)"
-    : "Download my files (2 PDFs)";
+    ? "Download my CV"
+    : "Download my files";
   // §2.2 isDirty — true from the first change relative to lastSavedState.
   const isDirty =
     editing &&
@@ -344,22 +594,41 @@ export function TryNow() {
       });
       return { ...s, ...flags, versions: appendVersion(s.versions, version) };
     });
-    const meta = {
-      name: state.profile?.contact.fullName,
-      company: state.results?.company,
-    };
-    // No simulation → no second file worth handing over (its questions are
-    // the entire point of the report), so print the CV alone.
-    const job =
-      state.results && state.results.simulation.questions.length === 0
-        ? Promise.resolve(printFile("cv", meta))
-        : printBoth(meta);
-    // The button stays busy until the last dialog has been handed over, so a
-    // second click cannot stack another burst of dialogs behind this one.
-    void job.finally(() => {
+    if (state.results) {
+      const payload = {
+        meta: {
+          name: state.profile?.contact.fullName ?? "",
+          company: state.results.company ?? "",
+        },
+        cv: state.results.cv,
+        template: state.template,
+        theme: state.cvTheme,
+        split: state.splitView,
+        diff: state.results.diff,
+        simulation: state.results.simulation,
+        jobTitle: state.results.jobTitle ?? "",
+        company: state.results.company ?? "",
+      };
+      // No simulation → no second file worth handing over (its questions are
+      // the entire point of the report), so save the CV alone.
+      const job =
+        state.results.simulation.questions.length === 0
+          ? downloadPdf("cv", payload)
+          : downloadBoth(payload);
+      // The button stays busy until the last file has been saved, so a second
+      // click cannot stack another burst of downloads behind this one.
+      void job
+        .catch((e: unknown) =>
+          setError(e instanceof Error ? e.message : "Download failed")
+        )
+        .finally(() => {
+          exportInFlight.current = false;
+          setPrinting(false);
+        });
+    } else {
       exportInFlight.current = false;
       setPrinting(false);
-    });
+    }
     setPrintRequest(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [printRequest, reportBusy]);
@@ -448,6 +717,14 @@ export function TryNow() {
         mcqAnswers: { ...s.mcqAnswers, [qId]: { ...prev, skipped } },
       };
     });
+  }
+  /** An open question the user passed on — resolved, not left unanswered. */
+  function skipOpen(qId: string) {
+    setState((s) =>
+      s.skippedIds.includes(qId)
+        ? s
+        : { ...s, skippedIds: [...s.skippedIds, qId] }
+    );
   }
   function answerOpen(qId: string, text: string) {
     setState((s) => ({
@@ -582,6 +859,7 @@ export function TryNow() {
           answers: {},
           answerTimes: {},
           autoFilledIds: [],
+          skippedIds: [],
           knownIds: [],
           processName: "",
           roleQuestionsLoaded: false,
@@ -815,6 +1093,8 @@ export function TryNow() {
           ].map((id) => [id, Date.now()])
         ),
         autoFilledIds: known.knownIds,
+        // A fresh question pool carries no skips from the previous one.
+        skippedIds: [],
         knownIds: known.knownIds,
         greetingInfo: data.greeting ?? null,
         step: nextStep,
@@ -1220,7 +1500,13 @@ export function TryNow() {
   }
 
   function goToSignup(source: string) {
-    if (!state.profile) return;
+    // Never silent: this is the last click of the questionnaire, and a
+    // no-op here reads exactly like the button being broken.
+    if (!state.profile) {
+      goTo("upload"); // clears `error`, so the message is set after it
+      setError("We lost your CV analysis — please upload your CV again.");
+      return;
+    }
     trackButtonClick({
       button_name: source,
       action: "signup_gate",
@@ -1238,7 +1524,11 @@ export function TryNow() {
    * only — invisible to History and impossible to return to.
    */
   function goToImport(source: string) {
-    if (!state.profile) return;
+    if (!state.profile) {
+      goTo("upload"); // clears `error`, so the message is set after it
+      setError("We lost your CV analysis — please upload your CV again.");
+      return;
+    }
     trackButtonClick({
       button_name: source,
       action: "import_signed_in",
@@ -1377,153 +1667,16 @@ export function TryNow() {
     </div>
   );
 
-  function BackButton({ to }: { to: FunnelStep }) {
-    return (
-      <Button variant="ghost" size="md" onClick={() => goTo(to)}>
-        ← Back
-      </Button>
-    );
-  }
-
-  function Heading({ title, sub }: { title: string; sub: string }) {
-    return (
-      <div className="text-center">
-        <h2 className="font-display text-[30px] font-extrabold tracking-tight text-ink">
-          {title}
-        </h2>
-        <p className="mt-2 text-[15px] text-ink-soft">{sub}</p>
-      </div>
-    );
-  }
-
   /* -------- upload card interior (shared by hero + step layouts) ------ */
 
   /**
    * The flow is strictly sequential: the CV first, then one job description at
    * a time. A finished stage collapses into a one-line chip so the only thing
    * ever expanded is the thing the user is being asked for right now.
+   * JobChip and JobEditor live at module scope (top of this file): declared
+   * in here they were a fresh component type on every render, so React
+   * remounted the card — and the input lost focus — on each keystroke.
    */
-
-  /** One finished job: what it is, plus the controls to revisit it. */
-  function JobChip({ draft, index }: { draft: JobDraft; index: number }) {
-    const chars = draft.jdText.trim().length;
-    // Only once the lookup has actually run and come back empty — see
-    // needsCompanyName. An unread posting has nothing to report yet.
-    const needsCompany = needsCompanyName(draft);
-    return (
-      <div className="flex flex-col gap-2 rounded-2xl border-[1.5px] border-border bg-card p-3.5">
-        <div className="flex items-center gap-2.5">
-          <CheckCircle size={22} />
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-[14.5px] font-bold text-ink">
-              {draft.company.trim() || `Job ${index + 1}`}
-              {draft.title.trim() && (
-                <span className="font-normal text-ink-faint">
-                  {" "}
-                  · {draft.title.trim()}
-                </span>
-              )}
-            </span>
-            <span className="block text-[12.5px] text-ink-faint">
-              {draft.looking
-                ? "Reading the posting…"
-                : `${chars.toLocaleString("en-GB")} characters pasted`}
-            </span>
-          </span>
-          {draft.looking && <Spinner />}
-          <button
-            type="button"
-            onClick={() => {
-              patchJob(draft.key, { committed: false });
-              setOpenedJob(draft.key);
-            }}
-            className="cursor-pointer text-[12.5px] font-semibold text-accent underline"
-          >
-            Edit
-          </button>
-          <button
-            type="button"
-            onClick={() => removeJob(draft.key)}
-            className="cursor-pointer text-[12.5px] font-semibold text-ink-faint underline hover:text-ink"
-          >
-            Remove
-          </button>
-        </div>
-        {/* Every exported file is named after the employer, so a job with no
-            company would produce downloads the user cannot tell apart. */}
-        {needsCompany && (
-          <div>
-            <label className="text-[12.5px] font-semibold text-ink-soft">
-              Company{" "}
-              <span className="font-normal text-ink-faint">
-                (used to name your downloaded files)
-              </span>
-            </label>
-            <Input
-              className="mt-1 border-amber-400 bg-amber-50/40"
-              placeholder="e.g. Monday.com"
-              value={draft.company}
-              aria-invalid
-              onChange={(e) => patchJob(draft.key, { company: e.target.value })}
-            />
-            <p className="mt-1 text-[12.5px] font-medium text-amber-800">
-              We couldn&apos;t find the company in this posting — add it so your
-              files are named for the right employer.
-            </p>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  /** The one open job card: paste here, blur to file it away. */
-  function JobEditor({ draft, index }: { draft: JobDraft; index: number }) {
-    const typed = draft.jdText.trim().length;
-    return (
-      <div className="flex flex-col gap-2 rounded-2xl border-[2.5px] border-accent bg-card p-3.5">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[14.5px] font-bold text-ink">
-            {jobDrafts.length > 1 ? `Job ${index + 1}` : "The job you want"}
-          </span>
-          {jobDrafts.length > 1 && (
-            <button
-              type="button"
-              onClick={() => removeJob(draft.key)}
-              className="cursor-pointer text-[12.5px] font-semibold text-ink-faint underline hover:text-ink"
-            >
-              Remove
-            </button>
-          )}
-        </div>
-        <Textarea
-          autoFocus={jobDrafts.length > 1}
-          rows={8}
-          className="min-h-[190px] resize-none rounded-lg border-2 text-[15px] leading-relaxed"
-          placeholder={
-            "--- Copied from LinkedIn ---\nSenior Product Manager, Growth\nTel Aviv · Hybrid\nWe're looking for a PM to own our activation funnel end-to-end…"
-          }
-          value={draft.jdText}
-          onChange={(e) => patchJob(draft.key, { jdText: e.target.value })}
-          onBlur={() => commitJob(draft)}
-        />
-        {typed > 0 && typed < MIN_JD_CHARS ? (
-          <p className="text-[12.5px] text-ink-faint">
-            Paste a bit more of the job posting (min. {MIN_JD_CHARS} characters)
-          </p>
-        ) : (
-          typed >= MIN_JD_CHARS && (
-            <button
-              type="button"
-              onClick={() => commitJob(draft)}
-              className="cursor-pointer self-start text-[13px] font-semibold text-accent underline"
-            >
-              Done with this job
-            </button>
-          )
-        )}
-      </div>
-    );
-  }
 
   function uploadFields(cta: "dark" | "primary") {
     const cvSettled = state.profile !== null && hasCvReady && !cvOpen;
@@ -1710,9 +1863,29 @@ export function TryNow() {
               )}
               {jobDrafts.map((draft, i) =>
                 expandedJob === draft.key ? (
-                  <JobEditor key={draft.key} draft={draft} index={i} />
+                  <JobEditor
+                    key={draft.key}
+                    draft={draft}
+                    index={i}
+                    total={jobDrafts.length}
+                    onChangeJd={(jdText) => patchJob(draft.key, { jdText })}
+                    onCommit={() => commitJob(draft)}
+                    onRemove={() => removeJob(draft.key)}
+                  />
                 ) : (
-                  <JobChip key={draft.key} draft={draft} index={i} />
+                  <JobChip
+                    key={draft.key}
+                    draft={draft}
+                    index={i}
+                    onEditJd={() => {
+                      patchJob(draft.key, { committed: false });
+                      setOpenedJob(draft.key);
+                    }}
+                    onRemove={() => removeJob(draft.key)}
+                    onSaveCompany={(company) =>
+                      patchJob(draft.key, { company })
+                    }
+                  />
                 )
               )}
               {showAddJob && (
@@ -1911,6 +2084,7 @@ export function TryNow() {
             registered={meta.registered}
             onUpdateMcq={updateMcqAnswer}
             onSkipMcq={(id) => setMcqSkipped(id, true)}
+            onSkipOpen={skipOpen}
             onAnswerOpen={answerOpen}
             onClearAutoFilled={clearAutoFilled}
             onLoadRole={loadRoleQuestions}
@@ -1922,6 +2096,7 @@ export function TryNow() {
             // reflect — without it the click looked like nothing happened for
             // the beat before the route changed.
             generateBusy={leaving}
+            jobCount={readyDrafts.length}
             onBack={() => goTo("upload")}
             onGreetingReply={(reply) =>
               patch({ greetingReply: reply, greetingDone: true })
@@ -1989,7 +2164,7 @@ export function TryNow() {
             .
           </p>
           <div className="flex items-center gap-3">
-            <BackButton to="chat" />
+            <BackButton onClick={() => goTo("chat")} />
             <button
               className="cursor-pointer text-[13px] text-muted underline transition-colors hover:text-ink-soft"
               onClick={startOver}
@@ -2360,7 +2535,7 @@ export function TryNow() {
             onAddJob={() => goTo("upload")}
           />
           <div>
-            <BackButton to="chat" />
+            <BackButton onClick={() => goTo("chat")} />
           </div>
         </div>
       )}
@@ -2380,7 +2555,7 @@ export function TryNow() {
           <Button size="lg" onClick={() => router.push("/demo")}>
             Open the workspace (demo) →
           </Button>
-          <BackButton to="chat" />
+          <BackButton onClick={() => goTo("chat")} />
         </div>
       )}
 

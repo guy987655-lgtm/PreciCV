@@ -82,6 +82,9 @@ export default async function RunPage({
         runId={id}
         initialJobs={initialJobs}
         candidateName={profile.success ? profile.data.contact.fullName : ""}
+        // The whole profile, not just the name: the optional questions offered
+        // during a long run are generated from it (see WaitQuestionsModal).
+        profile={profile.success ? profile.data : null}
       />
     </main>
   );

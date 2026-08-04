@@ -138,8 +138,21 @@ export async function POST(request: Request) {
         unlocked: true,
       });
     }
+    /**
+     * Nothing has been written and no LLM call has been made at this point, so
+     * this attempt costs the user nothing — which is exactly what they cannot
+     * tell from a bare sentence. The code lets the client offer the only real
+     * way forward (a fresh revision via /api/revise) instead of a Retry button
+     * that can only fail the same way.
+     */
     return NextResponse.json(
-      { error: "This job already has a generated CV" },
+      {
+        error: "already_generated",
+        generationId: existing.id,
+        isSample: Boolean(existing.is_sample),
+        message:
+          "This job already has a generated CV — no credit was charged for this attempt.",
+      },
       { status: 409 }
     );
   }

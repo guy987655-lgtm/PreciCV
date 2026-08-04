@@ -310,6 +310,7 @@ export function TransitionBlock({
   onGenerate,
   generateBusy,
   registered,
+  ctaLabel,
 }: {
   branchChoice: FunnelState["branchChoice"];
   branchStarted: boolean;
@@ -318,6 +319,8 @@ export function TransitionBlock({
   onGenerate: () => void;
   generateBusy: boolean;
   registered: boolean;
+  /** The one finish-CTA wording, shared with the footer and the FinishBlock. */
+  ctaLabel: string;
 }) {
   // Live while the choice is still pending at mount; otherwise static history.
   const [live] = useState(() => branchChoice === "");
@@ -391,13 +394,66 @@ export function TransitionBlock({
                 loadingLabel="Generating…"
                 onClick={onGenerate}
               >
-                {registered
-                  ? "Generate Reports →"
-                  : "Register to see your results →"}
+                {ctaLabel}
               </Button>
             </div>
           )}
         </>
+      )}
+    </>
+  );
+}
+
+/**
+ * The finish line.
+ *
+ * Rendered from the transcript's own end state — never from the branch flags —
+ * so no combination of skips, panel edits or branch choices can leave the user
+ * at the end of the questionnaire with nothing to click. When something is
+ * still unanswered it says so and offers to open it, rather than withholding
+ * the CTA and explaining nothing.
+ */
+export function FinishBlock({
+  animate,
+  recap,
+  pendingCount,
+  ctaLabel,
+  generateBusy,
+  onGenerate,
+  onReview,
+}: {
+  animate: boolean;
+  recap: string;
+  /** Core questions still unanswered (a panel edit can un-answer a passed one). */
+  pendingCount: number;
+  ctaLabel: string;
+  generateBusy: boolean;
+  onGenerate: () => void;
+  /** Opens the first unanswered question in the shared edit overlay. */
+  onReview: () => void;
+}) {
+  const [introDone, setIntroDone] = useState(!animate);
+  return (
+    <>
+      <TypingBotMessage animate={animate} onDone={() => setIntroDone(true)}>
+        {recap}
+      </TypingBotMessage>
+      {introDone && (
+        <div className="chat-pop-in flex flex-row flex-wrap items-center gap-2 pl-[42px]">
+          <Button
+            size="lg"
+            loading={generateBusy}
+            loadingLabel="Generating…"
+            onClick={onGenerate}
+          >
+            {ctaLabel}
+          </Button>
+          {pendingCount > 0 && (
+            <Button size="md" variant="white" onClick={onReview}>
+              Answer the {pendingCount === 1 ? "last one" : `last ${pendingCount}`} →
+            </Button>
+          )}
+        </div>
       )}
     </>
   );

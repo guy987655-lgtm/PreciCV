@@ -33,7 +33,8 @@ export default async function JobPage({
 
   const { data: job } = await supabase
     .from("jobs")
-    .select("id, title, company, jd_text, dealbreaker_hits, status")
+    // `batch_id` is the run this job belongs to — it is what Back goes to.
+    .select("id, title, company, jd_text, dealbreaker_hits, status, batch_id")
     .eq("id", id)
     .single();
   if (!job) notFound();
@@ -106,6 +107,7 @@ export default async function JobPage({
       }
       freeSampleAvailable={freeSampleAvailable}
       justPaid={justPaid}
+      runId={(job.batch_id as string | null) ?? null}
     />
   );
 }

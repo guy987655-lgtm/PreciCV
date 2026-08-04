@@ -4,8 +4,11 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { goHome, loadFunnel } from "@/lib/funnel";
+import { markNavigation } from "@/lib/nav-history";
 import { useSession } from "@/lib/use-session";
 import { createClient } from "@/lib/supabase/client";
+import { BackButton } from "@/components/back-button";
+import { CreditChip } from "@/components/credit-chip";
 
 /**
  * The shared top bar.
@@ -16,10 +19,25 @@ import { createClient } from "@/lib/supabase/client";
  * A resumable flow surfaces a Continue button here, so leaving the questions
  * or results page is recoverable from anywhere.
  */
-export function Navbar() {
+export function Navbar({
+  /**
+   * An explicit parent for the Back control, for pages that know where they
+   * came from (a job knows its run). Without it Back uses real history, and
+   * falls back to a sensible parent on a cold landing.
+   */
+  backHref,
+}: {
+  backHref?: string;
+} = {}) {
   const pathname = usePathname();
   const router = useRouter();
   const { signedIn, user } = useSession();
+
+  // Every page renders the Navbar, so this is the one place that sees every
+  // in-app navigation — which is what makes Back safe to offer (nav-history).
+  useEffect(() => {
+    markNavigation(pathname);
+  }, [pathname]);
 
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -80,13 +98,16 @@ export function Navbar() {
 
   return (
     <nav className="mx-auto flex max-w-[1280px] items-center justify-between px-6 py-5 sm:px-14">
-      <Link
-        href="/"
-        onClick={goHome}
-        className="font-display text-[23px] font-extrabold tracking-tight text-ink"
-      >
-        Spe<span className="text-accent">CV</span>
-      </Link>
+      <div className="flex items-center gap-1.5">
+        <BackButton href={backHref} />
+        <Link
+          href="/"
+          onClick={goHome}
+          className="font-display text-[23px] font-extrabold tracking-tight text-ink"
+        >
+          Spe<span className="text-accent">CV</span>
+        </Link>
+      </div>
 
       <div className="flex items-center gap-4 text-[15px] font-semibold sm:gap-5">
         {pathname === "/" && (
@@ -107,6 +128,10 @@ export function Navbar() {
             Continue →
           </button>
         )}
+
+        {/* Sits with the avatar: the balance belongs to the account, and this
+            is where users look for account things. */}
+        <CreditChip enabled={signedIn} />
 
         {signedIn ? (
           <div className="relative" ref={menuRef}>

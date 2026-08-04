@@ -21,6 +21,7 @@ import {
   isPassed,
   itemStatus,
   questionView,
+  sequenceProgress,
 } from "@/lib/chat-seq";
 import { MAX_ASKED_MCQ, MAX_ASKED_OPEN } from "@/lib/types";
 import { Button, Modal, Spinner, Textarea } from "@/components/ui";
@@ -33,6 +34,7 @@ import { McqOptions } from "@/components/mcq-options";
 import { ChatQuestionPanel } from "@/components/chat-question-panel";
 import {
   BotBubble,
+  FinishBlock,
   GreetingBlock,
   SCRIPT_TYPING_MS,
   TransitionBlock,
@@ -63,6 +65,8 @@ type ChatFlowProps = {
   registered: boolean;
   onUpdateMcq: (qId: string, next: McqAnswer) => void;
   onSkipMcq: (qId: string) => void;
+  /** Records an open question the user passed on (persisted with the flow). */
+  onSkipOpen: (qId: string) => void;
   onAnswerOpen: (qId: string, text: string) => void;
   onClearAutoFilled: (qId: string) => void;
   onLoadRole: () => void;
@@ -70,6 +74,8 @@ type ChatFlowProps = {
   sharpenBusy: boolean;
   onGenerate: () => void;
   generateBusy: boolean;
+  /** How many jobs this flow will generate for — used in the finish copy. */
+  jobCount: number;
   onBack: () => void;
   onGreetingReply: (reply: string) => void;
   onBranch: (choice: "continue" | "generate") => void;
@@ -358,6 +364,7 @@ export function ChatFlow({
   registered,
   onUpdateMcq,
   onSkipMcq,
+  onSkipOpen,
   onAnswerOpen,
   onClearAutoFilled,
   onLoadRole,
@@ -365,6 +372,7 @@ export function ChatFlow({
   sharpenBusy,
   onGenerate,
   generateBusy,
+  jobCount,
   onBack,
   onGreetingReply,
   onBranch,
@@ -388,10 +396,13 @@ export function ChatFlow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.mcq, state.questionnaire, state.knownIds]);
 
-  // Open questions the user explicitly skipped this session (MCQ skips live in
-  // funnel state; open questions have no such field, so track them locally).
-  const [skippedIds, setSkippedIds] = useState<string[]>([]);
-  const skipped = useMemo(() => new Set(skippedIds), [skippedIds]);
+  // Open questions the user explicitly passed on. Persisted with the flow —
+  // as component state a reload emptied it, so the panel kept calling a
+  // question "Skipped" while the cursor jumped back to ask it again.
+  const skipped = useMemo(
+    () => new Set(state.skippedIds ?? []),
+    [state.skippedIds]
+  );
 
   // The furthest question the conversation has reached. Everything before it is
   // rendered as completed bubbles; the item AT the cursor is interactive.
@@ -425,22 +436,16 @@ export function ChatFlow({
   );
 
   /**
-   * The core set — everything the flow asks by default: the capped MCQ budget
-   * (phase 1) plus the open questions (phase 3). Optional questions (phase 2)
-   * only exist after the user opts into the role bank, so they sit outside
-   * this count and outside the gate.
-   *
-   * This used to be phase 1 alone, which put the generate/continue branch
-   * BETWEEN the MCQs and the open questions. Once the pool is capped there is
-   * no optional tier in between, so that branch would have ended the flow
-   * before the open questions were ever asked.
+   * How far the core set — everything the flow asks by default (the capped MCQ
+   * budget plus the open questions) — has got. `coreDone` means nothing is
+   * still PENDING: a skipped question is resolved, exactly as the Skip button
+   * promises. Counting only answered/auto is what used to strand users, since
+   * every exit from the questionnaire hangs off this flag.
    */
-  const core = seq.filter((it) => it.phase !== 2);
-  const coreAnswered = core.filter((it) => {
-    const st = itemStatus(it, state, skipped);
-    return st === "answered" || st === "auto";
-  }).length;
-  const coreDone = coreAnswered >= core.length;
+  const progress = sequenceProgress(seq, state, skipped);
+  const core = progress.core;
+  const coreDone = progress.coreDone;
+  const pendingCore = progress.pending;
 
   const nextUnpassed = (from: number): number => {
     let n = from;
@@ -518,7 +523,7 @@ export function ChatFlow({
 
   function skipCurrent(item: SeqItem) {
     if (item.kind === "mcq") onSkipMcq(item.q.id);
-    else setSkippedIds((s) => [...s, item.q.id]);
+    else onSkipOpen(item.q.id);
     advance();
   }
 
@@ -606,13 +611,17 @@ export function ChatFlow({
     (it) => it.phase === 2 && !isPassed(it, state, skipped)
   ).length;
 
+  /** Everything still unanswered, core and optional alike. */
+  const unanswered = pendingCore.length + remainingOptional;
+
   /**
-   * Footer CTA click: while optional questions remain in the continue
-   * branch, interpose a confirmation so a misclick can't end the session;
-   * otherwise generate directly (unchanged behavior).
+   * Finish CTA click: while anything is still unanswered, interpose a
+   * confirmation so a misclick can't end the session; otherwise generate
+   * directly. The button itself is never disabled for unanswered questions —
+   * a dead button at the finish line explains nothing.
    */
   function handleGenerateClick() {
-    if (optionalUnlocked && remainingOptional > 0) setConfirmGenerate(true);
+    if (unanswered > 0) setConfirmGenerate(true);
     else onGenerate();
   }
   // Past the core questions with no branch opening more: cap the transcript
@@ -626,6 +635,35 @@ export function ChatFlow({
       ? Math.min(visibleCount, coreEnd)
       : visibleCount;
 
+  /**
+   * The invariant: once the conversation has nothing left to ask, a finish CTA
+   * is on screen. The ONLY state that withholds it here is the live transition
+   * beat — which renders its own CTA under exactly the same condition — so no
+   * combination of skips, panel edits or branch flags can strand the user.
+   */
+  const canFinish = greetingReady && (coreDone || done);
+  const showFinishBlock = greetingReady && done && !rolePending && !inTransition;
+  const showFooterCta = generateUnlocked || (canFinish && !inTransition);
+
+  /** One wording for the finish CTA, wherever it appears. */
+  const ctaLabel = !registered
+    ? "Register to see your results →"
+    : jobCount > 1
+      ? `Generate for ${jobCount} jobs →`
+      : "Generate my CV + report →";
+
+  const answeredWord = `${progress.answered} answer${progress.answered === 1 ? "" : "s"}`;
+  const finishRecap =
+    pendingCore.length > 0
+      ? pendingCore.length === 1
+        ? "That's everything I had to ask — one answer is still blank. Finish now and I'll work with what I have, or fill it in first."
+        : `That's everything I had to ask — ${pendingCore.length} answers are still blank. Finish now and I'll work with what I have, or fill them in first.`
+      : progress.answered > 0
+        ? `All set — I have ${answeredWord} to work with${
+            jobCount > 1 ? ` for your ${jobCount} jobs` : ""
+          }. Generate your CV and interview report whenever you're ready.`
+        : "All set — generate your CV and interview report whenever you're ready.";
+
   /** Right-to-left display language (Hebrew, Arabic) — see i18n.ts. */
 
   const transitionEl = (
@@ -637,6 +675,7 @@ export function ChatFlow({
       onGenerate={onGenerate}
       generateBusy={generateBusy}
       registered={registered}
+      ctaLabel={ctaLabel}
     />
   );
 
@@ -847,33 +886,42 @@ export function ChatFlow({
             <Spinner label="Drafting example answers from your CV…" />
           )}
 
-          {done && generateUnlocked && !rolePending && (
-            <TypingBotMessage animate={initialCursor < seq.length}>
-              All set — generate your CV and interview report whenever you’re
-              ready.
-            </TypingBotMessage>
+          {/* The finish line. Gated on the transcript being exhausted — NOT on
+              the branch flags, which is what used to make one skipped question
+              hide every route out of the questionnaire. */}
+          {showFinishBlock && (
+            <FinishBlock
+              animate={initialCursor < seq.length}
+              recap={finishRecap}
+              pendingCount={pendingCore.length}
+              ctaLabel={ctaLabel}
+              generateBusy={generateBusy}
+              onGenerate={handleGenerateClick}
+              onReview={() => setEditingItem(pendingCore[0] ?? null)}
+            />
           )}
           {/* Scroll sentinel — the bottom margin keeps auto-scrolled content
               clear of the sticky footer below (PRD Topics 3 & 5). */}
           <div ref={bottomRef} className="scroll-mb-24" />
         </div>
 
-        {/* Sticky action footer. Generate appears only once a branch resolved
-            (PRD 1.5.7) — before that the CTA lives inside the chat script. */}
+        {/* Sticky action footer. The CTA appears the moment the conversation
+            has nothing left to ask — the one exception is the live transition
+            beat, which is showing its own CTA (PRD 1.5.7). It is never
+            rendered disabled: unanswered questions route through the
+            confirmation below, which can say what is missing. */}
         <div className="sticky bottom-0 z-10 -mx-6 -mb-6 mt-4 flex items-center justify-between gap-3 rounded-b-[16px] border-t border-border bg-card/90 px-6 py-3 backdrop-blur">
           <Button variant="ghost" size="md" onClick={onBack}>
             ← Back
           </Button>
           <div className="flex items-center gap-3">
-            {!coreDone && (
-              <span className="text-[12.5px] text-ink-faint">
-                {coreAnswered}/{core.length} questions
-              </span>
-            )}
-            {generateUnlocked && (
+            <span className="text-[12.5px] text-ink-faint">
+              {coreDone && "✓ "}
+              {progress.resolved}/{core.length} questions
+            </span>
+            {showFooterCta && (
               <Button
                 size="lg"
-                disabled={!coreDone}
                 // Busy while the role bank loads too: generating here would
                 // silently throw away the questions the user just asked for,
                 // and `remainingOptional` is 0 at that moment so the
@@ -885,9 +933,7 @@ export function ChatFlow({
                   coreDone ? "ring-2 ring-accent/30 ring-offset-2" : ""
                 }
               >
-                {registered
-                  ? "Generate my reports →"
-                  : "Register to see your results →"}
+                {ctaLabel}
               </Button>
             )}
           </div>
@@ -920,8 +966,10 @@ export function ChatFlow({
         </div>
       )}
 
-      {/* Confirm leaving the optional questions to generate (PRD
-          questionnaire-flow Topic 2) — cancel returns to the flow intact. */}
+      {/* Confirm finishing with questions still open (PRD questionnaire-flow
+          Topic 2) — cancel returns to the flow intact. Covers core questions
+          too: one can fall back to unanswered by being cleared in the panel,
+          and the CTA stays live rather than going quietly dead. */}
       <Modal
         open={confirmGenerate}
         onClose={() => setConfirmGenerate(false)}
@@ -930,8 +978,7 @@ export function ChatFlow({
         <p className="text-[14.5px] leading-relaxed text-ink-soft">
           You have{" "}
           <span className="font-bold text-ink">
-            {remainingOptional} optional question
-            {remainingOptional === 1 ? "" : "s"}
+            {unanswered} unanswered question{unanswered === 1 ? "" : "s"}
           </span>{" "}
           left. Want to wrap up here? Everything you&apos;ve answered so far is
           saved.
@@ -940,9 +987,15 @@ export function ChatFlow({
           <Button
             variant="outline"
             size="md"
-            onClick={() => setConfirmGenerate(false)}
+            onClick={() => {
+              setConfirmGenerate(false);
+              // A pending CORE question sits behind the cursor, so "keep
+              // answering" has to take the user there — otherwise the modal
+              // closes onto the same finished-looking transcript.
+              if (pendingCore[0]) setEditingItem(pendingCore[0]);
+            }}
           >
-            Continue answering
+            {pendingCore[0] ? "Answer it now" : "Continue answering"}
           </Button>
           <Button
             size="md"

@@ -15,14 +15,11 @@ import {
   saveFunnel,
   updateHistoryEntry,
 } from "@/lib/funnel";
-import { printBoth } from "@/lib/download";
+import { downloadBoth } from "@/lib/download";
 import { useCredits } from "@/lib/use-credits";
-import { trackButtonClick } from "@/lib/analytics";
 import { Badge, Button, Card, Toast } from "@/components/ui";
 import { LoadingAnnounce, Skeleton, SkeletonRows } from "@/components/skeleton";
 import { Navbar } from "@/components/navbar";
-import { CvRenderer } from "@/components/cv-renderer";
-import { ReportPage } from "@/components/report-page";
 import { useSession } from "@/lib/use-session";
 
 /** A flow saved server-side (see GET /api/jobs). */
@@ -315,8 +312,9 @@ export default function HistoryPage() {
     setHydrated(true);
   }, []);
 
-  // The hidden CvRenderer/ReportPage for printJob.flow are in the DOM by
-  // the time this effect runs — print, flag the downloads, clean up.
+  // The files are rendered server-side now, so this no longer depends on a
+  // hidden CvRenderer being in the DOM first — it just hands the stored flow
+  // over and flags the downloads.
   useEffect(() => {
     if (!printJob) return;
     const { flow } = printJob;
@@ -324,11 +322,22 @@ export default function HistoryPage() {
       setPrintJob(null);
       return;
     }
-    const meta = {
-      name: flow.profile?.contact.fullName,
-      company: flow.results.company,
-    };
-    printBoth(meta);
+    void downloadBoth({
+      meta: {
+        name: flow.profile?.contact.fullName ?? "",
+        company: flow.results.company ?? "",
+      },
+      cv: flow.results.cv,
+      template: flow.template,
+      theme: flow.cvTheme,
+      split: flow.splitView,
+      diff: flow.results.diff,
+      simulation: flow.results.simulation,
+      jobTitle: flow.results.jobTitle ?? "",
+      company: flow.results.company ?? "",
+    }).catch(() => {
+      /* the toast below already told the user a download was starting */
+    });
 
     // Both files always travel together, so both flags always move together.
     // They stay two fields rather than one so existing saved flows keep
@@ -669,21 +678,9 @@ export default function HistoryPage() {
         />
       )}
 
-      {/* Hidden print targets for the flow being downloaded */}
-      {printJob?.flow.results && (
-        <>
-          <div className="print-cv-holder cv-print-reset">
-            <CvRenderer
-              cv={printJob.flow.results.cv}
-              template={printJob.flow.template || "classic"}
-            />
-          </div>
-          <ReportPage
-            results={printJob.flow.results}
-            candidateName={printJob.flow.profile?.contact.fullName || ""}
-          />
-        </>
-      )}
+      {/* The hidden CvRenderer/ReportPage that used to live here — the print
+          dialog's only way to see the document — are gone: /api/pdf renders
+          each file server-side from the flow that is posted to it. */}
     </main>
   );
 }

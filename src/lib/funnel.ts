@@ -382,6 +382,13 @@ export type FunnelState = {
   /** Question ids whose answer was auto-filled from a recent flow (Topic 1). */
   autoFilledIds: string[];
   /**
+   * Open questions the user chose to pass on. Persisted rather than kept in
+   * the chat component so a reload cannot disagree with the left panel about
+   * what still needs asking — and so a skip stays a RESOLVED question instead
+   * of coming back as pending. MCQ skips already live in `mcqAnswers`.
+   */
+  skippedIds: string[];
+  /**
    * Question ids already answered in an earlier application, so this flow
    * does NOT ask them again — they are recapped instead (see ChatFlow). Their
    * questions stay in `mcq`/`questionnaire` and their answers in
@@ -430,6 +437,7 @@ export const EMPTY_FUNNEL: FunnelState = {
   reportStale: false,
   sharpenSuggestions: {},
   autoFilledIds: [],
+  skippedIds: [],
   knownIds: [],
   processName: "",
   greetingInfo: null,

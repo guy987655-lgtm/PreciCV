@@ -32,7 +32,7 @@ import { freeMode } from "@/lib/free-mode";
 import { rememberExportPrefs, saveAccountPrefs } from "@/lib/prefs";
 import { asCvTheme, readAiSectionPref } from "@/lib/export-prefs";
 import type { FreeQuota } from "@/lib/free-quota";
-import { downloadBoth } from "@/lib/download";
+import { printBoth } from "@/lib/download";
 import { Badge, Button, Card, Modal, Spinner, Toast } from "@/components/ui";
 import { ReportSectionsSkeleton } from "@/components/skeleton";
 import { Navbar } from "@/components/navbar";
@@ -833,34 +833,20 @@ export function JobWorkspace({
     }
     // Every download is both files. Export is only reachable once a job is
     // paid for, and a purchase owns the CV and the report alike.
-    if (generation) {
-      void downloadBoth({
-        meta: {
-          name: generation.cv.contact.fullName,
-          company: job.company,
-        },
-        cv: generation.cv,
-        template: (generation.template as CvTemplate) ?? "classic",
-        theme: cvTheme,
-        split: splitView,
-        diff: generation.diff,
-        simulation: generation.simulation ?? null,
-        jobTitle: job.title,
-        company: job.company,
-      })
-        .catch((e: unknown) =>
-          setDownloadError(
-            e instanceof Error ? e.message : "Download failed"
-          )
-        )
-        .finally(() => {
-          exportInFlight.current = false;
-          setPrinting(false);
-        });
-    } else {
-      exportInFlight.current = false;
-      setPrinting(false);
-    }
+    const meta = {
+      name: generation?.cv.contact.fullName,
+      company: job.company,
+    };
+    // Stay busy until the last dialog is handed over, so clicks queued behind
+    // a blocking print() cannot stack a burst of dialogs (see printBoth).
+    void printBoth(meta)
+      .catch((e: unknown) =>
+        setDownloadError(e instanceof Error ? e.message : "Download failed")
+      )
+      .finally(() => {
+        exportInFlight.current = false;
+        setPrinting(false);
+      });
     setPrintRequest(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [printRequest, reportBusy]);

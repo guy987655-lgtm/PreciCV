@@ -15,11 +15,11 @@ import type { CreditBalance } from "@/lib/credit-types";
 import { startPackCheckout } from "@/lib/checkout";
 import { PackQuantity, isPackQuantity } from "@/lib/packs";
 import { freeMode } from "@/lib/free-mode";
-import { DEFAULT_TEMPLATE, asTemplate } from "@/lib/templates";
+import { DEFAULT_TEMPLATE, asTemplate, effectiveSplit } from "@/lib/templates";
 import {
-  DownloadQueueItem,
-  downloadItemLabel,
-  downloadQueue,
+  PrintQueueItem,
+  printItemLabel,
+  printQueue,
 } from "@/lib/download";
 import type {
   DealbreakerHit,
@@ -34,10 +34,12 @@ import { ProgressBar } from "@/components/progress-bar";
 import { WaitQuestionsModal } from "@/components/wait-questions-modal";
 import { BundlePaywall } from "@/components/bundle-paywall";
 import { UNLOCK_SECTION_ID } from "@/components/credit-chip";
+import { CvRenderer } from "@/components/cv-renderer";
 import {
   DesignPreviewModal,
   type DesignChoice,
 } from "@/components/design-preview-modal";
+import { ReportPage } from "@/components/report-page";
 import { asCvTheme } from "@/lib/export-prefs";
 import {
   preferredExportPrefs,
@@ -166,6 +168,10 @@ export function RunWorkspace({
   const [savedCount, setSavedCount] = useState(0);
   const [queueTotal, setQueueTotal] = useState(0);
   const [queueLabel, setQueueLabel] = useState("");
+  const [docs, setDocs] = useState<Record<string, RunDocument>>({});
+  /** The single document currently mounted as a print target. */
+  const [printMount, setPrintMount] = useState<PrintQueueItem | null>(null);
+  const mountResolve = useRef<(() => void) | null>(null);
 
   const ready = jobs.filter((j) => j.hasResult && !j.isSample);
   const previews = jobs.filter((j) => j.isSample);
@@ -665,12 +671,31 @@ export function RunWorkspace({
   /* ---------------- download ---------------- */
 
   /**
-   * NOTE: this used to mount one document at a time into the DOM and wait two
-   * animation frames before each print dialog — without that the queue printed
-   * whatever happened to be on screen, saving the same CV under N names. The
-   * server renders each document independently now, so the whole choreography
-   * (and the hidden print targets it fed) is gone.
+   * Resolves the pending `mount` once React has committed the new print target
+   * AND the browser has had a frame to lay it out.
+   *
+   * Without this the queue prints whatever was already in the DOM — the same
+   * CV saved N times under N different names, which looks like the download
+   * worked right up until the user opens the files.
    */
+  useEffect(() => {
+    if (!printMount) return;
+    const outer = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        mountResolve.current?.();
+        mountResolve.current = null;
+      });
+    });
+    return () => cancelAnimationFrame(outer);
+  }, [printMount]);
+
+  function mountForPrint(item: PrintQueueItem): Promise<void> {
+    return new Promise((resolve) => {
+      mountResolve.current = resolve;
+      setPrintMount(item);
+    });
+  }
+
   async function downloadAll() {
     if (downloading) return;
     setDownloading(true);
@@ -691,30 +716,27 @@ export function RunWorkspace({
       const documents = (data.documents ?? []) as RunDocument[];
       const byJob: Record<string, RunDocument> = {};
       for (const d of documents) byJob[d.jobId] = d;
+      setDocs(byJob);
 
       // CV then report, job by job, in the order they appear on screen — so
-      // the files arrive in the order the user is looking at.
-      const items: DownloadQueueItem[] = [];
+      // the save dialogs arrive in the order the user is looking at.
+      const items: PrintQueueItem[] = [];
       for (const job of jobs) {
         const doc = byJob[job.id];
         if (!doc) continue;
-        const template = asTemplate(doc.template) ?? DEFAULT_TEMPLATE;
-        const payload = {
-          meta: { name: candidateName, company: doc.company || job.company },
-          cv: doc.cv,
-          template,
-          // Theme and split come from the stored row, so a batch download
-          // honours the design each job was actually built in.
-          theme: asCvTheme(doc.cvTheme) ?? ("light" as const),
-          split: doc.splitView,
-          diff: doc.diff,
-          simulation: doc.simulation,
-          jobTitle: doc.title || job.title,
+        items.push({
+          jobId: job.id,
+          target: "cv",
+          name: candidateName,
           company: doc.company || job.company,
-        };
-        items.push({ key: job.id, target: "cv", payload });
+        });
         if (doc.simulation) {
-          items.push({ key: job.id, target: "report", payload });
+          items.push({
+            jobId: job.id,
+            target: "report",
+            name: candidateName,
+            company: doc.company || job.company,
+          });
         }
       }
       if (items.length === 0) {
@@ -723,20 +745,22 @@ export function RunWorkspace({
 
       setQueueTotal(items.length);
       setSavedCount(0);
-      await downloadQueue(items, (saved, total, next) => {
+      await printQueue(items, mountForPrint, (saved, total, next) => {
         setSavedCount(saved);
-        setQueueLabel(next ? downloadItemLabel(next) : "");
+        setQueueLabel(next ? printItemLabel(next) : "");
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Download failed");
     } finally {
       setDownloading(false);
+      setPrintMount(null);
       setQueueLabel("");
     }
   }
 
   /* ---------------- render ---------------- */
 
+  const activeDoc = printMount ? docs[printMount.jobId] : null;
   const needCredits = Math.max(0, unpaid.length - credits.total);
   /**
    * Nothing bought, nothing built yet: this is the moment right after the
@@ -1150,6 +1174,38 @@ export function RunWorkspace({
           busy={designBusy}
           onApply={applyDesign}
           onClose={() => setDesignSeed(null)}
+        />
+      )}
+
+      {/* The one document currently being printed. Exactly one CV and at most
+          one report is ever in the DOM — see mountForPrint. */}
+      {activeDoc &&
+        printMount?.target === "cv" &&
+        (() => {
+          // Theme and split used to be dropped here, so every batch download
+          // printed light and non-split however the user had set the design.
+          const template = asTemplate(activeDoc.template) ?? DEFAULT_TEMPLATE;
+          return (
+            <div className="print-cv-holder cv-print-reset">
+              <CvRenderer
+                cv={activeDoc.cv}
+                template={template}
+                theme={asCvTheme(activeDoc.cvTheme) ?? "light"}
+                split={effectiveSplit(template, activeDoc.splitView)}
+              />
+            </div>
+          );
+        })()}
+      {activeDoc && printMount?.target === "report" && activeDoc.simulation && (
+        <ReportPage
+          results={{
+            cv: activeDoc.cv,
+            diff: activeDoc.diff,
+            simulation: activeDoc.simulation,
+            jobTitle: activeDoc.title,
+            company: activeDoc.company,
+          }}
+          candidateName={candidateName}
         />
       )}
     </div>

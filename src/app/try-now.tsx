@@ -62,7 +62,7 @@ import {
 import { readAiSectionPref } from "@/lib/export-prefs";
 import { findCachedAnswers } from "@/lib/answer-cache";
 import { EMPTY_MATCH, MatchedAnswers, mergeMatches } from "@/lib/answer-match";
-import { downloadBoth, downloadPdf } from "@/lib/download";
+import { printBoth, printFile } from "@/lib/download";
 import { simMeta, useSimUser } from "@/lib/sim-user";
 import { useSession } from "@/lib/use-session";
 import {
@@ -597,43 +597,26 @@ export function TryNow() {
       });
       return { ...s, ...flags, versions: appendVersion(s.versions, version) };
     });
-    if (state.results) {
-      const payload = {
-        meta: {
-          name: state.profile?.contact.fullName ?? "",
-          company: state.results.company ?? "",
-        },
-        cv: state.results.cv,
-        template: state.template,
-        theme: state.cvTheme,
-        split: state.splitView,
-        diff: state.results.diff,
-        simulation: state.results.simulation,
-        jobTitle: state.results.jobTitle ?? "",
-        company: state.results.company ?? "",
-      };
-      // No simulation → no second file worth handing over (its questions are
-      // the entire point of the report), so save the CV alone.
-      const job =
-        state.results.simulation.questions.length === 0
-          ? downloadPdf("cv", payload)
-          : downloadBoth(payload);
-      // The button stays busy until the last file has been saved, so a second
-      // click cannot stack another burst of downloads behind this one.
-      void job
-        .catch((e: unknown) =>
-          setDownloadError(
-            e instanceof Error ? e.message : "Download failed"
-          )
-        )
-        .finally(() => {
-          exportInFlight.current = false;
-          setPrinting(false);
-        });
-    } else {
-      exportInFlight.current = false;
-      setPrinting(false);
-    }
+    const meta = {
+      name: state.profile?.contact.fullName,
+      company: state.results?.company,
+    };
+    // No simulation → no second file worth handing over (its questions are
+    // the entire point of the report), so print the CV alone.
+    const job =
+      state.results && state.results.simulation.questions.length === 0
+        ? Promise.resolve(printFile("cv", meta))
+        : printBoth(meta);
+    // The button stays busy until the last dialog has been handed over, so a
+    // second click cannot stack another burst of dialogs behind this one.
+    void job
+      .catch((e: unknown) =>
+        setDownloadError(e instanceof Error ? e.message : "Download failed")
+      )
+      .finally(() => {
+        exportInFlight.current = false;
+        setPrinting(false);
+      });
     setPrintRequest(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [printRequest, reportBusy]);

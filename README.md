@@ -94,23 +94,6 @@ npm run dev
 > which is honored on the Pro plan. On Hobby, expect occasional timeouts on
 > the generate/revise routes.
 
-#### PDF export on Vercel
-
-`/api/pdf` bundles a headless Chromium (`@sparticuz/chromium`, ~50MB against
-Vercel's 250MB function limit) and needs no configuration in production — the
-first render of a cold instance costs a couple of seconds, the rest reuse it.
-
-Two optional env vars:
-
-- `VERCEL_AUTOMATION_BYPASS_SECRET` — **preview deployments only.** They sit
-  behind deployment protection, and the render is a request from outside the
-  user's browser, so without this Chrome loads the login page and prints
-  *that*. Vercel sets it for you once Protection Bypass for Automation is
-  enabled. Production is public and needs nothing.
-- `PUPPETEER_EXECUTABLE_PATH` — for local development on a machine where
-  Chrome/Chromium is not in the usual location. On macOS and typical Linux
-  installs it is found automatically.
-
 ## Architecture notes
 
 - **Structured outputs** — every LLM call forces a tool call whose
@@ -126,13 +109,8 @@ Two optional env vars:
 - **Anti-fraud** — one purchase per `job_id` (DB unique constraint), usage
   counts enforced server-side, JD swaps blocked below 85% term-frequency
   cosine similarity (`src/lib/similarity.ts`).
-- **PDF export** — `POST /api/pdf` renders the document in headless Chrome
-  (`puppeteer-core` + `@sparticuz/chromium`) and returns a real PDF with
-  selectable text, which is what makes it ATS-parseable. The browser loads
-  `/print`, a page that holds no data of its own — the document is injected
-  after load, so the two surfaces whose CVs live only in localStorage (the
-  anonymous funnel and History) use the same endpoint as the signed-in ones.
-  The A4 print stylesheet still does the layout; Chrome just prints it instead
-  of the user's print dialog.
+- **PDF export** — print-to-PDF with a dedicated A4 print stylesheet (only
+  the CV pane prints). Serverless-friendly; a headless-Chromium render
+  service can replace it later without UI changes.
 - **Analytics** — a single normalized `button_clicked` PostHog event with
   `button_name, action, button_text, click_source, job_id` (PRD §8).

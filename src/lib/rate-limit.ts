@@ -23,7 +23,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * The unscoped bucket keeps the original cookie name so counters already in
  * the wild survive the change.
  */
-export type QuotaScope = "generate" | "funnel" | "pdf";
+export type QuotaScope = "generate" | "funnel";
 
 function cookieName(scope?: QuotaScope): string {
   return scope ? `${COOKIE_NAME}_${scope}` : COOKIE_NAME;

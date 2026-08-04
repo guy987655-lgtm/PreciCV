@@ -15,11 +15,14 @@ import {
   saveFunnel,
   updateHistoryEntry,
 } from "@/lib/funnel";
-import { downloadBoth } from "@/lib/download";
+import { printBoth } from "@/lib/download";
 import { useCredits } from "@/lib/use-credits";
+import { trackButtonClick } from "@/lib/analytics";
 import { Badge, Button, Card, Toast } from "@/components/ui";
 import { LoadingAnnounce, Skeleton, SkeletonRows } from "@/components/skeleton";
 import { Navbar } from "@/components/navbar";
+import { CvRenderer } from "@/components/cv-renderer";
+import { ReportPage } from "@/components/report-page";
 import { useSession } from "@/lib/use-session";
 
 /** A flow saved server-side (see GET /api/jobs). */
@@ -199,8 +202,6 @@ export default function HistoryPage() {
   const [renameError, setRenameError] = useState<string | null>(null);
   // A soft-deleted account job, held for the Undo window.
   const [deletedJob, setDeletedJob] = useState<SavedJob | null>(null);
-  /** A failed re-download, said out loud rather than swallowed. */
-  const [downloadError, setDownloadError] = useState("");
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The row whose Resume / download is in flight, so only that row goes busy.
   const [resumingId, setResumingId] = useState<string | null>(null);
@@ -314,9 +315,8 @@ export default function HistoryPage() {
     setHydrated(true);
   }, []);
 
-  // The files are rendered server-side now, so this no longer depends on a
-  // hidden CvRenderer being in the DOM first — it just hands the stored flow
-  // over and flags the downloads.
+  // The hidden CvRenderer/ReportPage for printJob.flow are in the DOM by
+  // the time this effect runs — print, flag the downloads, clean up.
   useEffect(() => {
     if (!printJob) return;
     const { flow } = printJob;
@@ -324,24 +324,11 @@ export default function HistoryPage() {
       setPrintJob(null);
       return;
     }
-    void downloadBoth({
-      meta: {
-        name: flow.profile?.contact.fullName ?? "",
-        company: flow.results.company ?? "",
-      },
-      cv: flow.results.cv,
-      template: flow.template,
-      theme: flow.cvTheme,
-      split: flow.splitView,
-      diff: flow.results.diff,
-      simulation: flow.results.simulation,
-      jobTitle: flow.results.jobTitle ?? "",
-      company: flow.results.company ?? "",
-    }).catch((e: unknown) =>
-      // Never silent: a swallowed failure here is indistinguishable from a
-      // button that does nothing.
-      setDownloadError(e instanceof Error ? e.message : "Download failed")
-    );
+    const meta = {
+      name: flow.profile?.contact.fullName,
+      company: flow.results.company,
+    };
+    printBoth(meta);
 
     // Both files always travel together, so both flags always move together.
     // They stay two fields rather than one so existing saved flows keep
@@ -682,17 +669,21 @@ export default function HistoryPage() {
         />
       )}
 
-      {downloadError && (
-        <Toast
-          message={downloadError}
-          actionLabel="Dismiss"
-          onAction={() => setDownloadError("")}
-        />
+      {/* Hidden print targets for the flow being downloaded */}
+      {printJob?.flow.results && (
+        <>
+          <div className="print-cv-holder cv-print-reset">
+            <CvRenderer
+              cv={printJob.flow.results.cv}
+              template={printJob.flow.template || "classic"}
+            />
+          </div>
+          <ReportPage
+            results={printJob.flow.results}
+            candidateName={printJob.flow.profile?.contact.fullName || ""}
+          />
+        </>
       )}
-
-      {/* The hidden CvRenderer/ReportPage that used to live here — the print
-          dialog's only way to see the document — are gone: /api/pdf renders
-          each file server-side from the flow that is posted to it. */}
     </main>
   );
 }

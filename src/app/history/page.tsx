@@ -199,6 +199,8 @@ export default function HistoryPage() {
   const [renameError, setRenameError] = useState<string | null>(null);
   // A soft-deleted account job, held for the Undo window.
   const [deletedJob, setDeletedJob] = useState<SavedJob | null>(null);
+  /** A failed re-download, said out loud rather than swallowed. */
+  const [downloadError, setDownloadError] = useState("");
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The row whose Resume / download is in flight, so only that row goes busy.
   const [resumingId, setResumingId] = useState<string | null>(null);
@@ -335,9 +337,11 @@ export default function HistoryPage() {
       simulation: flow.results.simulation,
       jobTitle: flow.results.jobTitle ?? "",
       company: flow.results.company ?? "",
-    }).catch(() => {
-      /* the toast below already told the user a download was starting */
-    });
+    }).catch((e: unknown) =>
+      // Never silent: a swallowed failure here is indistinguishable from a
+      // button that does nothing.
+      setDownloadError(e instanceof Error ? e.message : "Download failed")
+    );
 
     // Both files always travel together, so both flags always move together.
     // They stay two fields rather than one so existing saved flows keep
@@ -675,6 +679,14 @@ export default function HistoryPage() {
           message={`"${jobTitle(deletedJob)}" removed`}
           actionLabel="Undo"
           onAction={undoRemoveJob}
+        />
+      )}
+
+      {downloadError && (
+        <Toast
+          message={downloadError}
+          actionLabel="Dismiss"
+          onAction={() => setDownloadError("")}
         />
       )}
 

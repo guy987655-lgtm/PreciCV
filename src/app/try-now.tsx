@@ -463,6 +463,9 @@ export function TryNow() {
     reportStale: boolean;
   } | null>(null);
   const resetToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** A failed download, shown where the user clicked rather than at the
+   *  bottom of a long results page — see the same note in the job workspace. */
+  const [downloadError, setDownloadError] = useState("");
   // The report sections wrapper — "Refresh report" scrolls here and fades it
   // while the new report builds (PRD v2 Topic 8).
   const reportSectionsRef = useRef<HTMLDivElement>(null);
@@ -619,7 +622,9 @@ export function TryNow() {
       // click cannot stack another burst of downloads behind this one.
       void job
         .catch((e: unknown) =>
-          setError(e instanceof Error ? e.message : "Download failed")
+          setDownloadError(
+            e instanceof Error ? e.message : "Download failed"
+          )
         )
         .finally(() => {
           exportInFlight.current = false;
@@ -2592,6 +2597,14 @@ export function TryNow() {
 
       {resetUndo && (
         <Toast message="Edits discarded" actionLabel="Undo" onAction={undoReset} />
+      )}
+
+      {downloadError && (
+        <Toast
+          message={downloadError}
+          actionLabel="Dismiss"
+          onAction={() => setDownloadError("")}
+        />
       )}
 
       {/* Floating Download — appears only once the original scrolls out of

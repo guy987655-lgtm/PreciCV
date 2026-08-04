@@ -37,11 +37,17 @@ async function fetchPdf(
     let message = "We couldn't build your PDF. Please try again in a moment.";
     try {
       const data = await res.json();
-      if (data?.message || data?.error) message = data.message ?? data.error;
+      // Strings only. Not every error body on the way here is ours — a
+      // protected Vercel deployment answers with `{error: {code, message}}`,
+      // and taking that object verbatim throws "[object Object]" at the user.
+      const detail = [data?.message, data?.error, data?.error?.message].find(
+        (v) => typeof v === "string" && v.trim()
+      );
+      if (detail) message = detail as string;
     } catch {
       // Non-JSON error body — the default sentence is better than nothing.
     }
-    throw new Error(message);
+    throw new Error(`${message} (${res.status})`);
   }
   return res.blob();
 }

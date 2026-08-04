@@ -317,6 +317,13 @@ export function JobWorkspace({
     reportStale: boolean;
   } | null>(null);
   const resetToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * A failed download, shown where the user is actually looking.
+   *
+   * `error` renders at the very bottom of a long page — after a click at the
+   * top of it, a failure was indistinguishable from nothing happening at all.
+   */
+  const [downloadError, setDownloadError] = useState("");
   // The latest inline edit not yet flushed to the server (debounced save).
   const pendingSave = useRef<{ cv: TailoredCv; template?: string } | null>(
     null
@@ -842,7 +849,9 @@ export function JobWorkspace({
         company: job.company,
       })
         .catch((e: unknown) =>
-          setError(e instanceof Error ? e.message : "Download failed")
+          setDownloadError(
+            e instanceof Error ? e.message : "Download failed"
+          )
         )
         .finally(() => {
           exportInFlight.current = false;
@@ -1754,6 +1763,14 @@ export function JobWorkspace({
 
       {resetUndo && (
         <Toast message="Edits discarded" actionLabel="Undo" onAction={undoReset} />
+      )}
+
+      {downloadError && (
+        <Toast
+          message={downloadError}
+          actionLabel="Dismiss"
+          onAction={() => setDownloadError("")}
+        />
       )}
 
       {/* This job already holds a CV. Not an error the user caused and not one

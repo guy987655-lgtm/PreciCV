@@ -14,6 +14,7 @@ import {
 import { AnalyticsProvider } from "@/components/analytics-provider";
 import { DevUserSimulator } from "@/components/dev-user-simulator";
 import { ScrollToTop } from "@/components/scroll-to-top";
+import { VisitBeacon } from "@/components/visit-beacon";
 import "./globals.css";
 
 const bricolage = Bricolage_Grotesque({
@@ -75,6 +76,7 @@ export default function RootLayout({
     >
       <body className="min-h-screen bg-bg font-sans text-ink antialiased">
         <AnalyticsProvider>{children}</AnalyticsProvider>
+        <VisitBeacon />
         <ScrollToTop />
         <DevUserSimulator />
         <Analytics />

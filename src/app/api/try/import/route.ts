@@ -1,10 +1,16 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { scanDealbreakers } from "@/lib/llm";
 import { DealbreakerSchema, MasterProfileSchema } from "@/lib/types";
 import { MAX_PACK_SIZE } from "@/lib/packs";
 import { MIN_JD_CHARS } from "@/lib/funnel";
+import {
+  currentVisitId,
+  recordFunnelEvent,
+  visitorId,
+} from "@/lib/visitor-server";
 
 export const maxDuration = 120;
 
@@ -193,6 +199,28 @@ export async function POST(request: Request) {
       );
     }
     jobIds = created.map((j) => j.id);
+
+    /**
+     * Stamp the browser that actually did this work onto the jobs it produced.
+     * Without it the anonymous funnel and the account are two disconnected
+     * histories: everything before this instant belongs to a visitor_id and
+     * everything after to a user_id, with nothing joining them. Written once,
+     * here, and never updated — a job has exactly one origin.
+     *
+     * Best-effort, like the answer write below: a missing link costs a row in a
+     * funnel chart, and is not worth failing an import the user just completed.
+     */
+    const visitor = visitorId(request);
+    if (visitor) {
+      const visitId = await currentVisitId(request);
+      const { error: stampError } = await createAdminClient()
+        .from("jobs")
+        .update({ origin_visitor_id: visitor, origin_visit_id: visitId })
+        .in("id", jobIds);
+      if (stampError) {
+        console.warn("[api/try/import] visitor stamp failed:", stampError);
+      }
+    }
   }
 
   /**
@@ -231,6 +259,18 @@ export async function POST(request: Request) {
       console.error("try/import: storing answers failed:", answersError.message);
     }
   }
+
+  // Closes the anonymous funnel: this visitor became this account, carrying
+  // this many jobs across. The conversion denominator lives in funnel_events;
+  // this is the numerator.
+  after(() =>
+    recordFunnelEvent(
+      request,
+      "import_completed",
+      { job_count: jobIds.length },
+      user.id
+    )
+  );
 
   return NextResponse.json({
     ok: true,

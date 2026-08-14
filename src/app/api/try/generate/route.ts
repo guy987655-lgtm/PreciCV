@@ -1,6 +1,7 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { z } from "zod";
 import { MasterProfileSchema } from "@/lib/types";
+import { recordFunnelEvent } from "@/lib/visitor-server";
 import {
   generateTailoredCv,
   llmConfigured,
@@ -44,6 +45,13 @@ export async function POST(request: Request) {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) {
+    // The registration wall, and the sharpest point in the funnel: this visitor
+    // did all the work and then met the paywall for accounts. Without this
+    // event there is no way to tell someone who bounced from the homepage apart
+    // from someone who reached the wall and declined.
+    after(() =>
+      recordFunnelEvent(request, "registration_wall_hit", { http_status: 401 })
+    );
     return NextResponse.json(
       {
         error: "registration_required",

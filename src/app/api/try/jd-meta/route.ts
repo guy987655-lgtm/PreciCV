@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { z } from "zod";
 import {
   analyzeJdGreeting,
@@ -6,6 +6,7 @@ import {
   LLM_NOT_CONFIGURED_MSG,
 } from "@/lib/llm";
 import { FUNNEL_DAILY_LIMIT, funnelQuota } from "@/lib/funnel-quota";
+import { jdHash, jdWords, recordFunnelEvent } from "@/lib/visitor-server";
 
 export const maxDuration = 30;
 
@@ -60,10 +61,40 @@ export async function POST(request: Request) {
     );
   }
 
+  const { jdText } = parsed.data;
+
+  // Every anonymous job description passes through here, which makes this the
+  // primary place the funnel gets counted. The text itself is never stored —
+  // only its hash, its size, and what the model read off it. field/sameField
+  // are computed above and dropped from the response; capturing them here is
+  // the only industry-ish signal this product produces without a second LLM
+  // call. Recorded on BOTH paths on purpose: the catch below still returns 200,
+  // and a job description that was submitted stays submitted whether or not the
+  // extraction worked. Counting only successes would quietly undercount the
+  // funnel every time the LLM is flaky.
+  const record = (greeting: {
+    targetJobTitle?: string;
+    company?: string;
+    field?: string;
+    sameField?: boolean;
+  }) =>
+    after(() =>
+      recordFunnelEvent(request, "jd_submitted", {
+        jd_hash: jdHash(jdText),
+        jd_chars: jdText.length,
+        jd_words: jdWords(jdText),
+        role_raw: greeting.targetJobTitle ?? "",
+        company_raw: greeting.company ?? "",
+        field_raw: greeting.field ?? "",
+        same_field: greeting.sameField ?? null,
+      })
+    );
+
   try {
     // No CV text: this route is anonymous, and the greeting analysis only
     // needs it for the parts of its output that this endpoint discards.
-    const greeting = await analyzeJdGreeting(parsed.data.jdText, "");
+    const greeting = await analyzeJdGreeting(jdText, "");
+    record(greeting);
     const res = NextResponse.json({
       title: greeting.targetJobTitle ?? "",
       company: greeting.company ?? "",
@@ -72,6 +103,7 @@ export async function POST(request: Request) {
     return res;
   } catch (e) {
     console.error("[api/try/jd-meta] extraction failed:", e);
+    record({});
     return NextResponse.json({ title: "", company: "" });
   }
 }

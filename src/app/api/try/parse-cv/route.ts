@@ -1,6 +1,7 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { extractDocText, ParseDocError } from "@/lib/parse-doc";
+import { recordFunnelEvent } from "@/lib/visitor-server";
 import {
   analyzeJdGreeting,
   extractProfileFromCv,
@@ -100,6 +101,18 @@ export async function POST(request: Request) {
         ? analyzeJdGreeting(jdText, rawText).catch(() => null)
         : Promise.resolve(null),
     ]);
+    // The top of the funnel: someone brought a CV. Size and file type only —
+    // the CV text is the most sensitive thing this product touches and never
+    // goes anywhere near the capture tables.
+    after(() =>
+      recordFunnelEvent(request, "cv_parsed", {
+        cv_chars: rawText.length,
+        cv_file_ext: useSaved
+          ? "saved"
+          : ((file as File).name.split(".").pop() ?? "").toLowerCase(),
+      })
+    );
+
     const res = NextResponse.json({
       profile,
       questionnaire,

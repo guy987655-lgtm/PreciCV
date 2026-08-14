@@ -1,6 +1,7 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { z } from "zod";
 import { llmFailureResponse } from "@/lib/api-errors";
+import { jdHash, jdWords, recordFunnelEvent } from "@/lib/visitor-server";
 import {
   analyzeJdGreeting,
   extractJobQuestions,
@@ -83,6 +84,36 @@ export async function POST(request: Request) {
       extractJobQuestions(profile, jdTexts),
       analyzeJdGreeting(jdTexts[0], rawText).catch(() => null),
     ]);
+    after(async () => {
+      // A backstop for the job count, not the primary counter: /api/try/jd-meta
+      // already reported each of these when it was pasted. This route sees the
+      // whole array at once and the client retries it, so counting here alone
+      // would double-count. The partial unique index on (visit_id, jd_hash)
+      // arbitrates — first writer wins, the rest are absorbed — which covers
+      // the case where jd-meta never ran because the user pasted before the
+      // lookup fired.
+      for (const jd of jdTexts) {
+        await recordFunnelEvent(request, "jd_submitted", {
+          jd_hash: jdHash(jd),
+          jd_chars: jd.length,
+          jd_words: jdWords(jd),
+        });
+      }
+      // question_texts is what gives the question metrics a denominator: which
+      // questions were SHOWN, not just which were answered. Nothing else in the
+      // system records an unanswered question — every write path to
+      // profile_answers filters out empty answers, so a skip leaves no trace.
+      await recordFunnelEvent(request, "questions_served", {
+        mcq_served: pools.mcq.questions.length,
+        open_served: pools.questionnaire.questions.length,
+        job_count: jdTexts.length,
+        question_texts: [
+          ...pools.mcq.questions.map((q) => q.question),
+          ...pools.questionnaire.questions.map((q) => q.question),
+        ],
+      });
+    });
+
     const res = NextResponse.json({
       mcq: pools.mcq,
       questionnaire: pools.questionnaire,

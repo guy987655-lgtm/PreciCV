@@ -1455,6 +1455,46 @@ begin
   return v_n;
 end $fn$;
 
+-- Visitors that no longer exist upstream.
+--
+-- Separate from the user reconciliation above because it needs a different
+-- rule, and getting that rule wrong would destroy history. public.visitors is
+-- retained FOREVER — retention only ever deletes visits and funnel_events — so
+-- an anti-join against it is safe: a missing visitor really is a deletion, not
+-- an expiry. The same anti-join against public.visits would NOT be safe, because
+-- at 400 days retention removes the source rows on purpose while the warehouse
+-- goes on being the archive. So fact_visit is pruned only for visitors that are
+-- genuinely gone, never for visits that merely aged out.
+--
+-- This is also what finishes the job purge_visitor_data starts: that function
+-- deletes visitor rows, and until now only the ones belonging to an account
+-- were followed into the warehouse.
+create or replace function analytics.refresh_reconcile_visitors(p_full boolean default false)
+returns bigint language plpgsql as
+$fn$
+declare v_keys bigint[]; v_n bigint := 0;
+begin
+  select coalesce(array_agg(dv.visitor_key), '{}') into v_keys
+    from analytics.dim_visitor dv
+   where dv.visitor_key <> -1
+     and not exists (select 1 from public.visitors v
+                      where v.visitor_id = dv.visitor_id);
+
+  if cardinality(v_keys) = 0 then return 0; end if;
+
+  delete from analytics.fact_visit where visitor_key = any (v_keys);
+  delete from analytics.fact_question_exposure where visitor_key = any (v_keys);
+  -- A job submission outlives the browser that made it: the job is still real.
+  update analytics.fact_jd_submission set visitor_key = -1 where visitor_key = any (v_keys);
+  update analytics.dim_job set origin_visitor_key = -1 where origin_visitor_key = any (v_keys);
+  update analytics.fact_signup set signup_visitor_key = -1 where signup_visitor_key = any (v_keys);
+  update analytics.dim_user set signup_visitor_key = -1 where signup_visitor_key = any (v_keys);
+
+  delete from analytics.dim_visitor where visitor_key = any (v_keys);
+  get diagnostics v_n = row_count;
+  return v_n;
+end $fn$;
+
 -- ============================================================
 -- Retention — runs at most once per UTC day
 -- ============================================================
@@ -1524,7 +1564,7 @@ declare
     -- Derived from facts.
     'fact_user_question','fact_user_day',
     -- Housekeeping.
-    'dim_rollups','reconcile_deletions','apply_retention'];
+    'dim_rollups','reconcile_deletions','reconcile_visitors','apply_retention'];
 begin
   -- One refresh at a time. An overlapping cron tick no-ops instead of racing
   -- assign_question into creating duplicate cluster leaders.

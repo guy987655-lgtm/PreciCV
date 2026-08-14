@@ -4,6 +4,127 @@ Point this file at a fresh session to continue exactly where we stopped.
 Pricing strategy lives in **`PRICING_MODEL.md`** — that is the source of truth
 for tiers and the payment provider.
 
+## Analytics star schema — 2026-08-14 (schema live, app code NOT deployed)
+
+**The warehouse is running in production; the half of it that feeds on
+anonymous traffic is not, because the app changes are committed but unpushed.**
+Branch **`analytics-star-schema`**, one commit (`77ad084`), 22 files. Until it
+is merged, `public.funnel_events` stays at 0 rows and every visitor/funnel
+number is empty — the operational half (jobs, generations, answers, money)
+is already populating correctly.
+
+**Why it exists.** The six OLTP tables say what state a user is in now, and
+could not answer three business questions. There was no visitor id of any kind,
+so "how many people visited" had no subject. The entire anonymous funnel — CV
+upload, up to five job descriptions, the whole questionnaire — lived in
+`localStorage` and reached the server only if someone signed up, so "how many
+jobs were uploaded" counted survivors. And `jobs.company` is free text from four
+racing producers, so `Google` / `google inc` / `Google Inc.` were three
+companies.
+
+### Two layers
+
+**Capture (`0012`–`0014`, `public`).** `visitors`, `visits`, `visitor_users`,
+`funnel_events`, `deleted_user_tombstones`, plus four security-definer RPCs
+(`touch_visit`, `record_funnel_event`, `link_visitor_user`,
+`purge_visitor_data`). RLS with **zero policies** and an explicit `REVOKE` — the
+revoke is what removes them from the PostgREST schema, so anon gets `401` rather
+than an empty result. Verified: anon reads `profiles` at 200 and `visitors` at
+401.
+
+`0012` also adds `updated_at` + triggers to `jobs`/`generations`/`purchases`/
+`orders` (they all mutate in place and none recorded when), and
+`jobs.jd_hash` — a generated column that is the only join key between an
+anonymous paste and the job row it later became. `jdHash()` in
+`src/lib/visitor-server.ts` must stay byte-identical to it.
+
+**Warehouse (`0015`–`0020`, schema `analytics`).** 30 tables — 6 facts,
+13 dimensions, aliases and ETL bookkeeping. Not in Supabase's exposed-schema
+list, so it is unreachable over the API even with the service role
+(`Accept-Profile: analytics` returns 406) — **verification has to come from SQL
+you paste, Claude cannot read it.** `analytics.refresh_all()` runs 23 steps
+under an advisory lock, each in its own exception block, on `pg_cron` at `:07`
+hourly plus a full rebuild Sunday 03:17 UTC.
+
+Health, and the only query worth running routinely:
+
+```sql
+select (select status from analytics.etl_run_log order by run_id desc limit 1),
+       (select count(*) from analytics.etl_watermark where consecutive_failures > 0),
+       (select count(*) from cron.job where jobname like 'analytics-%');
+```
+
+### Decisions you need to know before changing anything
+
+- **At signup neither id is overwritten.** The visitor keeps its identity and a
+  permanent pairing is recorded beside it; a partial unique index enforces one
+  signup visitor per account, and the ETL writes the key with
+  `coalesce(existing, new)` so no refresh can revise it. The two pre-existing
+  accounts carry `signup_visitor_key = -1` **forever** — unbackfillable, and an
+  invented value would be worse.
+- **"Jobs uploaded" is `count(*) FILTER (WHERE is_first_for_visitor_jd)`**, never
+  a bare `count(*)`, which counts submission *events*. The dedupe is scoped to a
+  **known** visitor: rows with `visitor_key = -1` each stand alone. That carve-out
+  was missing at first and silently collapsed two people applying to the same
+  posting into one job — caught only because real data showed a role with 7 jobs
+  and 8 companies.
+- **`match_score` is NULL, not 0, when the model omitted its gap analysis.** The
+  zod schema defaults it to 0, so loading the raw value drags the average toward
+  zero. A 0 *with* populated strengths is a genuine zero and is kept.
+- **`amount_cents = 0` means three different things** — a credit spend, a
+  free-mode grant, or a genuinely free unlock. The `is_*` flags encode the
+  disambiguation once, in the ETL. Real bundle revenue lives on
+  `fact_order.amount_cents`.
+- **Company and role names canonicalise at load**, with `dim_company_alias` /
+  `dim_role_alias` rows marked `source='human'` that the ETL will never
+  overwrite. Expect 8–15% residual duplication that no string rule reaches
+  (transliteration `wix`/`ויקס`, rebrands, subsidiaries); the alias table is the
+  only fix and it is built and waiting.
+
+### A product bug the warehouse reproduces on purpose
+
+`norm()` in `src/lib/text.ts:9` is
+`s.toLowerCase().replace(/[^a-z0-9]+/g," ").trim()` — it strips every non-ASCII
+character, so `norm("מה עשית?") === ""`, `looseMatch` returns false and
+`tokenOverlap` returns 0. **Two identical Hebrew questions do not match each
+other**, which means the cross-job answer-memory feature does not work in Hebrew
+at all. `analytics.q_norm` reproduces this exactly and flags each such cluster
+`is_unmatchable`, so the numbers describe the product as users experience it
+while the blind spot stays measurable. **Fixing it belongs in `text.ts`, not in
+the warehouse** — and changing `norm()` changes matching behaviour for every
+existing user, so it needs its own pass.
+
+### How this SQL was tested, and how to test the next batch
+
+Claude cannot run DDL here (see the config table). Reading SQL is not enough —
+it missed two real bugs. Instead: `npm install @electric-sql/pglite` in a
+scratch dir gives **real PostgreSQL 18 with plpgsql in WASM**. Stub the platform
+first (roles `anon`/`authenticated`/`service_role`, an `auth` schema with
+`users`, `identities`, `auth.uid()`), then `db.exec()` every migration in order,
+seed a fixture and run `refresh_all()`. That caught a
+`from a, lateral b left join c on a.x` scope error that killed a whole step, and
+a step under-reporting half its rows. `libpg-query` only parses outer SQL and
+never validates plpgsql bodies. `pg_cron` is unavailable — stub `cron.job`.
+
+### Still to do
+
+1. **Merge and push `analytics-star-schema`.** `ANALYTICS_COOKIE_SECRET` is
+   already set in Vercel (Production + Preview) and in `.env.local` — a
+   **different value** in each, deliberately. Order matters: the var had to
+   exist before the deploy, or visitors get an ephemeral key, churn on every
+   cold start, and get flagged `cookie_signed = false`.
+2. After deploying, confirm `select count(*) filter (where cookie_signed) =
+   count(*) from public.visitors`, then paste a JD while signed out and look for
+   a `jd_submitted` row in `public.funnel_events`.
+3. **`.env.example` is gitignored in this repo**, so `ANALYTICS_COOKIE_SECRET`
+   is documented nowhere a fresh clone can see it. Worth un-ignoring that file.
+4. Optional, and the only unbounded cost in the system: **`fact_llm_call`.**
+   `response.usage` (Anthropic) and `usageMetadata` (Gemini) are both discarded
+   at the single call site (`structuredCall`, `src/lib/llm.ts:62`), so there is
+   zero visibility into spend while free mode runs uncapped. ~30 lines; the
+   grain is one provider HTTP call, not one generation, because retries make
+   those different numbers.
+
 ## One product + design preview — 2026-08-02 (supersedes the two-tier model)
 
 **There is one thing to buy.** The `match` tier ($3, tailored CV without the
@@ -129,12 +250,15 @@ on a row with no stored simulation once the tier gate was removed; it is a
 
 | Piece | State |
 |---|---|
-| Supabase project `nrcmijgoyxthbdftdzgg` | 5 tables + RLS: `profiles`, `jobs`, `generations`, `purchases`, `profile_answers` |
-| Migrations 0001–0009 | ✅ **all applied** (0005 + 0006 run 2026-07-27; 0008 + 0009 run 2026-07-31 in the SQL Editor and verified against production — the `profiles` select in `/api/account/preferences` returns all seven columns) |
+| Supabase project `nrcmijgoyxthbdftdzgg` | `public`: 6 product tables (`profiles`, `jobs`, `generations`, `purchases`, `orders`, `profile_answers`) + 5 capture tables (`visitors`, `visits`, `visitor_users`, `funnel_events`, `deleted_user_tombstones`). Schema `analytics`: 30 tables, not exposed to PostgREST |
+| Migrations 0001–0020 | ✅ **all applied.** 0005 + 0006 run 2026-07-27; 0008 + 0009 run 2026-07-31; 0010 before 2026-07-31; 0011 with the single-tier change; **0012–0020 run 2026-08-14**. ⚠️ 0012–0014 were pasted in reverse order the first time — 0013's deferred FK block failed because 0012 had not created the columns yet, and 0013 had to be re-run. **Order matters from 0015 on**: 0018 needs `dim_question` from 0017, 0019 needs everything |
+| Row counts at 2026-08-14 | `jobs` 58 · `generations` 45 · `profile_answers` 140 · `purchases` 40 · `orders` 13 · `profiles` 2 · `visitors` 1 · `funnel_events` **0** (waiting on the deploy) |
 | Supabase redirect allow-list | ✅ `https://preci-cv.vercel.app/auth/callback` **and** `http://localhost:3000/auth/callback`; Site URL = `https://preci-cv.vercel.app` |
 | Production sign-in | ✅ Google verified end-to-end in incognito by the user |
 | Vercel env | Supabase vars ✅ (project URL is in the client bundle). `LEMONSQUEEZY_WEBHOOK_SECRET` ✅ — proven by live webhook deliveries returning `200`; a wrong/missing secret returns `400` |
 | **Lemon Squeezy** | Store **SpeCV** id `438606`, USD. Test-mode variants: match `1945861` $3, full `1945868` $4, upgrade `1945870` $1. Webhook registered at `https://preci-cv.vercel.app/api/payments/webhook` (`order_created`), recent deliveries all `200` |
+| `ANALYTICS_COOKIE_SECRET` | ✅ set in Vercel (Production + Preview) and in `.env.local`, **different values**. Signs the two-year `specv_vid` visitor cookie and keys the ip/ua hashes. No fallback chain on purpose — rotating it resets the entire visitor population, so it must never be tied to a key rotated for other reasons |
+| DDL from this machine | ❌ **impossible.** No `supabase` CLI, no `psql`, no access token — only `SUPABASE_SERVICE_ROLE_KEY`, which reaches PostgREST and cannot alter a schema. Migrations are pasted by the user; test them first against PGlite (see the analytics section) |
 | Missing | PostHog key (`NEXT_PUBLIC_POSTHOG_KEY`) |
 
 ## The one remaining blocker
@@ -501,10 +625,10 @@ Two features, both code-complete, both blocked on setup you have to do.
    needs its own testing pass, and getting a write path wrong locks out paying
    users. `orders` does **not** repeat the mistake (read-only under RLS).
 
-1. **Decide on `QUOTA_DISABLED`.** `src/app/api/try/generate/route.ts:26` has
-   it `true`, so every anonymous visitor can generate unlimited CVs on your
-   LLM budget. Flipping to `false` restores one per day per IP+browser. A
-   one-line change, deliberately left unmade pending the owner's call.
+1. ~~**Decide on `QUOTA_DISABLED`**~~ — **stale, resolved.** The constant no
+   longer exists anywhere in `src/`. `/api/try/generate` now requires a session
+   and caps signed-in traffic at `FREE_GENERATIONS_PER_DAY` per browser+IP via
+   `checkDailyQuota`; the anonymous bypass this item described is gone.
 2. **Run the purchases check above** — the only unverified link in the payment
    chain.
 3. **Free sample is per JOB** (not per account). Still not confirmed in the

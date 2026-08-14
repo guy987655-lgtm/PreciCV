@@ -28,12 +28,26 @@ export function VisitBeacon() {
     if (now - lastPingAt < MIN_INTERVAL_MS) return;
     lastPingAt = now;
 
+    // The page has to describe itself. A POST to /api/session/ping carries the
+    // ping route's own URL and its own Referer — which is this page, on this
+    // host — so a server reading the request would record every landing as
+    // "/api/session/ping" from no referrer, and lose the acquisition source
+    // entirely. document.referrer is the only place the real one survives.
+    const body = JSON.stringify({
+      path: window.location.pathname,
+      search: window.location.search,
+      referrer: document.referrer,
+    });
+
     // keepalive so a ping fired as the user navigates away still lands.
     // Failures are ignored on purpose — a missed ping is a missing tick in a
     // chart, and there is nothing useful to tell the user about it.
-    void fetch("/api/session/ping", { method: "POST", keepalive: true }).catch(
-      () => {}
-    );
+    void fetch("/api/session/ping", {
+      method: "POST",
+      keepalive: true,
+      headers: { "content-type": "application/json" },
+      body,
+    }).catch(() => {});
   }, [pathname]);
 
   return null;

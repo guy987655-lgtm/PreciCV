@@ -1,5 +1,18 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { touchVisit } from "@/lib/visitor-server";
+
+/**
+ * The page describes itself, because this request cannot: its URL is this
+ * route and its Referer is the page that called it. Bounded and same-origin-
+ * checked — these values reach the analytics tables, so a hostile client
+ * should not be able to stuff them with arbitrary length or content.
+ */
+const BodySchema = z.object({
+  path: z.string().max(512).optional(),
+  search: z.string().max(1024).optional(),
+  referrer: z.string().max(2048).optional(),
+});
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,6 +34,16 @@ export const dynamic = "force-dynamic";
  * 204: there is nothing for the client to do with the answer.
  */
 export async function POST(request: Request) {
-  await touchVisit(request);
+  // A malformed or absent body is not an error worth reporting — the visit
+  // still counts, it just lands with less context than it could have.
+  let page;
+  try {
+    const parsed = BodySchema.safeParse(await request.json());
+    if (parsed.success) page = parsed.data;
+  } catch {
+    // no body, or not JSON
+  }
+
+  await touchVisit(request, page);
   return new NextResponse(null, { status: 204 });
 }

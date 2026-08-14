@@ -93,30 +93,50 @@ function parseUserAgent(ua: string) {
  * page's query string, which is exactly the kind of thing that turns an
  * analytics table into a liability.
  */
-export function visitorCtx(request: Request): VisitorCtx {
+/**
+ * What the PAGE says about itself, when the request cannot say it.
+ *
+ * The beacon POSTs to /api/session/ping, so that request's URL is the ping
+ * route and its Referer is the page — on our own host, and therefore dropped.
+ * Reading only the request would record every landing as "/api/session/ping"
+ * from nowhere, and lose acquisition entirely. These override the request.
+ */
+export type PageCtx = {
+  path?: string;
+  search?: string;
+  referrer?: string;
+};
+
+export function visitorCtx(request: Request, page?: PageCtx): VisitorCtx {
   const url = new URL(request.url);
   const ua = request.headers.get("user-agent") ?? "";
   const { bot, deviceType, osFamily, browserFamily } = parseUserAgent(ua);
 
+  // Query string: the page's own, when it supplied one.
+  const params = page?.search
+    ? new URLSearchParams(page.search)
+    : url.searchParams;
+
   let referrerHost = "";
-  const referrer = request.headers.get("referer");
+  const referrer = page?.referrer || request.headers.get("referer");
   if (referrer) {
     try {
       const host = new URL(referrer).host;
+      // Same-host is internal navigation, not an acquisition source.
       if (host && host !== url.host) referrerHost = host;
     } catch {
-      // unparseable Referer header — treat as direct
+      // unparseable referrer — treat as direct
     }
   }
 
   const ctx: VisitorCtx = {
-    path: url.pathname,
+    path: page?.path || url.pathname,
     referrer_host: referrerHost,
-    utm_source: url.searchParams.get("utm_source") ?? "",
-    utm_medium: url.searchParams.get("utm_medium") ?? "",
-    utm_campaign: url.searchParams.get("utm_campaign") ?? "",
-    utm_term: url.searchParams.get("utm_term") ?? "",
-    utm_content: url.searchParams.get("utm_content") ?? "",
+    utm_source: params.get("utm_source") ?? "",
+    utm_medium: params.get("utm_medium") ?? "",
+    utm_campaign: params.get("utm_campaign") ?? "",
+    utm_term: params.get("utm_term") ?? "",
+    utm_content: params.get("utm_content") ?? "",
     country: request.headers.get("x-vercel-ip-country") ?? "",
     device_type: deviceType,
     os_family: osFamily,
@@ -217,13 +237,16 @@ export async function recordFunnelEvent(
 }
 
 /** Open or extend the current visit. Used by the page beacon. Never throws. */
-export async function touchVisit(request: Request): Promise<void> {
+export async function touchVisit(
+  request: Request,
+  page?: PageCtx
+): Promise<void> {
   const visitor = visitorId(request);
   if (!visitor) return;
   try {
     const { error } = await createAdminClient().rpc("touch_visit", {
       p_visitor: visitor,
-      p_ctx: visitorCtx(request),
+      p_ctx: visitorCtx(request, page),
       p_server_created: false,
     });
     warnOn("visit", error);

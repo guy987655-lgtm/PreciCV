@@ -4,14 +4,50 @@ Point this file at a fresh session to continue exactly where we stopped.
 Pricing strategy lives in **`PRICING_MODEL.md`** — that is the source of truth
 for tiers and the payment provider.
 
-## Analytics star schema — 2026-08-14 (schema live, app code NOT deployed)
+**The schema is documented in two artifacts** (private to the owner's claude.ai
+account; open them from a signed-in browser, or share them from the page's
+share menu):
 
-**The warehouse is running in production; the half of it that feeds on
-anonymous traffic is not, because the app changes are committed but unpushed.**
-Branch **`analytics-star-schema`**, one commit (`77ad084`), 22 files. Until it
-is merged, `public.funnel_events` stays at 0 rows and every visitor/funnel
-number is empty — the operational half (jobs, generations, answers, money)
-is already populating correctly.
+- **[The SpeCV ERD](https://claude.ai/code/artifact/8955ed62-9a5c-4bac-8958-199e0737143a)** —
+  all 42 tables and their 68 relationships on one canvas, filterable by floor,
+  plus a bus matrix of which fact conforms to which dimension.
+- **[A Tour of the SpeCV Database](https://claude.ai/code/artifact/28603177-950b-4a14-9855-4fe043595f0c)** —
+  table by table: what each one is for, every column, and the live rows behind
+  them as of 2026-08-14.
+
+Both were generated from `supabase/migrations/0001`–`0020` and from data read
+live, so they are a snapshot, not a live view — **the migrations remain the
+source of truth**. If you change the schema, they need regenerating.
+
+## Analytics star schema — 2026-08-14 (live end to end)
+
+**Both halves are running in production.** `analytics-star-schema` is merged
+into `main` (`77ad084`, 22 files) and pushed — `origin/main` is at `2d31691`,
+and the capture layer started writing at **09:48 UTC on 2026-08-14**. The
+operational half (jobs, generations, answers, money) was already populating
+before the deploy.
+
+First real rows, read live at 2026-08-14: `visitors` **2**, `visits` **2**,
+`funnel_events` **1**, `visitor_users` **0** (nobody has registered since the
+deploy). Both visitors carry `cookie_signed = true`, which is the one thing
+that had to be confirmed after the deploy — `ANALYTICS_COOKIE_SECRET` is
+genuinely reaching the edge proxy in production.
+
+⚠️ **The one funnel event is not a browser paste.** `event_id 1` is a
+`jd_submitted` (Monday.com / Senior Data Analyst, 393 chars) whose visitor
+landed on `/api/try/jd-meta` with no browser User-Agent — so it is flagged
+`bot_suspect` and its visit is `server_created = true`. The other visitor is
+the real browser (`/`, macOS, Chrome) and it produced **no events at all**. So
+the write path is proven and the beacon-driven funnel is still unexercised;
+the `visit_ping` / `cv_parsed` / `questions_served` / `registration_wall_hit`
+milestones have never fired.
+
+Also still true and worth knowing: **`jobs.origin_visitor_id` is NULL on all
+58 rows**, because every existing job predates capture. In the warehouse that
+means `visitor_key = -1` on every submission, and the
+`is_first_for_visitor_jd` carve-out therefore makes all 58 count — "jobs
+uploaded" is 58, not 34. That is correct behaviour, not a bug (see the rule
+below), but it is the number somebody will query first.
 
 **Why it exists.** The six OLTP tables say what state a user is in now, and
 could not answer three business questions. There was no visitor id of any kind,
@@ -108,17 +144,37 @@ never validates plpgsql bodies. `pg_cron` is unavailable — stub `cron.job`.
 
 ### Still to do
 
-1. **Merge and push `analytics-star-schema`.** `ANALYTICS_COOKIE_SECRET` is
-   already set in Vercel (Production + Preview) and in `.env.local` — a
-   **different value** in each, deliberately. Order matters: the var had to
-   exist before the deploy, or visitors get an ephemeral key, churn on every
-   cold start, and get flagged `cookie_signed = false`.
-2. After deploying, confirm `select count(*) filter (where cookie_signed) =
-   count(*) from public.visitors`, then paste a JD while signed out and look for
-   a `jd_submitted` row in `public.funnel_events`.
-3. **`.env.example` is gitignored in this repo**, so `ANALYTICS_COOKIE_SECRET`
+1. ~~Merge and push `analytics-star-schema`.~~ **Done** — merged, pushed,
+   deployed. `ANALYTICS_COOKIE_SECRET` is set in Vercel (Production + Preview)
+   and in `.env.local`, a **different value** in each, deliberately. The order
+   mattered and was respected: the var existed before the deploy, so no visitor
+   ever got an ephemeral key. Confirmed after the fact —
+   `count(*) filter (where cookie_signed) = count(*)` holds on `public.visitors`.
+2. **Exercise the funnel from a real browser.** The only `funnel_events` row so
+   far came from a direct API call, so `jd_submitted` is proven and nothing else
+   is. Paste a JD while signed out **in a browser**, complete the questionnaire,
+   and confirm `visit_ping`, `cv_parsed`, `questions_served` and
+   `registration_wall_hit` all appear — then sign up and check that
+   `signup_linked` + `import_completed` fire and that `visitor_users` gets its
+   first row with `is_signup_visitor = true`.
+3. **Confirm the ETL is actually running.** `pg_cron` fires
+   `analytics.refresh_all(false)` at `:07`. Nothing here can read schema
+   `analytics` (`Accept-Profile: analytics` returns `406` even with the service
+   role key), so this has to be a paste into the SQL editor:
+   ```sql
+   select (select status from analytics.etl_run_log order by run_id desc limit 1),
+          (select count(*) from analytics.etl_watermark where consecutive_failures > 0),
+          (select count(*) from cron.job where jobname like 'analytics-%');
+   ```
+   Expect `ok` / `0` / `2`. Two things to look at once it has run:
+   `analytics.dim_sku` knows only `full_x1`–`full_x5`, but four live orders
+   carry the retired `match_x1` / `match_x3` / `match_x5` spellings and will sit
+   on `sku_key = -1`; and `dim_company` will hold `trivago` and
+   `trivago innovation center` as two employers, which is what
+   `dim_company_alias` with `source = 'human'` exists to fix.
+4. **`.env.example` is gitignored in this repo**, so `ANALYTICS_COOKIE_SECRET`
    is documented nowhere a fresh clone can see it. Worth un-ignoring that file.
-4. Optional, and the only unbounded cost in the system: **`fact_llm_call`.**
+5. Optional, and the only unbounded cost in the system: **`fact_llm_call`.**
    `response.usage` (Anthropic) and `usageMetadata` (Gemini) are both discarded
    at the single call site (`structuredCall`, `src/lib/llm.ts:62`), so there is
    zero visibility into spend while free mode runs uncapped. ~30 lines; the
@@ -250,9 +306,9 @@ on a row with no stored simulation once the tier gate was removed; it is a
 
 | Piece | State |
 |---|---|
-| Supabase project `nrcmijgoyxthbdftdzgg` | `public`: 6 product tables (`profiles`, `jobs`, `generations`, `purchases`, `orders`, `profile_answers`) + 5 capture tables (`visitors`, `visits`, `visitor_users`, `funnel_events`, `deleted_user_tombstones`). Schema `analytics`: 30 tables, not exposed to PostgREST |
+| Supabase project `nrcmijgoyxthbdftdzgg` | `public`: 6 product tables (`profiles`, `jobs`, `generations`, `purchases`, `orders`, `profile_answers`) + 6 capture tables (`visitors`, `visits`, `visitor_users`, `funnel_events`, `funnel_event_types`, `deleted_user_tombstones`). Schema `analytics`: 30 tables — 10 facts, 14 dimensions, 6 support — not exposed to PostgREST |
 | Migrations 0001–0020 | ✅ **all applied.** 0005 + 0006 run 2026-07-27; 0008 + 0009 run 2026-07-31; 0010 before 2026-07-31; 0011 with the single-tier change; **0012–0020 run 2026-08-14**. ⚠️ 0012–0014 were pasted in reverse order the first time — 0013's deferred FK block failed because 0012 had not created the columns yet, and 0013 had to be re-run. **Order matters from 0015 on**: 0018 needs `dim_question` from 0017, 0019 needs everything |
-| Row counts at 2026-08-14 | `jobs` 58 · `generations` 45 · `profile_answers` 140 · `purchases` 40 · `orders` 13 · `profiles` 2 · `visitors` 1 · `funnel_events` **0** (waiting on the deploy) |
+| Row counts at 2026-08-14 (read live) | `jobs` 58 · `generations` 45 · `profile_answers` 140 · `purchases` 40 · `orders` 13 · `profiles` 2 · `visitors` 2 · `visits` 2 · `funnel_events` 1 · `visitor_users` 0 · `deleted_user_tombstones` 0. Of the jobs: 45 `generated`, 11 soft-deleted, 36 in 9 runs, 34 distinct `jd_hash`. Of the orders: 8 paid (29 credits, 26 spent → **3 outstanding**), 5 `pending` forever — nothing sweeps them |
 | Supabase redirect allow-list | ✅ `https://preci-cv.vercel.app/auth/callback` **and** `http://localhost:3000/auth/callback`; Site URL = `https://preci-cv.vercel.app` |
 | Production sign-in | ✅ Google verified end-to-end in incognito by the user |
 | Vercel env | Supabase vars ✅ (project URL is in the client bundle). `LEMONSQUEEZY_WEBHOOK_SECRET` ✅ — proven by live webhook deliveries returning `200`; a wrong/missing secret returns `400` |

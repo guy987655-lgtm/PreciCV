@@ -14,42 +14,85 @@ import {
 
 export const maxDuration = 120;
 
-const JobSchema = z.object({
-  jdText: z.string().min(MIN_JD_CHARS, "Job description is too short"),
-  /**
-   * Every exported file is named after the hiring company, so a run with a
-   * missing name would produce files the user cannot tell apart. The homepage
-   * will not continue without it, and companyFromJd is the last-resort filler.
-   */
-  company: z.string().trim().max(120).default(""),
-  title: z.string().trim().max(200).default(""),
-});
+/**
+ * A trimmed, length-capped string that can never fail.
+ *
+ * Every cap in this file used to be a hard `.max()`, and this endpoint runs
+ * AFTER the questionnaire and AFTER signup: one over-long company name — and
+ * the name is written by an LLM reading a job ad, not by the user — rejected
+ * the whole body and cost the user the entire flow they had just finished,
+ * with nothing but "Invalid payload" to show for it. A truncated label is a
+ * cosmetic problem; a lost import is not.
+ */
+const capped = (max: number) =>
+  z
+    .string()
+    .catch("")
+    .transform((s) => s.trim().slice(0, max));
 
+const JobSchema = z
+  .object({
+    jdText: z.string().catch(""),
+    /**
+     * Every exported file is named after the hiring company, so a run with a
+     * missing name would produce files the user cannot tell apart. The homepage
+     * will not continue without it, and companyFromJd is the last-resort filler.
+     */
+    company: capped(120),
+    title: capped(200),
+  })
+  // A single unreadable entry drops itself (the jdText filter below), instead
+  // of taking the other jobs down with it.
+  .catch({ jdText: "", company: "", title: "" });
+
+const AnswerSchema = z
+  .object({
+    question: z.string().catch(""),
+    answer: z.string().catch(""),
+    /** Structure kept for MCQ answers so they can be replayed later. */
+    kind: z.enum(["mcq", "open"]).catch("open"),
+    selected: z.array(z.string()).catch([]),
+    other: z.string().catch(""),
+    options: z.array(z.string()).catch([]),
+    selectType: z.enum(["single", "ranked"]).catch("single"),
+    /** Category — My Card groups its filter chips by this. */
+    topic: capped(120),
+  })
+  // Same rule as jobs: an answer we cannot read is dropped by the
+  // empty-question filter below, never at the cost of the ones we can.
+  .catch({
+    question: "",
+    answer: "",
+    kind: "open",
+    selected: [],
+    other: "",
+    options: [],
+    selectType: "single",
+    topic: "",
+  });
+
+/**
+ * Deliberately unfailable except for `profile`: that is the CV analysis
+ * itself, the one thing this endpoint cannot invent, so it stays strict and
+ * says so by name when it is what broke.
+ */
 const BodySchema = z.object({
   profile: MasterProfileSchema,
-  rawText: z.string().default(""),
-  answers: z
-    .array(
-      z.object({
-        question: z.string(),
-        answer: z.string(),
-        /** Structure kept for MCQ answers so they can be replayed later. */
-        kind: z.enum(["mcq", "open"]).default("open"),
-        selected: z.array(z.string()).optional(),
-        other: z.string().optional(),
-        options: z.array(z.string()).optional(),
-        selectType: z.enum(["single", "ranked"]).optional(),
-        /** Category — My Card groups its filter chips by this. */
-        topic: z.string().max(120).optional(),
-      })
-    )
-    .default([]),
-  jobs: z.array(JobSchema).max(MAX_PACK_SIZE).default([]),
+  rawText: z.string().catch(""),
+  answers: z.array(AnswerSchema).catch([]),
+  jobs: z
+    .array(JobSchema)
+    .catch([])
+    .transform((list) =>
+      list
+        .filter((j) => j.jdText.trim().length >= MIN_JD_CHARS)
+        .slice(0, MAX_PACK_SIZE)
+    ),
   /** Pre-multi-job stash shape. Kept so a tab opened before the change
    *  still imports rather than losing the job the user pasted. */
-  jdText: z.string().default(""),
-  jobTitle: z.string().default(""),
-  company: z.string().default(""),
+  jdText: z.string().catch(""),
+  jobTitle: capped(200),
+  company: capped(120),
 });
 
 /**
@@ -74,7 +117,24 @@ export async function POST(request: Request) {
 
   const parsed = BodySchema.safeParse(await request.json());
   if (!parsed.success) {
-    return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
+    /**
+     * Only `profile` can still land here, and "Invalid payload" told neither
+     * the user nor the log which field broke — the failure was unreachable
+     * from the outside and unactionable from the inside. Paths only: the
+     * values are the user's CV.
+     */
+    const fields = [
+      ...new Set(parsed.error.issues.map((i) => i.path.join(".") || "(root)")),
+    ];
+    console.error("[api/try/import] rejected payload, fields:", fields);
+    return NextResponse.json(
+      {
+        error:
+          "We couldn't read your CV analysis — please upload your CV again.",
+        fields,
+      },
+      { status: 400 }
+    );
   }
   const { profile, rawText, answers } = parsed.data;
 
@@ -86,8 +146,8 @@ export async function POST(request: Request) {
         ? [
             {
               jdText: parsed.data.jdText,
-              company: parsed.data.company.trim(),
-              title: parsed.data.jobTitle.trim(),
+              company: parsed.data.company,
+              title: parsed.data.jobTitle,
             },
           ]
         : [];
@@ -240,14 +300,14 @@ export async function POST(request: Request) {
       payload:
         a.kind === "mcq"
           ? {
-              selected: a.selected ?? [],
+              selected: a.selected,
               ...(a.other ? { other: a.other } : {}),
-              options: a.options ?? [],
-              selectType: a.selectType ?? "single",
-              ...(a.topic?.trim() ? { topic: a.topic.trim() } : {}),
+              options: a.options,
+              selectType: a.selectType,
+              ...(a.topic ? { topic: a.topic } : {}),
             }
-          : a.topic?.trim()
-            ? { topic: a.topic.trim() }
+          : a.topic
+            ? { topic: a.topic }
             : null,
       source_job_id: jobIds[0] ?? null,
     }));

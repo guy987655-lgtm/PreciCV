@@ -17,10 +17,10 @@ export const sampleCv: TailoredCv = {
   hiddenSectionIds: [],
   contact: {
     fullName: "Dana Cohen",
-    email: "dana.cohen@email.com",
-    phone: "+972-54-123-4567",
+    email: "dana.cohen@example.com",
+    phone: "+972-50-000-0000",
     location: "Tel Aviv, Israel",
-    linkedin: "linkedin.com/in/danacohen",
+    linkedin: "linkedin.com/in/dana-cohen-example",
     website: "",
   },
   headline: "Senior Frontend Engineer · React & TypeScript",

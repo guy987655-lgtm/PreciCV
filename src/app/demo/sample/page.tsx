@@ -10,7 +10,7 @@ import { demoCv, demoDiff, demoSimulation } from "../demo-data";
 export default function DemoSamplePage() {
   return (
     <div>
-      <div className="bg-amber-100 px-4 py-2 text-center text-sm text-amber-900 print:hidden">
+      <div data-demo-banner className="bg-amber-100 px-4 py-2 text-center text-sm text-amber-900 print:hidden">
         🎭 Demo mode — this is the <strong>sample (limited preview)</strong> state.{" "}
         <Link href="/demo" className="underline">
           See the paid workspace

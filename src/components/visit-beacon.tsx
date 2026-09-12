@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { usePathname } from "next/navigation";
+import { isDemoPath } from "@/lib/demo";
 
 /**
  * Tells the server this browser is here, on mount and on every route change.
@@ -24,6 +25,7 @@ export function VisitBeacon() {
   const pathname = usePathname();
 
   useEffect(() => {
+    if (isDemoPath(pathname)) return;
     const now = Date.now();
     if (now - lastPingAt < MIN_INTERVAL_MS) return;
     lastPingAt = now;

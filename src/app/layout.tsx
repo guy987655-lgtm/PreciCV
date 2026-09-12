@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { Analytics } from "@vercel/analytics/next";
 import {
   Bricolage_Grotesque,
   Figtree,
@@ -14,6 +13,7 @@ import {
 import { AnalyticsProvider } from "@/components/analytics-provider";
 import { DevUserSimulator } from "@/components/dev-user-simulator";
 import { ScrollToTop } from "@/components/scroll-to-top";
+import { SiteAnalytics } from "@/components/site-analytics";
 import { VisitBeacon } from "@/components/visit-beacon";
 import "./globals.css";
 
@@ -79,7 +79,7 @@ export default function RootLayout({
         <VisitBeacon />
         <ScrollToTop />
         <DevUserSimulator />
-        <Analytics />
+        <SiteAnalytics />
       </body>
     </html>
   );

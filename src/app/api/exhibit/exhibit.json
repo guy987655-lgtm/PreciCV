@@ -1,0 +1,73 @@
+{
+  "slug": "specv",
+  "title": { "he": "SpeCV", "en": "SpeCV" },
+  "headline": {
+    "he": "מתאים קורות חיים למשרה אחת: קורא את המודעה, משכתב את קורות החיים, ומסביר מה השתנה ולמה",
+    "en": "Tailors a résumé to one job: reads the posting, rewrites the CV, and explains what changed and why"
+  },
+  "status": "live",
+  "depth": "full",
+  "version": "0.1.0",
+  "updatedAt": "2026-09-12T00:00:00+03:00",
+  "stack": ["Next.js 16", "React 19", "TypeScript", "Tailwind CSS 4", "Supabase (Postgres, Auth)", "Claude API", "PostHog", "Vercel"],
+  "facts": [
+    { "label": { "he": "נבנה", "en": "Built" }, "value": { "he": "יולי 2026", "en": "July 2026" } },
+    { "label": { "he": "טבלאות במודל הנתונים", "en": "Tables in the data model" }, "value": { "he": "42", "en": "42" } },
+    { "label": { "he": "קומיטים", "en": "Commits" }, "value": { "he": "60", "en": "60" } }
+  ],
+  "highlights": [
+    {
+      "title": { "he": "כל שינוי מוסבר", "en": "Every change explained" },
+      "body": {
+        "he": "לצד קורות החיים המותאמים מגיע דוח שמראה כל שורה שנוספה, השתנתה או נמחקה, והסיבה שלה מתוך המודעה.",
+        "en": "The tailored CV comes with a report of every line added, changed or removed, each tied to a reason in the posting."
+      }
+    },
+    {
+      "title": { "he": "בדיקת קווים אדומים לפני שמשלמים", "en": "Dealbreakers checked before you pay" },
+      "body": {
+        "he": "המודעה נבדקת מול התנאים שהמשתמש הגדיר מראש, כך שלא משקיעים בהתאמה למשרה שלא מתאימה ממילא.",
+        "en": "The posting is checked against the user's own dealbreakers first, so nobody pays to tailor for a job they'd turn down."
+      }
+    },
+    {
+      "title": { "he": "מחסן נתונים לאנליטיקה", "en": "An analytics warehouse" },
+      "body": {
+        "he": "מעבר לטבלאות המוצר יש סכמת כוכב נפרדת למדידת המשפך, שנבדקת על נתונים סינתטיים לפני שיש נתונים אמיתיים.",
+        "en": "Beside the product tables sits a separate star schema for measuring the funnel, validated on synthetic data before real data exists."
+      }
+    }
+  ],
+  "demoMode": {
+    "supported": true,
+    "entryUrl": "/demo",
+    "note": { "he": "מועמדת בדויה ומשרה בדויה", "en": "A fictional candidate and a fictional job" }
+  },
+  "locales": ["en"],
+  "tourRoutes": [
+    {
+      "id": "workspace",
+      "path": "/demo",
+      "caption": { "he": "סביבת העבודה: קורות החיים המותאמים לצד דוח השינויים", "en": "The workspace: the tailored CV beside the change report" },
+      "locale": "en"
+    },
+    {
+      "id": "match-analysis",
+      "path": "/demo#match-analysis",
+      "caption": { "he": "ניתוח ההתאמה: חוזקות, פערים והמלצות", "en": "Match analysis: strengths, gaps and recommendations" },
+      "locale": "en"
+    },
+    {
+      "id": "interview",
+      "path": "/demo#interview-simulation",
+      "caption": { "he": "סימולציית ראיון: נאום של 30 שניות ושאלות צפויות", "en": "Interview simulation: a 30-second pitch and likely questions" },
+      "locale": "en"
+    },
+    {
+      "id": "sample",
+      "path": "/demo/sample",
+      "caption": { "he": "הדוגמה החינמית: קורות חיים מלאים, חצי מכל מקטע גלוי", "en": "The free sample: the whole CV, half of each section readable" },
+      "locale": "en"
+    }
+  ]
+}

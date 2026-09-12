@@ -1546,7 +1546,7 @@ export function JobWorkspace({
             )}
             {!reportBusy && (
               <>
-            <Card className="p-5">
+            <Card id="match-analysis" className="scroll-mt-24 p-5">
               <div className="flex items-center justify-between">
                 <h2 className="font-semibold text-slate-900">Match analysis</h2>
                 <span className="text-2xl font-bold text-indigo-600">
@@ -1603,7 +1603,7 @@ export function JobWorkspace({
             {generation.simulation &&
               (generation.simulation.pitch ||
                 generation.simulation.questions.length > 0) && (
-                <Card className="p-5 print:hidden">
+                <Card id="interview-simulation" className="scroll-mt-24 p-5 print:hidden">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <h2 className="font-semibold text-slate-900">
                       Interview simulation report

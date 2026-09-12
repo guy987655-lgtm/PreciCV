@@ -1,15 +1,19 @@
 "use client";
 
 import { useEffect } from "react";
+import { usePathname } from "next/navigation";
+import { isDemoPath } from "@/lib/demo";
 import { identifyUser, initAnalytics } from "@/lib/analytics";
 import { useSession } from "@/lib/use-session";
 
 export function AnalyticsProvider({ children }: { children: React.ReactNode }) {
   const { user } = useSession();
+  // The /demo pages never start PostHog (see lib/demo.ts).
+  const demo = isDemoPath(usePathname());
 
   useEffect(() => {
-    initAnalytics();
-  }, []);
+    if (!demo) initAnalytics();
+  }, [demo]);
 
   /**
    * Attach the account to the analytics session once it is known. Without

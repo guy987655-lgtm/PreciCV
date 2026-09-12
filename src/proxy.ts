@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { isDemoPath } from "@/lib/demo";
 import { resolveVisitor, VISITOR_HEADER } from "@/lib/visitor";
 
 const PROTECTED_PREFIXES = [
@@ -11,6 +12,13 @@ const PROTECTED_PREFIXES = [
 ];
 
 export async function proxy(request: NextRequest) {
+  // The demo pages and the exhibit manifest are public, fixture-only surfaces
+  // for the portfolio site: no visitor id, no session lookup, nothing counted.
+  const { pathname } = request.nextUrl;
+  if (isDemoPath(pathname) || pathname === "/api/exhibit") {
+    return NextResponse.next();
+  }
+
   // The visitor id is resolved FIRST — before the Supabase env check below —
   // so a deploy missing its Supabase config still counts its visitors. No
   // database work happens here: this runs on every navigation and every RSC

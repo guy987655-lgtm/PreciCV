@@ -10,6 +10,8 @@ import {
 } from "react";
 import { CvTemplate, TailoredCv } from "@/lib/types";
 import { Editable, requestEditorFocus } from "@/components/cv-editor";
+import { QrCode } from "@/components/qr-code";
+import { portfolioLabel } from "@/lib/portfolio";
 
 /**
  * Renders a TailoredCv in one of 10 print-ready designs. Every design shares
@@ -407,6 +409,7 @@ export function CvRenderer({
   editable = false,
   split = false,
   domId = "cv-page",
+  portfolioUrl = "",
   onChange,
 }: {
   cv: TailoredCv;
@@ -418,6 +421,12 @@ export function CvRenderer({
   split?: boolean;
   /** DOM id for the printable node; pass null for off-screen duplicates. */
   domId?: string | null;
+  /**
+   * The user's portfolio link (a user preference, never part of the CV
+   * JSON). When set, every design prints it top right as a QR code under a
+   * clickable "View my portfolio" heading; empty renders exactly as before.
+   */
+  portfolioUrl?: string;
   onChange?: (next: TailoredCv) => void;
 }) {
   const t = TEMPLATES[template] ?? TEMPLATES.classic;
@@ -505,7 +514,7 @@ export function CvRenderer({
   /** Shrink is iterative — see the loop guard below. */
   const fitPass = useRef(0);
   const MAX_FIT_PASSES = 5;
-  const sig = `${template}|${theme}|${split}|${editable}|${JSON.stringify(cv)}`;
+  const sig = `${template}|${theme}|${split}|${editable}|${portfolioUrl}|${JSON.stringify(cv)}`;
 
   useLayoutEffect(() => {
     if (editable) {
@@ -1059,6 +1068,60 @@ export function CvRenderer({
     </div>
   );
 
+  /* ---- portfolio QR — top right of the header in every design ----------
+     One fixed-width block so a centered design can mirror it with a spacer
+     and keep the name on the page's center line. The white tile is the QR's
+     quiet zone and what keeps it scannable on dark sheets and banners. The
+     whole block is one link, so the heading is the click target in a PDF. */
+  const PORTFOLIO_W = 72;
+  const portfolioNode = (color: string = accent) =>
+    portfolioUrl ? (
+      <a
+        href={portfolioUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={portfolioLabel(portfolioUrl)}
+        data-cv-portfolio
+        className="flex shrink-0 flex-col items-center gap-[4px] no-underline"
+        style={{ width: PORTFOLIO_W, color }}
+      >
+        <span className="text-center text-[7.5px] font-bold uppercase leading-[1.3] tracking-[0.14em]">
+          View my
+          <br />
+          portfolio ↗
+        </span>
+        <span className="rounded-[3px] bg-white p-[4px]">
+          <QrCode value={portfolioUrl} size={56} />
+        </span>
+      </a>
+    ) : null;
+  /** The header with the QR to its right; untouched when there is no link. */
+  const withPortfolio = (
+    header: ReactNode,
+    { center = false, color }: { center?: boolean; color?: string } = {}
+  ) =>
+    portfolioUrl ? (
+      <div className="flex items-start gap-4">
+        {center ? (
+          <div aria-hidden className="shrink-0" style={{ width: PORTFOLIO_W }} />
+        ) : null}
+        <div className="min-w-0 flex-1">{header}</div>
+        {portfolioNode(color)}
+      </div>
+    ) : (
+      header
+    );
+  /** For designs whose contact block already sits on the right. */
+  const besideContact = (contact: ReactNode, align: "start" | "end") =>
+    portfolioUrl ? (
+      <div className={`flex gap-4 ${align === "end" ? "items-end" : "items-start"}`}>
+        {contact}
+        {portfolioNode()}
+      </div>
+    ) : (
+      contact
+    );
+
   const mTitle = (item: Item, si: number, ii: number, cls = "text-[11.5px] font-semibold") => (
     <Editable
       className={cls}
@@ -1310,9 +1373,13 @@ export function CvRenderer({
     });
     return (
       <>
-        {nameNode(t.name)}
-        {headlineNode(t.headline, { color: pal.subtle })}
-        {contactInline("mt-2 text-[9px] tabular-nums", { color: pal.subtle })}
+        {withPortfolio(
+          <>
+            {nameNode(t.name)}
+            {headlineNode(t.headline, { color: pal.subtle })}
+            {contactInline("mt-2 text-[9px] tabular-nums", { color: pal.subtle })}
+          </>
+        )}
         <div className="mt-4">{renderBlocks(blocks, split, pal.rule)}</div>
       </>
     );
@@ -1342,9 +1409,12 @@ export function CvRenderer({
       <>
         <div className="flex items-end justify-between gap-4">
           {nameNode(t.name)}
-          {contactStacked("text-right text-[8px] leading-[1.6] tabular-nums", {
-            color: pal.subtle,
-          })}
+          {besideContact(
+            contactStacked("text-right text-[8px] leading-[1.6] tabular-nums", {
+              color: pal.subtle,
+            }),
+            "end"
+          )}
         </div>
         <div className="mt-[10px] h-[2px]" style={{ background: accent }} />
         {headlineNode(t.headline, { color: pal.subtle })}
@@ -1357,9 +1427,13 @@ export function CvRenderer({
   const renderMarginalia = () => {
     const masthead = (
       <div style={{ gridColumn: "1 / -1" }}>
-        {nameNode(t.name)}
-        {headlineNode(t.headline, { color: pal.subtle })}
-        {contactInline(`${FONT.inter} mt-2 text-[8.5px] tabular-nums`, { color: pal.subtle })}
+        {withPortfolio(
+          <>
+            {nameNode(t.name)}
+            {headlineNode(t.headline, { color: pal.subtle })}
+            {contactInline(`${FONT.inter} mt-2 text-[8.5px] tabular-nums`, { color: pal.subtle })}
+          </>
+        )}
       </div>
     );
     const item = (it: Item, si: number, ii: number, last: boolean) => (
@@ -1390,9 +1464,15 @@ export function CvRenderer({
       return (
         <>
           <div className="mb-3">
-            {nameNode(t.name)}
-            {headlineNode(t.headline, { color: pal.subtle })}
-            {contactInline(`${FONT.inter} mt-2 text-[8.5px] tabular-nums`, { color: pal.subtle })}
+            {withPortfolio(
+              <>
+                {nameNode(t.name)}
+                {headlineNode(t.headline, { color: pal.subtle })}
+                {contactInline(`${FONT.inter} mt-2 text-[8.5px] tabular-nums`, {
+                  color: pal.subtle,
+                })}
+              </>
+            )}
           </div>
           {renderBlocks(blocks, true, pal.rule)}
         </>
@@ -1479,10 +1559,15 @@ export function CvRenderer({
             borderBottom: theme === "light" ? undefined : `2px solid ${accent}`,
           }}
         >
-          {nameNode(`${FONT.playfair} text-[27px] font-bold leading-[1.04]`)}
-          {headlineNode("mt-1 text-[11px]", { color: bannerSub })}
-          <div className="my-3 h-px" style={{ background: "rgba(255,255,255,0.16)" }} />
-          {contactInline(`${FONT.mono} text-[8.5px] tabular-nums`, { color: bannerMeta })}
+          {withPortfolio(
+            <>
+              {nameNode(`${FONT.playfair} text-[27px] font-bold leading-[1.04]`)}
+              {headlineNode("mt-1 text-[11px]", { color: bannerSub })}
+              <div className="my-3 h-px" style={{ background: "rgba(255,255,255,0.16)" }} />
+              {contactInline(`${FONT.mono} text-[8.5px] tabular-nums`, { color: bannerMeta })}
+            </>,
+            { color: bannerSub }
+          )}
         </div>
         <div className="mt-5">{renderBlocks(blocks, split, pal.rule)}</div>
       </>
@@ -1515,11 +1600,14 @@ export function CvRenderer({
     });
     return (
       <>
-        <div className="text-center">
-          {nameNode(t.name)}
-          {headlineNode(t.headline, { color: pal.subtle })}
-          {contactInline(`${FONT.mono} mt-[7px] text-[8px] tabular-nums`, { color: pal.subtle })}
-        </div>
+        {withPortfolio(
+          <div className="text-center">
+            {nameNode(t.name)}
+            {headlineNode(t.headline, { color: pal.subtle })}
+            {contactInline(`${FONT.mono} mt-[7px] text-[8px] tabular-nums`, { color: pal.subtle })}
+          </div>,
+          { center: true }
+        )}
         <div className="my-3 h-px" style={{ background: pal.rule }} />
         {cv.summary && (
           <div className="mb-3">
@@ -1550,8 +1638,12 @@ export function CvRenderer({
     return (
       <>
         <div className="pb-[14px]">
-          {nameNode(t.name)}
-          {headlineNode(t.headline, { color: accent })}
+          {withPortfolio(
+            <>
+              {nameNode(t.name)}
+              {headlineNode(t.headline, { color: accent })}
+            </>
+          )}
         </div>
         <div className="flex">
           <div className="order-2 min-w-0 flex-1 pl-[22px] pt-[2px]">
@@ -1665,9 +1757,12 @@ export function CvRenderer({
             {nameNode(t.name)}
             {headlineNode(t.headline, { color: accent })}
           </div>
-          {contactStacked(`${FONT.mono} text-right text-[7.5px] leading-[1.7] tabular-nums`, {
-            color: pal.subtle,
-          })}
+          {besideContact(
+            contactStacked(`${FONT.mono} text-right text-[7.5px] leading-[1.7] tabular-nums`, {
+              color: pal.subtle,
+            }),
+            "start"
+          )}
         </div>
         {cv.summary && (
           <div className="mt-[13px] border-t pt-[9px]" style={{ borderColor: pal.rule }}>
@@ -1779,9 +1874,13 @@ export function CvRenderer({
     const spineColor = theme === "light" ? "#e2dde4" : "rgba(255,255,255,0.16)";
     return (
       <>
-        {nameNode(t.name)}
-        {headlineNode(t.headline, { color: accent })}
-        {contactInline(`${FONT.mono} mt-2 text-[8.5px] tabular-nums`, { color: pal.subtle })}
+        {withPortfolio(
+          <>
+            {nameNode(t.name)}
+            {headlineNode(t.headline, { color: accent })}
+            {contactInline(`${FONT.mono} mt-2 text-[8.5px] tabular-nums`, { color: pal.subtle })}
+          </>
+        )}
         <div className="mt-[14px] h-px" style={{ background: pal.rule }} />
         {cv.summary && (
           <div className="mt-3">
@@ -1949,9 +2048,13 @@ export function CvRenderer({
     });
     return (
       <>
-        {nameNode(t.name)}
-        {headlineNode(t.headline, { color: accent }, "// ")}
-        {contactInline(`${FONT.mono} mt-2 text-[8.5px] tabular-nums`, { color: pal.subtle }, " ")}
+        {withPortfolio(
+          <>
+            {nameNode(t.name)}
+            {headlineNode(t.headline, { color: accent }, "// ")}
+            {contactInline(`${FONT.mono} mt-2 text-[8.5px] tabular-nums`, { color: pal.subtle }, " ")}
+          </>
+        )}
         <div className="mt-[13px] h-px" style={{ background: pal.rule }} />
         <div className="mt-1">{renderBlocks(blocks, split, pal.rule)}</div>
       </>
@@ -1996,11 +2099,15 @@ export function CvRenderer({
       ) : null;
     return (
       <>
-        <div className="inline-block pb-[2px]" style={{ borderBottom: `2px solid ${accent}` }}>
-          {nameNode(t.name)}
-        </div>
-        {headlineNode(`${FONT.mono} mt-2 text-[10.5px]`, { color: accent })}
-        {contactInline("mt-[6px] text-[8.5px] tabular-nums", { color: pal.subtle })}
+        {withPortfolio(
+          <>
+            <div className="inline-block pb-[2px]" style={{ borderBottom: `2px solid ${accent}` }}>
+              {nameNode(t.name)}
+            </div>
+            {headlineNode(`${FONT.mono} mt-2 text-[10.5px]`, { color: accent })}
+            {contactInline("mt-[6px] text-[8.5px] tabular-nums", { color: pal.subtle })}
+          </>
+        )}
         {cv.summary && (
           <div>
             {label("summary")}
@@ -2088,34 +2195,39 @@ export function CvRenderer({
         {isShared ? (
           <>
             {/* Full-width header — spans the page even in split view */}
-            <Editable
-              as="h1"
-              className={`${t.name}${t.center ? " text-center" : ""}`}
-              style={{ color: t.nameUsesAccent ? accent : pal.text }}
-              value={cv.contact.fullName}
-              editable={editable}
-              onCommit={(v) => commit((d) => void (d.contact.fullName = v))}
-            />
-            {cv.headline && (
-              <Editable
-                as="p"
-                className={`${t.headline}${t.center ? " text-center" : ""}`}
-                style={{ color: t.headlineUsesAccent ? accent : pal.subtle }}
-                value={cv.headline}
-                editable={editable}
-                onCommit={(v) => commit((d) => void (d.headline = v))}
-              />
+            {withPortfolio(
+              <>
+                <Editable
+                  as="h1"
+                  className={`${t.name}${t.center ? " text-center" : ""}`}
+                  style={{ color: t.nameUsesAccent ? accent : pal.text }}
+                  value={cv.contact.fullName}
+                  editable={editable}
+                  onCommit={(v) => commit((d) => void (d.contact.fullName = v))}
+                />
+                {cv.headline && (
+                  <Editable
+                    as="p"
+                    className={`${t.headline}${t.center ? " text-center" : ""}`}
+                    style={{ color: t.headlineUsesAccent ? accent : pal.subtle }}
+                    value={cv.headline}
+                    editable={editable}
+                    onCommit={(v) => commit((d) => void (d.headline = v))}
+                  />
+                )}
+                <div
+                  className={`mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] ${t.contactExtra ?? ""} ${
+                    t.center ? "justify-center" : "justify-start"
+                  }`}
+                  style={{ color: pal.subtle }}
+                >
+                  {contactBits.map((bit, i) => (
+                    <span key={i}>{bit}</span>
+                  ))}
+                </div>
+              </>,
+              { center: t.center }
             )}
-            <div
-              className={`mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] ${t.contactExtra ?? ""} ${
-                t.center ? "justify-center" : "justify-start"
-              }`}
-              style={{ color: pal.subtle }}
-            >
-              {contactBits.map((bit, i) => (
-                <span key={i}>{bit}</span>
-              ))}
-            </div>
 
             {layout === "date-rail" ? (
               ledgerBody

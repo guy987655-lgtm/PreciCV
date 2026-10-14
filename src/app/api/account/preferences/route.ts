@@ -3,6 +3,7 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { CV_TEMPLATES } from "@/lib/types";
 import { ExportPrefsSchema, asCvTheme } from "@/lib/export-prefs";
+import { PORTFOLIO_URL_MAX, normalizePortfolioUrl } from "@/lib/portfolio";
 
 /**
  * Account-level preferences the funnel needs the moment it mounts: the export
@@ -29,6 +30,8 @@ const BodySchema = z.object({
     })
     .nullable()
     .optional(),
+  /** The portfolio link printed as a QR on every CV; "" removes it. */
+  portfolioUrl: z.string().max(PORTFOLIO_URL_MAX * 2).optional(),
 });
 
 export async function GET() {
@@ -43,7 +46,7 @@ export async function GET() {
   const { data, error } = await supabase
     .from("profiles")
     .select(
-      "default_template, cv_theme, split_view, hide_ai_section, cv_file_name, cv_uploaded_at, raw_cv_text"
+      "default_template, cv_theme, split_view, hide_ai_section, cv_file_name, cv_uploaded_at, raw_cv_text, portfolio_url"
     )
     .eq("user_id", user.id)
     .maybeSingle();
@@ -70,6 +73,8 @@ export async function GET() {
           uploadedAt: data?.cv_uploaded_at ?? null,
         }
       : null,
+    // null = never set, "" = removed — the client sync tells them apart.
+    portfolioUrl: data?.portfolio_url ?? null,
   });
 }
 
@@ -86,7 +91,7 @@ export async function PATCH(request: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
   }
-  const { defaultTemplate, baseCv } = parsed.data;
+  const { defaultTemplate, baseCv, portfolioUrl } = parsed.data;
 
   const patch: Record<string, unknown> = {};
   // The legacy top-level field is just the template; an explicit `export`
@@ -102,6 +107,15 @@ export async function PATCH(request: Request) {
   if (exp.cvTheme !== undefined) patch.cv_theme = exp.cvTheme;
   if (exp.splitView !== undefined) patch.split_view = exp.splitView;
   if (exp.hideAiSection !== undefined) patch.hide_ai_section = exp.hideAiSection;
+  if (portfolioUrl !== undefined) {
+    // Normalized here too: the value lands in an <a href> on every CV, so
+    // the server never trusts the client to have refused `javascript:`.
+    const url = portfolioUrl.trim() ? normalizePortfolioUrl(portfolioUrl) : "";
+    if (url === null) {
+      return NextResponse.json({ error: "Invalid portfolio link" }, { status: 400 });
+    }
+    patch.portfolio_url = url;
+  }
   if (baseCv === null) {
     patch.raw_cv_text = null;
     patch.cv_file_name = null;

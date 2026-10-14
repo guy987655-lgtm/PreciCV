@@ -41,6 +41,7 @@ import {
 } from "@/components/design-preview-modal";
 import { ReportPage } from "@/components/report-page";
 import { asCvTheme } from "@/lib/export-prefs";
+import { usePortfolioUrl } from "@/lib/use-portfolio-url";
 import {
   preferredExportPrefs,
   rememberExportPrefs,
@@ -132,6 +133,8 @@ export function RunWorkspace({
   profile: MasterProfile | null;
 }) {
   const router = useRouter();
+  // Signed in by construction: /run/[id] is a protected route.
+  const portfolioUrl = usePortfolioUrl(true);
   const [jobs, setJobs] = useState<RunJob[]>(initialJobs);
   const [rows, setRows] = useState<Record<string, RowState>>({});
   const [error, setError] = useState("");
@@ -1192,6 +1195,7 @@ export function RunWorkspace({
                 template={template}
                 theme={asCvTheme(activeDoc.cvTheme) ?? "light"}
                 split={effectiveSplit(template, activeDoc.splitView)}
+                portfolioUrl={portfolioUrl}
               />
             </div>
           );

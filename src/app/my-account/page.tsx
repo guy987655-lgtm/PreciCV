@@ -15,6 +15,7 @@ import { Badge, Button, Card } from "@/components/ui";
 import { BundlePaywall } from "@/components/bundle-paywall";
 import { ConfirmCountdownModal } from "@/components/confirm-countdown-modal";
 import { AccountIdentity } from "@/components/account-identity";
+import { PortfolioUrlField } from "@/components/portfolio-url-field";
 import { Navbar } from "@/components/navbar";
 
 /**
@@ -134,6 +135,14 @@ export default function MyAccountPage() {
           email={user?.email ?? ""}
           loading={sessionLoading || nameLoading}
         />
+
+        {/* The portfolio QR, settable here as well as from the CV toolbar:
+            it is an account setting, and this is where people look for one. */}
+        {user && (
+          <Card className="mt-6 p-6">
+            <PortfolioUrlField signedIn />
+          </Card>
+        )}
 
         {/* Today's free allowance. Shown here as well as at the point of use,
             so a user who wonders why generation stopped has somewhere to look

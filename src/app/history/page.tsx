@@ -24,6 +24,7 @@ import { Navbar } from "@/components/navbar";
 import { CvRenderer } from "@/components/cv-renderer";
 import { ReportPage } from "@/components/report-page";
 import { useSession } from "@/lib/use-session";
+import { usePortfolioUrl } from "@/lib/use-portfolio-url";
 
 /** A flow saved server-side (see GET /api/jobs). */
 type SavedJob = {
@@ -171,6 +172,7 @@ export default function HistoryPage() {
   // Saved flows live in Supabase once a user is signed in; the localStorage
   // list below only ever knew about flows that never got that far.
   const { signedIn, loading: sessionLoading } = useSession();
+  const portfolioUrl = usePortfolioUrl(signedIn);
   const [jobs, setJobs] = useState<SavedJob[] | null>(null);
   // Tracked separately from `jobs === null`, which cannot tell "not fetched
   // yet" from "signed out". Without it the page renders blank — and then
@@ -676,6 +678,7 @@ export default function HistoryPage() {
             <CvRenderer
               cv={printJob.flow.results.cv}
               template={printJob.flow.template || "classic"}
+              portfolioUrl={portfolioUrl}
             />
           </div>
           <ReportPage

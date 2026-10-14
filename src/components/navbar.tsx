@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { goHome, loadFunnel } from "@/lib/funnel";
 import { markNavigation } from "@/lib/nav-history";
+import { forgetPortfolioUrl } from "@/lib/prefs";
 import { useSession } from "@/lib/use-session";
 import { createClient } from "@/lib/supabase/client";
 import { BackButton } from "@/components/back-button";
@@ -85,6 +86,8 @@ export function Navbar({
 
   async function signOut() {
     setMenuOpen(false);
+    // Personal, unlike the other device preferences — see forgetPortfolioUrl.
+    forgetPortfolioUrl();
     try {
       await createClient().auth.signOut();
     } catch {

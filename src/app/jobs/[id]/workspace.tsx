@@ -30,6 +30,7 @@ import { EMPTY_BALANCE } from "@/lib/credit-types";
 import { centsToUsd, packPriceCents } from "@/lib/packs";
 import { freeMode } from "@/lib/free-mode";
 import { rememberExportPrefs, saveAccountPrefs } from "@/lib/prefs";
+import { usePortfolioUrl } from "@/lib/use-portfolio-url";
 import { asCvTheme, readAiSectionPref } from "@/lib/export-prefs";
 import type { FreeQuota } from "@/lib/free-quota";
 import { printBoth } from "@/lib/download";
@@ -45,6 +46,7 @@ import {
   AiSectionToggle,
   CvToolbar,
   DisplayReviewButton,
+  PortfolioQrButton,
   RefreshReportButton,
   SplitToggle,
   ThemeToggle,
@@ -212,6 +214,8 @@ export function JobWorkspace({
 }: Props) {
   const router = useRouter();
   const [generation, setGeneration] = useState(initialGen);
+  // Signed in by construction: /jobs/[id] is a protected route.
+  const portfolioUrl = usePortfolioUrl(true);
   // Start in the generating state when we'll auto-run the sample on arrival,
   // so the loading spinner shows immediately (no flash of the intro card).
   // Mirrors the auto-run below, so the spinner is up on first paint instead
@@ -1439,6 +1443,7 @@ export function JobWorkspace({
                       onChange={(next) => saveCv(next)}
                     />
                   </span>
+                  <PortfolioQrButton url={portfolioUrl} signedIn />
                   <RefreshReportButton
                     onClick={() => regenerateReportNow()}
                     disabled={
@@ -1517,6 +1522,7 @@ export function JobWorkspace({
                       splitView
                     )}
                     editable={!isSample && editing}
+                    portfolioUrl={portfolioUrl}
                     onChange={(next) => saveCv(next)}
                   />
                 </div>
@@ -1743,6 +1749,7 @@ export function JobWorkspace({
           template={generation.template as CvTemplate}
           theme={cvTheme}
           split={effectiveSplit(generation.template as CvTemplate, splitView)}
+          portfolioUrl={portfolioUrl}
           onClose={() => setFullScreen(false)}
         />
       )}

@@ -65,6 +65,7 @@ import { EMPTY_MATCH, MatchedAnswers, mergeMatches } from "@/lib/answer-match";
 import { printBoth, printFile } from "@/lib/download";
 import { simMeta, useSimUser } from "@/lib/sim-user";
 import { useSession } from "@/lib/use-session";
+import { usePortfolioUrl } from "@/lib/use-portfolio-url";
 import {
   Badge,
   Button,
@@ -87,6 +88,7 @@ import {
   AiSectionToggle,
   CvToolbar,
   DisplayReviewButton,
+  PortfolioQrButton,
   RefreshReportButton,
   SplitToggle,
   ThemeToggle,
@@ -388,6 +390,7 @@ export function TryNow() {
   const sim = useSimUser();
   const simUserMeta = simMeta(sim);
   const { signedIn } = useSession();
+  const portfolioUrl = usePortfolioUrl(signedIn);
   /**
    * A REAL Supabase session always counts as registered. `simMeta` is the
    * dev-only simulator and reports "guest" in production, which is why a
@@ -2278,6 +2281,7 @@ export function TryNow() {
                 <span data-tour="ai-section" className="inline-flex">
                   <AiSectionToggle cv={results.cv} onChange={editCv} />
                 </span>
+                <PortfolioQrButton url={portfolioUrl} signedIn={signedIn} />
                 <RefreshReportButton
                   onClick={() => regenerateReportNow()}
                   disabled={
@@ -2320,6 +2324,7 @@ export function TryNow() {
                   theme={cvTheme}
                   split={shownSplit}
                   editable={editing}
+                  portfolioUrl={portfolioUrl}
                   onChange={editCv}
                 />
               </div>
@@ -2618,6 +2623,7 @@ export function TryNow() {
           template={template}
           theme={cvTheme}
           split={shownSplit}
+          portfolioUrl={portfolioUrl}
           onClose={() => setFullScreen(false)}
         />
       )}

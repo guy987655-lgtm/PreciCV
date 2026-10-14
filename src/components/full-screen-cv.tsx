@@ -14,12 +14,14 @@ export function FullScreenCv({
   template,
   theme,
   split,
+  portfolioUrl,
   onClose,
 }: {
   cv: TailoredCv;
   template: CvTemplate;
   theme: "light" | "dark";
   split: boolean;
+  portfolioUrl?: string;
   onClose: () => void;
 }) {
   // A4 at 96dpi ≈ 794 × 1123px — scale so the whole sheet fits on screen.
@@ -88,6 +90,7 @@ export function FullScreenCv({
               template={template}
               theme={theme}
               split={split}
+              portfolioUrl={portfolioUrl}
               domId={null}
             />
           </div>

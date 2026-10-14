@@ -1,9 +1,14 @@
 "use client";
 
-import { ReactNode } from "react";
+import { ReactNode, useState } from "react";
+import { usePathname } from "next/navigation";
 import { AI_SECTION_ID, CvTemplate, TailoredCv } from "@/lib/types";
 import { CvTheme } from "@/components/cv-renderer";
 import { canToggleSplit, forcedSplit } from "@/lib/templates";
+import { portfolioLabel } from "@/lib/portfolio";
+import { isDemoPath } from "@/lib/demo";
+import { Modal } from "@/components/ui";
+import { PortfolioUrlField } from "@/components/portfolio-url-field";
 
 /**
  * Toolbar buttons attached to the CV preview frame — deliberately NOT the
@@ -186,6 +191,43 @@ export function AiSectionToggle({
     >
       {hidden ? "◇ AI section: off" : "◈ AI section: on"}
     </button>
+  );
+}
+
+/**
+ * The portfolio QR: adds, changes or removes the link every CV prints as a QR
+ * code. A user-level setting rather than a per-CV one, so it lives in a
+ * dialog instead of toggling in place.
+ */
+export function PortfolioQrButton({
+  url,
+  signedIn,
+}: {
+  /** The current link, from usePortfolioUrl — "" when there is none. */
+  url: string;
+  signedIn: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  // /demo is fixture-only: a save there would write the visitor's real
+  // preferences (lib/demo.ts).
+  if (isDemoPath(usePathname())) return null;
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className={`${toolbarBtn} ${url ? toolbarActive : toolbarIdle}`}
+        title={
+          url
+            ? `Your CV links to ${portfolioLabel(url)}`
+            : "Add a QR code that links to your portfolio"
+        }
+      >
+        {url ? "▦ Portfolio QR: on" : "▦ Portfolio QR: add"}
+      </button>
+      <Modal open={open} onClose={() => setOpen(false)} title="Portfolio QR">
+        <PortfolioUrlField signedIn={signedIn} onDone={() => setOpen(false)} />
+      </Modal>
+    </>
   );
 }
 

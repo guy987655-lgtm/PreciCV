@@ -26,6 +26,12 @@ type StoredPrefs = {
   cvTheme?: ExportPrefs["cvTheme"];
   splitView?: boolean;
   hideAiSection?: boolean;
+  /**
+   * The portfolio link printed as a QR on every CV. "" is an explicit
+   * "removed" — distinct from absent, which means this device never knew, so
+   * the account copy may fill it in (see use-portfolio-url.ts).
+   */
+  portfolioUrl?: string;
 };
 
 export function loadPrefs(): StoredPrefs {
@@ -49,6 +55,9 @@ export function loadPrefs(): StoredPrefs {
     if (typeof parsed.splitView === "boolean") out.splitView = parsed.splitView;
     if (typeof parsed.hideAiSection === "boolean") {
       out.hideAiSection = parsed.hideAiSection;
+    }
+    if (typeof parsed.portfolioUrl === "string") {
+      out.portfolioUrl = parsed.portfolioUrl;
     }
     return out;
   } catch {
@@ -93,6 +102,22 @@ export function rememberTemplate(t: CvTemplate) {
   rememberExportPrefs({ template: t });
 }
 
+/** Stores the portfolio link on this device; null records a removal. */
+export function rememberPortfolioUrl(url: string | null) {
+  savePrefs({ ...loadPrefs(), portfolioUrl: url ?? "" });
+}
+
+/**
+ * Drops this device's copy on sign-out. Unlike a design choice, the link is
+ * personal — the next person on a shared browser must not print it on their
+ * CV. The account keeps it and returns it on the next sign-in.
+ */
+export function forgetPortfolioUrl() {
+  const next = loadPrefs();
+  delete next.portfolioUrl;
+  savePrefs(next);
+}
+
 /* ------------------------------------------------------------------ */
 /* Account half — the same preferences, mirrored to profiles           */
 /* ------------------------------------------------------------------ */
@@ -104,6 +129,7 @@ export type AccountPrefs = {
   defaultTemplate: CvTemplate | null;
   export: Partial<ExportPrefs>;
   baseCv: BaseCvMeta | null;
+  portfolioUrl: string | null;
 };
 
 /** Signed-in preferences, or null when unavailable (signed out, offline). */
@@ -132,6 +158,9 @@ export async function fetchAccountPrefs(): Promise<AccountPrefs | null> {
             uploadedAt: data.baseCv.uploadedAt ?? null,
           }
         : null,
+      // null = never set; "" = removed (see use-portfolio-url.ts).
+      portfolioUrl:
+        typeof data?.portfolioUrl === "string" ? data.portfolioUrl : null,
     };
   } catch {
     return null;
@@ -147,6 +176,8 @@ export async function saveAccountPrefs(patch: {
   defaultTemplate?: CvTemplate;
   export?: Partial<ExportPrefs>;
   baseCv?: { rawText: string; fileName: string } | null;
+  /** A normalized URL, or "" to remove it. */
+  portfolioUrl?: string;
 }): Promise<void> {
   try {
     await fetch("/api/account/preferences", {
